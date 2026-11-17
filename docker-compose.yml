@@ -1,0 +1,40 @@
+services:
+  podry:
+    image: ghcr.io/xuzuxing/podry:${PODRY_VERSION:-latest}
+    container_name: podry
+    restart: unless-stopped
+    ports:
+      - "${PODRY_PORT:-5000}:5000"
+    environment:
+      # 初始管理员口令(首启建账;之后改这里不改库)。务必改掉。
+      PODRY_ADMIN_PASSWORD: ${PODRY_ADMIN_PASSWORD:?请在 .env 设置 PODRY_ADMIN_PASSWORD}
+    volumes:
+      - podry-data:/data
+    healthcheck:
+      # 静态镜像无 curl/wget;用二进制自身做 TCP 探活的最小手段:复用 --version(进程可执行即健康)。
+      test: ["CMD", "/podry", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: podry
+      POSTGRES_DB: podry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U podry -d podry"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  podry-data:
+  postgres-data:
