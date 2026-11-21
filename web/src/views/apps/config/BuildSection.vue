@@ -156,7 +156,7 @@ watch(appId, load, { immediate: true })
 
 <template>
   <div class="sec">
-    <PageHeader title="构建配置" description="定义镜像产出位置与构建上下文；路径均为仓库内相对路径。">
+    <PageHeader title="Build Configuration" description="定义镜像产出位置与构建上下文；路径均为仓库内相对路径。">
       <template #actions>
         <span v-if="dirty" class="hint-dirty">有未保存修改</span>
         <t-button variant="outline" :loading="saving" :disabled="loading || config === null || !savedReady" @click="goNext">

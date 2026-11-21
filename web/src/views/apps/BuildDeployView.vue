@@ -1,6 +1,10 @@
 <script setup lang="ts">
+/**
+ * 构建发布（Build & Deploy）页：按真实 Devtron 的 trigger 页面复刻。
+ * 页面由若干工作流块组成，每块是一条 workflow 名称 + 一块浅色画布；画布中从左到右依次为
+ * 来源、CI、CD，CD 可一 CI 多环境纵向排列。没有额外的筛选栏或页面级元信息。
+ */
 import { computed, ref, watch } from 'vue'
-import type { SelectValue } from 'tdesign-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -30,47 +34,11 @@ import type {
   Workflow,
 } from '@/types'
 
-import PipelineEditDrawer from './components/pipeline/PipelineEditDrawer.vue'
-import PipelineGraph from './components/pipeline/PipelineGraph.vue'
-import type { GraphRow } from './components/pipeline/PipelineGraph.vue'
 import SelectImageDrawer from './components/pipeline/SelectImageDrawer.vue'
 import SelectMaterialDrawer from './components/pipeline/SelectMaterialDrawer.vue'
-
-type NodeTone = 'success' | 'danger' | 'info' | 'warning'
-
-interface NodeStatus {
-  tone: NodeTone
-  label: string
-}
-
-interface SourceNode {
-  kicker: string
-  value: string
-  branch: string
-  icon: string
-}
-
-interface CiNode {
-  id: string
-  name: string
-  status: NodeStatus
-}
-
-interface CdNode {
-  id: string
-  bindingId: string
-  envName: string
-  deployLabel: string
-  status: NodeStatus
-}
-
-interface WorkflowGroup {
-  key: string
-  name: string
-  source: SourceNode
-  ci: CiNode | null
-  cds: CdNode[]
-}
+import TriggerGraph from './components/pipeline/TriggerGraph.vue'
+import type { TriggerCdNode, TriggerCiNode, TriggerRow, TriggerStatus } from './components/pipeline/TriggerGraph.vue'
+import { ciDisplayName, workflowDisplayName } from './components/pipeline/naming'
 
 const route = useRoute()
 const router = useRouter()
@@ -90,23 +58,6 @@ const deployments = ref<Deployment[]>([])
 const loading = ref(true)
 const error = ref('')
 
-const workflowFilter = ref('all')
-
-/* 编辑流水线抽屉（与「设置 → 工作流」共用组件） */
-const editVisible = ref(false)
-const editPipeline = ref<Pipeline | null>(null)
-
-function openPipelineEdit(id: string): void {
-  const pipeline = workflow.value?.items.find((item) => item.id === id) ?? null
-  if (!pipeline) return
-  editPipeline.value = pipeline
-  editVisible.value = true
-}
-
-function onPipelineSaved(next: Workflow): void {
-  workflow.value = next
-}
-
 const materialVisible = ref(false)
 const materialPipeline = ref('')
 const imageVisible = ref(false)
@@ -116,71 +67,6 @@ const canBuild = computed(() => setup.value?.canBuild === true)
 const configVersion = computed(() => setup.value?.configVersion ?? 0)
 const repositoryUrl = computed(() => config.value?.gitConfig?.repositoryUrl ?? '')
 
-const buildViews: Record<BuildStatus, NodeStatus> = {
-  queued: { tone: 'info', label: 'In progress' },
-  running: { tone: 'info', label: 'In progress' },
-  canceling: { tone: 'info', label: 'Canceling' },
-  succeeded: { tone: 'success', label: 'Succeeded' },
-  failed: { tone: 'danger', label: 'Failed' },
-  canceled: { tone: 'danger', label: 'Aborted' },
-  unknown: { tone: 'warning', label: 'Unknown' },
-}
-
-const deployViews: Record<DeployStatus, NodeStatus> = {
-  queued: { tone: 'info', label: 'Queued' },
-  submitting: { tone: 'info', label: 'Submitting' },
-  observing: { tone: 'info', label: 'Progressing' },
-  succeeded: { tone: 'success', label: 'Succeeded' },
-  failed: { tone: 'danger', label: 'Failed' },
-  unknown: { tone: 'warning', label: 'Unknown' },
-}
-
-const externalSource: SourceNode = {
-  kicker: 'Webhook',
-  value: 'External source',
-  branch: '',
-  icon: 'link',
-}
-
-function errorTextOf(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback
-}
-
-/** 仓库地址 → Devtron 的 `/repo` 形式；拿不到地址时返回空串 */
-function repoPath(url: string): string {
-  const trimmed = url.replace(/\.git$/, '').replace(/[/:]+$/, '')
-  const name = trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
-  return name ? `/${name}` : ''
-}
-
-/** 稳定 4 位后缀（对齐 Devtron 的 wf-1-h6l7 命名，不用随机值以免刷新跳变） */
-function shortKey(input: string): string {
-  let hash = 0
-  for (let i = 0; i < input.length; i += 1) hash = (hash * 31 + input.charCodeAt(i)) >>> 0
-  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let value = hash
-  let result = ''
-  for (let i = 0; i < 4; i += 1) {
-    result += alphabet.charAt(value % alphabet.length)
-    value = Math.floor(value / alphabet.length)
-  }
-  return result
-}
-
-const gitSource = computed<SourceNode>(() => {
-  const git = config.value?.gitConfig
-  const path = repoPath(git?.repositoryUrl ?? '')
-  if (!git?.repositoryUrl || !path) return externalSource
-  return { kicker: 'Git', value: path, branch: git.branch, icon: 'logo-github' }
-})
-
-const ciName = computed(() => {
-  const slug = repoPath(repositoryUrl.value).replace(/^\//, '').split(/[-_]/)[0]
-  return slug ? `ci-${slug}` : 'ci-pipeline'
-})
-
-const deployLabel = computed(() => `Deploy: ${config.value?.chartConfig?.workloadKind === 'Job' ? 'Job' : 'Rolling'}`)
-
 const buildsSorted = computed(() =>
   builds.value.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
 )
@@ -188,50 +74,114 @@ const deploymentsSorted = computed(() =>
   deployments.value.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
 )
 
+function errorTextOf(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback
+}
+
+/** 仓库地址 → Devtron 的 `/repo` 形式；拿不到地址时返回空串 */
+function repoName(url: string): string {
+  const trimmed = url.replace(/\.git$/, '').replace(/[/:]+$/, '')
+  return trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
+}
+
+/** Devtron 风格显示名：wf-<appNumber>-<suffix> / ci-<appNumber>-<suffix> */
+const workflowName = computed(() => {
+  const seed = workflow.value?.items[0]?.id ?? appId.value
+  return workflowDisplayName(appId.value, seed)
+})
+
+function ciNameOf(pipeline: Pipeline): string {
+  return ciDisplayName(appId.value, pipeline.id)
+}
+
+const ciStatusMap: Record<BuildStatus, TriggerStatus> = {
+  queued: { label: '排队中', tone: 'warning', details: true },
+  running: { label: '构建中', tone: 'warning', details: true },
+  canceling: { label: '取消中', tone: 'warning', details: true },
+  succeeded: { label: '成功', tone: 'success', details: true },
+  failed: { label: '失败', tone: 'danger', details: true },
+  canceled: { label: '已取消', tone: 'danger', details: true },
+  unknown: { label: '待核对', tone: 'neutral', details: true },
+}
+
+const cdStatusMap: Record<DeployStatus, TriggerStatus> = {
+  queued: { label: '排队中', tone: 'warning', details: true },
+  submitting: { label: '提交中', tone: 'warning', details: true },
+  observing: { label: '部署中', tone: 'warning', details: true },
+  succeeded: { label: '成功', tone: 'success', details: true },
+  failed: { label: '失败', tone: 'danger', details: true },
+  unknown: { label: '待核对', tone: 'neutral', details: true },
+}
+
+const notTriggered: TriggerStatus = { label: '未触发', tone: 'neutral' }
+const notDeployed: TriggerStatus = { label: '未部署', tone: 'neutral' }
+
 function upstreamOf(pipeline: Pipeline): string | null {
   return 'triggerMode' in pipeline.definition ? pipeline.definition.upstreamPipelineId : null
 }
 
-function ciNodeFor(pipeline: Pipeline): CiNode {
+function ciTriggerOf(pipeline: Pipeline): 'MANUAL' | 'AUTO' {
+  const definition = pipeline.definition
+  if ('manual' in definition) return definition.manual ? 'MANUAL' : 'AUTO'
+  return 'MANUAL'
+}
+
+function cdTriggerOf(pipeline: Pipeline): 'MANUAL' | 'AUTO' {
+  const definition = pipeline.definition
+  return 'triggerMode' in definition && definition.triggerMode === 'on_ci_success' ? 'AUTO' : 'MANUAL'
+}
+
+function ciNodeFor(pipeline: Pipeline): TriggerCiNode {
   const latest = buildsSorted.value.find((item) => item.appId === appId.value)
   return {
     id: pipeline.id,
-    name: ciName.value,
-    status: latest ? buildViews[latest.status] : { tone: 'warning', label: 'Not built' },
+    name: ciNameOf(pipeline),
+    trigger: ciTriggerOf(pipeline),
+    status: latest ? ciStatusMap[latest.status] : notTriggered,
   }
 }
 
-function cdNodeFor(pipeline: Pipeline): CdNode {
+function cdNodeFor(pipeline: Pipeline): TriggerCdNode {
   const binding = bindings.value.find((item) => item.id === pipeline.bindingId) ?? null
   const environment = binding ? environments.value.find((item) => item.id === binding.environmentId) : undefined
   const latest = binding ? deploymentsSorted.value.find((item) => item.bindingId === binding.id) : undefined
   return {
     id: pipeline.id,
     bindingId: binding?.id ?? '',
-    envName: environment?.name ?? '未绑定环境',
-    deployLabel: deployLabel.value,
-    status: latest ? deployViews[latest.status] : { tone: 'warning', label: 'Not deployed' },
+    environment: environment?.name ?? '未绑定环境',
+    strategy: latest?.strategy ?? 'rolling',
+    trigger: cdTriggerOf(pipeline),
+    status: latest ? cdStatusMap[latest.status] : notDeployed,
   }
 }
 
-const groups = computed<WorkflowGroup[]>(() => {
+const source = computed(() => {
+  const git = config.value?.gitConfig
+  const repo = repoName(git?.repositoryUrl ?? '')
+  if (!git?.repositoryUrl || !repo) {
+    return { kind: 'webhook' as const, repo: '外部来源', branch: '' }
+  }
+  return { kind: 'git' as const, repo, branch: git.branch }
+})
+
+const rows = computed<TriggerRow[]>(() => {
   const items = workflow.value?.items ?? []
   const cis = items.filter((item) => item.kind === 'ci')
   const cds = items.filter((item) => item.kind === 'cd')
   const ciIds = cis.map((item) => item.id)
-  const result: WorkflowGroup[] = []
+  const result: TriggerRow[] = []
 
   cis.forEach((ci) => {
     result.push({
       key: ci.id,
-      name: '',
-      source: gitSource.value,
+      name: workflowName.value,
+      source: source.value,
       ci: ciNodeFor(ci),
       cds: cds.filter((cd) => upstreamOf(cd) === ci.id).map(cdNodeFor),
     })
   })
 
-  // 没有上游 CI 的 CD 单独成一条 workflow，来源显示为外部镜像
+  // 没有上游 CI 的 CD 单独成一条工作流，来源显示为外部镜像
   cds
     .filter((cd) => {
       const upstream = upstreamOf(cd)
@@ -240,103 +190,42 @@ const groups = computed<WorkflowGroup[]>(() => {
     .forEach((cd) => {
       result.push({
         key: cd.id,
-        name: '',
-        source: externalSource,
+        name: workflowDisplayName(appId.value, cd.id),
+        source: source.value.kind === 'git' ? source.value : { kind: 'webhook', repo: '外部来源', branch: '' },
         ci: null,
         cds: [cdNodeFor(cd)],
       })
     })
 
-  return result.map((group, index) => {
-    const kindLabel = group.ci ? '源码构建部署' : '镜像部署'
-    const suffix = group.ci ? group.ci.name : group.cds[0]?.envName ?? shortKey(group.key)
-    return { ...group, name: `${index + 1}. ${kindLabel} · ${suffix}` }
-  })
+  return result
 })
 
-const graphRows = computed<GraphRow[]>(() =>
-  visibleGroups.value.map((group, index) => {
-    const cdNodes = group.cds.map((cd) => ({
-      id: cd.id,
-      kind: 'cd' as const,
-      kicker: cd.deployLabel,
-      title: cd.envName,
-      icon: 'rocket',
-      status: cd.status,
-    }))
-    const ciNodeData = group.ci
-      ? {
-          id: group.ci.id,
-          kind: 'ci' as const,
-          kicker: 'Build',
-          title: group.ci.name,
-          icon: 'tools',
-          status: group.ci.status,
-        }
-      : null
-    return {
-      key: group.key,
-      name: `wf-${index + 1}-${(ciNodeData?.id ?? cdNodes[0]?.id ?? group.key).split('-').pop()}`,
-      source: group.ci
-        ? { kicker: 'Git', value: group.source.value, branch: group.source.branch || undefined, icon: 'git' }
-        : { kicker: 'Webhook', value: 'External source', icon: 'git' },
-      ci: ciNodeData,
-      cds: cdNodes,
-    }
-  }),
-)
 function onSelectMaterial(ciId: string): void {
-  const group = visibleGroups.value.find((item) => item.ci?.id === ciId)
-  if (group) openMaterial(group)
-}
-
-function onSelectImage(cdId: string): void {
-  for (const group of visibleGroups.value) {
-    const cd = group.cds.find((item) => item.id === cdId)
-    if (cd) {
-      openImage(cd)
-      return
-    }
-  }
-}
-
-function onNodeDetails(id: string): void {
-  const pipeline = workflow.value?.items.find((item) => item.id === id)
-  void router.push({
-    name: pipeline?.kind === 'ci' ? 'app-builds' : 'app-deployments',
-    params: baseParams.value,
-  })
-}
-const workflowOptions = computed(() => [
-  { label: '全部工作流', value: 'all' },
-  ...groups.value.map((group) => ({ label: group.name, value: group.name })),
-])
-
-const visibleGroups = computed(() =>
-  workflowFilter.value === 'all'
-    ? groups.value
-    : groups.value.filter((group) => group.name === workflowFilter.value),
-)
-
-watch(groups, (list) => {
-  if (workflowFilter.value !== 'all' && !list.some((group) => group.name === workflowFilter.value)) {
-    workflowFilter.value = 'all'
-  }
-})
-
-function onWorkflowFilter(value: SelectValue): void {
-  workflowFilter.value = typeof value === 'string' && value ? value : 'all'
-}
-
-function openMaterial(group: WorkflowGroup): void {
-  if (!group.ci) return
-  materialPipeline.value = group.ci.name
+  const ci = workflow.value?.items.find((item) => item.id === ciId)
+  if (!ci) return
+  materialPipeline.value = ciNameOf(ci)
   materialVisible.value = true
 }
 
-function openImage(node: CdNode): void {
-  imageBindingId.value = node.bindingId
+function onSelectImage(cdId: string): void {
+  const cd = workflow.value?.items.find((item) => item.id === cdId)
+  if (!cd) return
+  const binding = bindings.value.find((item) => item.id === cd.bindingId)
+  if (!binding) return
+  imageBindingId.value = binding.id
   imageVisible.value = true
+}
+
+function onRollback(cdId: string): void {
+  onSelectImage(cdId)
+}
+
+function onDetails(kind: 'ci' | 'cd', id: string): void {
+  void id
+  void router.push({
+    name: kind === 'ci' ? 'app-builds' : 'app-deployments',
+    params: baseParams.value,
+  })
 }
 
 async function loadSetup(): Promise<ApplicationSetup | null> {
@@ -383,7 +272,6 @@ async function load(): Promise<void> {
 watch(
   appId,
   () => {
-    workflowFilter.value = 'all'
     materialVisible.value = false
     imageVisible.value = false
     void load()
@@ -394,38 +282,10 @@ watch(
 
 <template>
   <div class="bd">
-    <!-- 顶部只有一行：左侧 workflow 切换，右侧刷新与当前分支/配置版本 -->
-    <div class="bd__bar">
-      <div class="bd__bar-main">
-        <span class="bd__bar-label">流水线</span>
-        <t-select
-          v-if="groups.length"
-          class="bd__filter"
-          size="small"
-          :value="workflowFilter"
-          :options="workflowOptions"
-          @change="onWorkflowFilter"
-        />
-        <span v-else class="bd__bar-title">全部工作流</span>
-      </div>
-      <div class="bd__meta">
-        <span v-if="gitSource.branch">当前分支 <b>{{ gitSource.branch }}</b></span>
-        <span>配置版本 <b>v{{ configVersion }}</b></span>
-        <t-button size="small" variant="text" :loading="loading" @click="load">
-          <template #icon><t-icon name="refresh" /></template>
-          刷新
-        </t-button>
-      </div>
-    </div>
-
     <div v-if="loading" class="bd__skeleton">
       <div v-for="index in 2" :key="index" class="sk">
         <span class="sk__name" />
-        <div class="sk__panel">
-          <span class="sk__source" />
-          <span class="sk__arrow" />
-          <span class="sk__node" />
-        </div>
+        <div class="sk__panel" />
       </div>
     </div>
 
@@ -433,7 +293,7 @@ watch(
 
     <template v-else>
       <EmptyState
-        v-if="!visibleGroups.length"
+        v-if="!rows.length"
         title="还没有工作流"
         description="在配置里创建工作流后，构建与发布节点会出现在这里。"
       >
@@ -442,23 +302,15 @@ watch(
         </template>
       </EmptyState>
 
-      <PipelineGraph
-        :rows="graphRows"
-        show-status
-        show-actions
+      <TriggerGraph
+        v-else
+        :rows="rows"
         @material="onSelectMaterial"
         @image="onSelectImage"
-        @edit="openPipelineEdit"
-        @details="onNodeDetails"
+        @rollback="onRollback"
+        @details="onDetails"
       />
     </template>
-
-    <PipelineEditDrawer
-      v-model:visible="editVisible"
-      :pipeline="editPipeline"
-      :version="workflow?.version ?? 0"
-      @saved="onPipelineSaved"
-    />
 
     <SelectMaterialDrawer
       v-model:visible="materialVisible"
@@ -487,310 +339,16 @@ watch(
 
 <style scoped>
 .bd {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.bd__bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 28px;
-}
-.bd__bar-label {
-  color: var(--tk-text-3);
-  font-size: 12px;
-}
-.pl-node__foot {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.pl-node__more {
-  padding: 0 4px;
-  color: var(--tk-text-3);
-  font-size: 14px;
-  line-height: 1;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-.bd__bar-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.bd__filter {
-  width: 200px;
-}
-.bd__bar-title {
-  color: var(--tk-text-2);
-  font-weight: 600;
-}
-.bd__meta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-left: auto;
-  color: var(--tk-text-3);
-  font-size: 12px;
-}
-.bd__meta b {
-  color: var(--tk-text-2);
-  font-weight: 600;
-}
-
-/* ---- workflow 面板 ---- */
-.wf {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.wf__name {
-  margin: 0;
-  padding-left: 2px;
-  color: var(--tk-text-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-.tk-workflow {
-  display: flex;
-  align-items: flex-start;
-  padding: 18px 16px;
-  overflow-x: auto;
-  background: #f7f9fc;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.wf__flow {
-  display: flex;
-  align-items: flex-start;
-  min-width: 0;
-}
-.pl-chain {
-  display: flex;
-  align-items: flex-start;
-  gap: 0;
-}
-/* 一 CI 多 CD：竖排并用一条主干 + 分支连接到 CI */
-.pl-cds {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-left: 16px;
-}
-.pl-cds::before {
-  content: '';
-  position: absolute;
-  top: 57px;
-  bottom: 57px;
-  left: 0;
-  width: 1px;
-  background: var(--tk-border-strong);
-}
-.pl-cds--solo {
-  padding-left: 0;
-}
-.pl-cds--solo::before {
-  display: none;
-}
-.pl-cds > .pl-node {
-  position: relative;
-}
-.pl-cds > .pl-node::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: -16px;
-  width: 16px;
-  height: 1px;
-  background: var(--tk-border-strong);
-}
-.pl-cds--solo > .pl-node::before {
-  display: none;
-}
-
-/* ---- 源码节点 ---- */
-.pl-source {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 360px;
-  min-height: 72px;
-  padding: 10px 14px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.pl-source__main {
-  min-width: 0;
-}
-.pl-source__kicker {
-  margin: 0;
-  color: var(--tk-text-3);
-  font-size: 11px;
-  line-height: 16px;
-}
-.pl-source__value {
-  margin: 2px 0 0;
-  overflow: hidden;
-  color: var(--tk-text);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pl-source__branch {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 4px 0 0;
-  color: var(--tk-text-2);
-  font-size: 12px;
-}
-.pl-source__info {
-  color: var(--tk-text-3);
-}
-.pl-source__icon {
-  flex: none;
-  color: var(--tk-text-2);
-}
-
-/* ---- 节点之间的箭头 ---- */
-.pl-arrow {
-  position: relative;
-  flex: none;
-  width: 44px;
-  height: 2px;
-  margin: 35px 10px 0;
-  background: var(--tk-border-strong);
-}
-.pl-arrow--trunk {
-  margin-right: 0;
-  margin-top: 55px;
-}
-.pl-arrow::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  right: -1px;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 7px solid var(--tk-border-strong);
-  transform: translateY(-50%);
-}
-
-/* ---- CI / CD 节点 ---- */
-.pl-node {
-  display: flex;
-  flex: none;
-  overflow: hidden;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.pl-node__auto {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  color: var(--tk-text-3);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  background: #e9edf4;
-  border-right: 1px solid var(--tk-border);
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-.pl-node__body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 190px;
-  height: 112px;
-  padding: 8px 10px 10px;
-}
-.pl-node__kicker {
-  margin: 0;
-  color: var(--tk-text-3);
-  font-size: 11px;
-  line-height: 15px;
-}
-.pl-node__name {
-  margin: 0;
-  overflow: hidden;
-  color: var(--tk-text);
-  font-weight: 600;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pl-node__status {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 16px;
-}
-.pl-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  background: var(--tk-text-3);
-  border-radius: 50%;
-}
-.pl-dot--success {
-  background: var(--tk-success);
-}
-.pl-dot--danger {
-  background: var(--tk-danger);
-}
-.pl-dot--info {
-  background: var(--tk-primary);
-}
-.pl-dot--warning {
-  background: var(--tk-warning);
-}
-.pl-state--success {
-  color: #1f8f5f;
-  font-weight: 600;
-}
-.pl-state--danger {
-  color: var(--tk-danger);
-  font-weight: 600;
-}
-.pl-state--info {
-  color: var(--tk-primary);
-  font-weight: 600;
-}
-.pl-state--warning {
-  color: var(--tk-warning);
-  font-weight: 600;
-}
-.pl-node__slash {
-  color: var(--tk-text-3);
-}
-.pl-node__details {
-  color: var(--tk-primary);
-}
-.pl-node__details:hover {
-  text-decoration: underline;
-}
-.pl-node__action {
-  margin-top: auto;
+  min-height: 100%;
+  padding: 16px 20px 24px;
+  background: #fff;
 }
 
 /* ---- loading 骨架 ---- */
 .bd__skeleton {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 .sk {
   display: flex;
@@ -798,42 +356,19 @@ watch(
   gap: 6px;
 }
 .sk__name {
-  width: 92px;
+  width: 64px;
   height: 12px;
   background: #e9edf4;
   border-radius: 2px;
 }
 .sk__panel {
-  display: flex;
-  align-items: center;
-  padding: 18px 16px;
-  background: #f7f9fc;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.sk__source {
-  width: 360px;
-  height: 72px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.sk__arrow {
-  width: 44px;
-  height: 2px;
-  margin: 0 12px;
-  background: var(--tk-border);
-}
-.sk__node {
-  width: 208px;
-  height: 124px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  height: 174px;
+  background: #f7fafc;
+  border: 1px solid #edf1f5;
+  border-radius: 4px;
 }
 .sk__name,
-.sk__source,
-.sk__node {
+.sk__panel {
   animation: sk-pulse 1.4s ease-in-out infinite;
 }
 @keyframes sk-pulse {

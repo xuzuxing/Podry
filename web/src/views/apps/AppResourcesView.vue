@@ -11,7 +11,9 @@ import {
   getApplication,
   getPodLogs,
   listApplicationResources,
+  listArtifacts,
   listBindings,
+  listBuilds,
   listDeployments,
   listEnvironments,
   restartWorkloads,
@@ -26,7 +28,9 @@ import K8sKindTree from '@/components/K8sKindTree.vue'
 import ResourceDetailPanel from '@/components/resource/ResourceDetailPanel.vue'
 import ResourceHierarchy from '@/components/resource/ResourceHierarchy.vue'
 import type {
+  Artifact,
   Binding,
+  Build,
   Deployment,
   Environment,
   Health,
@@ -68,6 +72,8 @@ const baseParams = computed(() => ({ projectId: projectId.value, appId: appId.va
 const bindings = ref<Binding[]>([])
 const environments = ref<Environment[]>([])
 const deployments = ref<Deployment[]>([])
+const artifacts = ref<Artifact[]>([])
+const builds = ref<Build[]>([])
 const health = ref<Health>('unknown')
 const appName = ref('')
 const bindLoading = ref(true)
@@ -175,6 +181,15 @@ const latestDeployment = computed<Deployment | null>(() => {
       .filter((item) => item.bindingId === bindingId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
   )
+})
+
+/** 当前环境已部署镜像对应的构建（Devtron 的 “Deployed commit” 卡） */
+const deployedBuild = computed<Build | null>(() => {
+  const deployment = latestDeployment.value
+  if (!deployment) return null
+  const artifact = artifacts.value.find((item) => item.id === deployment.artifactId)
+  if (!artifact?.buildId) return null
+  return builds.value.find((item) => item.id === artifact.buildId) ?? null
 })
 
 /** 当前环境最近的发布记录（用于 Deployment Status 页签的历史表） */
@@ -647,17 +662,21 @@ async function loadBindings(): Promise<void> {
   bindLoading.value = true
   bindError.value = ''
   try {
-    const [bindingList, environmentList, appItem, deployPage] = await Promise.all([
+    const [bindingList, environmentList, appItem, deployPage, artifactItems, buildPage] = await Promise.all([
       listBindings(appId.value),
       listEnvironments(),
       getApplication(appId.value),
       listDeployments(appId.value),
+      listArtifacts(appId.value),
+      listBuilds(appId.value),
     ])
     bindings.value = bindingList
     environments.value = environmentList
     health.value = appItem.health
     appName.value = appItem.name
     deployments.value = deployPage.items
+    artifacts.value = artifactItems
+    builds.value = buildPage.items
     // 支持 ?env= 深链，刷新后保持同一环境上下文
     const fromQuery = String(route.query.env ?? '')
     const preferred = bindingList.find((item) => item.id === fromQuery) ?? bindingList[0]
@@ -728,7 +747,7 @@ watch(
     <template v-else>
       <!-- 环境条：ENV 胶囊 + 环境下拉 + 工具按钮 + Deploy -->
       <div class="res__envbar">
-        <span class="tk-pill">ENV</span>
+        <span class="tk-pill">环境</span>
         <t-select
           :value="activeBindingId"
           :options="envOptions"
@@ -752,9 +771,9 @@ watch(
             trigger="click"
             placement="bottom-right"
             :options="[
-              { content: 'Restart workloads', value: 'restart' },
-              { content: hibernated ? 'Unhibernate' : 'Hibernate', value: 'hibernate' },
-              { content: 'Delete release', value: 'delete-release', theme: 'error' },
+              { content: '重启工作负载', value: 'restart' },
+              { content: hibernated ? '取消休眠' : '休眠', value: 'hibernate' },
+              { content: '删除发布', value: 'delete-release', theme: 'error' },
             ]"
             @click="onEnvAction"
           >
@@ -764,7 +783,7 @@ watch(
           </t-dropdown>
           <t-button theme="primary" size="small" class="res__deploy" @click="goDeploy">
             <template #icon><t-icon name="rocket" size="14px" /></template>
-            Deploy
+            部署
           </t-button>
         </div>
       </div>
@@ -774,7 +793,7 @@ watch(
         <div class="res__cards">
           <section class="tk-status-card res__card">
             <div class="res__card-head">
-              <span class="tk-status-card__label">Application Status</span>
+              <span class="tk-status-card__label">应用状态</span>
               <t-tooltip content="应用整体健康状态，由当前环境的运行资源汇总得出" placement="top">
                 <t-icon name="info-circle" class="res__card-info" size="14px" />
               </t-tooltip>
@@ -789,13 +808,13 @@ watch(
               {{ healthEntry.label }}
             </span>
             <div class="res__card-foot">
-              <button type="button" class="res__card-link" @click="healthVisible = true">Details</button>
+              <button type="button" class="res__card-link" @click="healthVisible = true">详情</button>
             </div>
           </section>
 
           <section class="tk-status-card res__card">
             <div class="res__card-head">
-              <span class="tk-status-card__label">Deployment Status</span>
+              <span class="tk-status-card__label">部署状态</span>
               <t-tooltip content="当前环境下最近一次发布的状态" placement="top">
                 <t-icon name="info-circle" class="res__card-info" size="14px" />
               </t-tooltip>
@@ -816,13 +835,42 @@ watch(
               <span v-else class="u-dim">该环境还没有发布记录</span>
             </div>
           </section>
+
+          <section class="tk-status-card res__card">
+            <div class="res__card-head">
+              <span class="tk-status-card__label">已部署提交</span>
+              <t-tooltip content="当前环境已部署镜像对应的 Git 提交" placement="top">
+                <t-icon name="info-circle" class="res__card-info" size="14px" />
+              </t-tooltip>
+              <svg class="res__card-mark" width="20" height="20" viewBox="0 0 48 48">
+                <path
+                  fill="#000a14"
+                  d="M42.2,22.1L25.9,5.8C25.4,5.3,24.7,5,24,5c0,0,0,0,0,0c-0.7,0-1.4,0.3-1.9,0.8l-3.5,3.5l4.1,4.1c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3c0,0.5-0.1,0.9-0.3,1.3l4,4c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3s-1.3,3-3,3c-1.7,0-3-1.3-3-3c0-0.5,0.1-0.9,0.3-1.3l-4-4c-0.1,0-0.2,0.1-0.3,0.1v10.4c1.2,0.4,2,1.5,2,2.8c0,1.7-1.3,3-3,3s-3-1.3-3-3c0-1.3,0.8-2.4,2-2.8V18.8c-1.2-0.4-2-1.5-2-2.8c0-0.5,0.1-0.9,0.3-1.3l-4.1-4.1L5.8,22.1C5.3,22.6,5,23.3,5,24c0,0.7,0.3,1.4,0.8,1.9l16.3,16.3c0,0,0,0,0,0c0.5,0.5,1.2,0.8,1.9,0.8s1.4-0.3,1.9-0.8l16.3-16.3c0.5-0.5,0.8-1.2,0.8-1.9C43,23.3,42.7,22.6,42.2,22.1z"
+                />
+              </svg>
+            </div>
+            <span v-if="deployedBuild" class="tk-status-card__value res__card-commit">
+              <t-icon name="git-branch" size="14px" />
+              {{ deployedBuild.commitSha.slice(0, 7) }}
+            </span>
+            <span v-else class="tk-status-card__value res__card-commit res__tone--default">—</span>
+            <div class="res__card-foot res__card-foot--row">
+              <template v-if="deployedBuild">
+                <span class="res__card-pr" :title="deployedBuild.commitSubject">
+                  {{ deployedBuild.commitSubject || '—' }}
+                </span>
+                <router-link class="res__card-link" :to="{ name: 'app-builds', params: baseParams }">详情</router-link>
+              </template>
+              <span v-else class="u-dim">该环境还没有发布记录</span>
+            </div>
+          </section>
         </div>
 
         <!-- MONITORING 区 -->
         <section class="res__monitoring tk-panel">
           <button type="button" class="res__monitor-head" @click="monitoringOpen = !monitoringOpen">
             <t-icon name="chart-bar" size="14px" />
-            <span class="res__monitor-title">MONITORING</span>
+            <span class="res__monitor-title">监控</span>
             <span class="res__monitor-hint">CPU / 内存 / 状态码 2xx·3xx·5xx / 吞吐 / 延迟</span>
             <span class="res__monitor-toggle">{{ monitoringOpen ? '收起' : '展开' }}</span>
           </button>
@@ -1052,11 +1100,11 @@ watch(
       <!-- 底部上下文条 -->
       <div class="tk-context-bar res__context">
         <span>
-          Cluster: <span class="res__context-value">{{ clusterId || '—' }}</span>
+          集群: <span class="res__context-value">{{ clusterId || '—' }}</span>
         </span>
         <span class="res__context-sep">|</span>
         <span>
-          Namespace: <span class="res__context-value">{{ namespaceName || '—' }}</span>
+          命名空间: <span class="res__context-value">{{ namespaceName || '—' }}</span>
         </span>
         <t-icon name="chevron-right" class="u-dim" size="12px" />
         <router-link
@@ -1064,11 +1112,11 @@ watch(
           :to="{ name: 'cluster-workspace', params: { clusterId } }"
         >
           <t-icon name="link" size="13px" />
-          All resources
+          全部资源
         </router-link>
         <button type="button" class="res__context-link res__context-btn" @click="openTerminal">
           <t-icon name="close" size="13px" />
-          Cluster terminal
+          集群终端
         </button>
       </div>
     </template>
@@ -1076,7 +1124,7 @@ watch(
 
     <t-dialog
       v-model:visible="workloadModalVisible"
-      :header="workloadModal === 'restart' ? 'Restart workloads' : hibernated ? 'Unhibernate' : 'Hibernate'"
+      :header="workloadModal === 'restart' ? '重启工作负载' : hibernated ? '取消休眠' : '休眠'"
       width="560px"
       :footer="false"
     >
@@ -1086,7 +1134,7 @@ watch(
             ? '所选工作负载的 Pod 会被重建；发布策略保持不变。'
             : hibernated
               ? '所选工作负载将恢复为配置的副本数。'
-              : '所选工作负载的副本数会缩到 0，可随时 Unhibernate 恢复。'
+              : '所选工作负载的副本数会缩到 0，可随时取消休眠恢复。'
         }}
       </p>
       <t-checkbox-group v-model="selectedWorkloads" class="res__workloads">
@@ -1103,7 +1151,7 @@ watch(
 
     <t-dialog
       v-model:visible="releaseDeleteVisible"
-      header="Delete release"
+      header="删除发布"
       theme="warning"
       width="480px"
       :footer="false"
@@ -1581,6 +1629,26 @@ watch(
 }
 .res__card-link:hover {
   text-decoration: underline;
+}
+.res__card-foot--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.res__card-commit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--tk-mono);
+}
+.res__card-pr {
+  overflow: hidden;
+  max-width: 232px;
+  color: #3b444c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .res__tone--success {
   color: var(--tk-success);

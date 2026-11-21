@@ -131,7 +131,7 @@ watch(appId, load, { immediate: true })
 
 <template>
   <div class="sec">
-    <PageHeader title="Git 源" description="声明源码仓库与访问账号；本分区保存后生成新的配置版本。">
+    <PageHeader title="Git Repository" description="声明源码仓库与访问账号；本分区保存后生成新的配置版本。">
       <template #actions>
         <span v-if="dirty" class="hint-dirty">有未保存修改</span>
         <t-button

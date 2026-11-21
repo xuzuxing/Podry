@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import type { SelectValue } from 'tdesign-vue-next'
 import { useRouter } from 'vue-router'
 
 import { confirmDeployment, importArtifact, MockError, previewDeployment } from '@/api'
@@ -29,6 +28,7 @@ const router = useRouter()
 const targetBindingId = ref('')
 const selectedArtifactId = ref('')
 const search = ref('')
+const expandedId = ref('')
 
 /* P2：发布策略 rolling / canary / bluegreen */
 const strategy = ref<DeployStrategy>('rolling')
@@ -60,16 +60,6 @@ const confirming = ref(false)
 const confirmError = ref('')
 const confirmErrorCode = ref('')
 
-const bindingOptions = computed(() =>
-  props.bindings.map((item) => {
-    const environment = props.environments.find((env) => env.id === item.environmentId)
-    return {
-      label: `${environment?.name ?? item.environmentId} · ${item.target.namespace} / ${item.target.releaseName}`,
-      value: item.id,
-    }
-  }),
-)
-
 const targetBinding = computed(() => props.bindings.find((item) => item.id === targetBindingId.value) ?? null)
 const targetEnvName = computed(() => {
   const binding = targetBinding.value
@@ -82,9 +72,7 @@ const selectedArtifact = computed(
 )
 
 const latestArtifactId = computed(() => {
-  const newest = props.artifacts
-    .slice()
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+  const newest = props.artifacts.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
   return newest[0]?.id ?? ''
 })
 
@@ -122,19 +110,33 @@ const reviewHint = computed(() => {
   return `预览会固定镜像 digest 与配置版本 v${props.configVersion}`
 })
 
+/** 镜像 tag（Devtron 卡片只展示 tag，如 522bcd2f-4-6） */
+function tagOf(artifact: Artifact): string {
+  const parts = artifact.imageRef.split(':')
+  return parts.length > 1 ? parts[parts.length - 1] : artifact.imageRef
+}
+
+/** 该镜像在当前环境的部署时间；没有部署过返回空串 */
+function deployedAt(artifact: Artifact): string {
+  const binding = targetBinding.value
+  if (!binding) return ''
+  const record = props.deployments
+    .filter(
+      (item) =>
+        item.bindingId === binding.id &&
+        item.artifactId === artifact.id &&
+        (item.status === 'succeeded' || item.status === 'observing'),
+    )
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0]
+  return record?.createdAt ?? ''
+}
+
 function errorCodeOf(err: unknown): string {
   return err instanceof MockError ? err.code : ''
 }
 
 function errorTextOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
-}
-
-function onBindingChange(value: SelectValue): void {
-  const next = typeof value === 'string' ? value : ''
-  if (!next || next === targetBindingId.value) return
-  targetBindingId.value = next
-  if (reviewVisible.value) reviewVisible.value = false
 }
 
 function openImport(): void {
@@ -249,6 +251,7 @@ watch(
   (visible) => {
     if (!visible) return
     search.value = ''
+    expandedId.value = ''
     reviewVisible.value = false
     preview.value = null
     previewError.value = ''
@@ -268,9 +271,9 @@ watch(
 <template>
   <t-drawer
     :visible="visible"
-    size="820px"
+    size="1024px"
     placement="right"
-    :header="`发布到 ${targetEnvName}`"
+    :header="`部署到 ${targetEnvName}`"
     :close-btn="true"
     drawer-class-name="bd-image"
     @close="close"
@@ -278,29 +281,15 @@ watch(
     <div class="im">
       <div class="im__head">
         <span class="im__title">选择镜像</span>
+        <span class="im__import" title="导入外部镜像" @click="openImport">
+          <t-icon name="upload" size="16px" />
+        </span>
+        <span class="im__refresh" title="刷新镜像列表" @click="emit('refresh')">
+          <t-icon name="refresh" size="16px" />
+        </span>
         <t-input v-model="search" class="im__search" size="small" clearable placeholder="按镜像 tag 搜索">
           <template #prefix-icon><t-icon name="search" /></template>
         </t-input>
-        <t-button size="small" variant="outline" @click="openImport">
-          <template #icon><t-icon name="upload" /></template>
-          导入外部镜像
-        </t-button>
-      </div>
-
-      <div class="im__target">
-        <span class="im__target-label">目标环境</span>
-        <t-select
-          class="im__target-select"
-          size="small"
-          :value="targetBindingId"
-          :options="bindingOptions"
-          placeholder="选择环境"
-          :disabled="!bindings.length"
-          @change="onBindingChange"
-        />
-        <span v-if="targetBinding" class="im__target-target u-mono">
-          {{ targetBinding.target.clusterId }} / {{ targetBinding.target.namespace }}
-        </span>
       </div>
 
       <div class="im__list">
@@ -325,35 +314,67 @@ watch(
 
         <ul v-else class="im__cards">
           <li v-for="artifact in visibleArtifacts" :key="artifact.id">
-            <button
-              type="button"
+            <div
               class="img-card"
               :class="{ 'img-card--active': artifact.id === selectedArtifactId }"
+              role="button"
+              tabindex="0"
               @click="selectedArtifactId = artifact.id"
+              @keydown.enter="selectedArtifactId = artifact.id"
             >
-              <span class="img-card__main">
-                <span class="img-card__tags">
-                  <span v-if="artifact.id === activeArtifactId" class="img-card__tag img-card__tag--active">
-                    <t-icon name="check-circle" size="12px" />
-                    Active on {{ targetEnvName }}
-                  </span>
-                  <span v-if="artifact.id === latestArtifactId" class="img-card__tag">Latest</span>
+              <div class="img-card__top">
+                <span class="img-card__chips">
+                  <span v-if="artifact.id === activeArtifactId" class="chip chip--active">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="6.4" stroke="#1DAD70" stroke-width="1.4" />
+                      <path d="m5.6 8.1 1.7 1.7 3.2-3.6" stroke="#1DAD70" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    当前环境使用                  </span>
+                  <span v-if="artifact.id === latestArtifactId" class="chip">最新</span>
                 </span>
-                <span class="img-card__ref u-mono">{{ artifact.imageRef }}</span>
-                <span class="img-card__meta">
-                  <t-icon name="layers" size="12px" />
-                  {{ shortDigest(artifact.digest) }}
-                  <span class="img-card__sep">|</span>
-                  {{ artifact.source === 'build' ? '构建产物' : '外部镜像' }}
-                  <span class="img-card__sep">|</span>
-                  <t-icon name="time" size="12px" />
-                  {{ fmtTime(artifact.createdAt) }}
+                <span class="img-card__pick">
+                  <t-icon v-if="artifact.id === selectedArtifactId" name="check" size="12px" />
                 </span>
-              </span>
-              <span class="img-card__pick">
-                <t-icon v-if="artifact.id === selectedArtifactId" name="check" size="12px" />
-              </span>
-            </button>
+              </div>
+
+              <div class="img-card__ref">
+                <t-icon name="layers" size="14px" />
+                <span class="img-card__tag">{{ tagOf(artifact) }}</span>
+              </div>
+
+              <div class="img-card__when">
+                <template v-if="deployedAt(artifact)">
+                  <t-icon name="calendar" size="13px" />
+                  {{ fmtTime(deployedAt(artifact)) }}
+                </template>
+                <template v-else>
+                  <t-icon name="time" size="13px" />
+                  未部署
+                </template>
+              </div>
+
+              <div class="img-card__labels">+ 添加标签/备注</div>
+
+              <button
+                type="button"
+                class="img-card__more"
+                @click.stop="expandedId = expandedId === artifact.id ? '' : artifact.id"
+              >
+                展开详情
+                <t-icon :name="expandedId === artifact.id ? 'chevron-up' : 'chevron-down'" size="14px" />
+              </button>
+
+              <dl v-if="expandedId === artifact.id" class="img-card__info">
+                <dt>镜像仓库</dt>
+                <dd class="u-mono">{{ artifact.imageRepository }}</dd>
+                <dt>摘要</dt>
+                <dd class="u-mono">{{ shortDigest(artifact.digest) }}</dd>
+                <dt>来源</dt>
+                <dd>{{ artifact.source === 'build' ? `构建产物 ${artifact.buildId ?? ''}` : '外部镜像' }}</dd>
+                <dt>创建时间</dt>
+                <dd>{{ fmtTime(artifact.createdAt) }}</dd>
+              </dl>
+            </div>
           </li>
         </ul>
       </div>
@@ -361,11 +382,24 @@ watch(
 
     <template #footer>
       <div class="im__foot">
-        <span class="im__saved">已保存配置 <b>v{{ configVersion }}</b></span>
+        <div class="im__tile">
+          <span class="im__tile-deploy">
+            部署：
+            <span class="im__tile-value">最近保存的配置</span>
+            <t-icon name="chevron-down" size="14px" />
+          </span>
+          <button type="button" class="im__diff" @click="openReview">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="7" fill="#F33E3E" />
+              <path d="M8 4.6v4.2M8 11.2v.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <span>配置差异</span>
+            <span class="im__review">查看</span>
+          </button>
+        </div>
         <span class="im__hint">{{ reviewHint }}</span>
-        <span class="im__push" />
         <t-button theme="primary" :disabled="!canReview" :loading="previewLoading" @click="openReview">
-          Review
+          部署
         </t-button>
       </div>
     </template>
@@ -388,11 +422,11 @@ watch(
         <span class="imp__label">digest</span>
         <t-input v-model="importDigest" placeholder="sha256:064a5f…（64 位小写十六进制）" />
       </label>
-      <p class="imp__hint">导入会写入应用产物列表，发布时仍走同一套 Review / 确认流程。</p>
+      <p class="imp__hint">导入会写入应用产物列表，发布时仍走同一套预览 / 确认流程。</p>
     </div>
   </t-dialog>
 
-  <t-dialog v-model:visible="reviewVisible" header="Review" width="760px" :close-on-overlay-click="false">
+  <t-dialog v-model:visible="reviewVisible" header="发布预览" width="760px" :close-on-overlay-click="false">
     <div class="rv">
       <div v-if="previewLoading" class="rv__state">
         <t-loading size="small" />
@@ -487,9 +521,26 @@ watch(
 </template>
 
 <style scoped>
+/* Devtron 弹窗：右侧 1024 宽、全高、白底 */
+:global(.bd-image) {
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.14);
+}
+:global(.bd-image .t-drawer__header) {
+  min-height: 49px;
+  padding: 12px 20px;
+  color: #000a14;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 24px;
+  border-bottom: 1px solid #e6e9ef;
+}
 :global(.bd-image .t-drawer__body) {
   padding: 0;
   overflow: hidden;
+}
+:global(.bd-image .t-drawer__footer) {
+  padding: 16px 20px;
+  border-top: 1px solid #e6e9ef;
 }
 
 .im {
@@ -497,121 +548,105 @@ watch(
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  background: #f2f4f7;
 }
 .im__head {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--tk-surface);
-  border-bottom: 1px solid var(--tk-border);
+  gap: 10px;
+  padding: 16px 20px 8px;
 }
 .im__title {
+  color: #000a14;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
+}
+.im__refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  color: #596168;
+  cursor: pointer;
+}
+.im__import {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  color: #596168;
+  cursor: pointer;
+}
+.im__import + .im__refresh {
+  margin-left: 0;
 }
 .im__search {
   width: 260px;
-  margin-left: auto;
-}
-.im__target {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  background: var(--tk-surface);
-  border-bottom: 1px solid var(--tk-border);
-}
-.im__target-label {
-  color: var(--tk-text-2);
-  font-weight: 600;
-}
-.im__target-select {
-  width: 320px;
-}
-.im__target-target {
-  color: var(--tk-text-3);
 }
 .im__list {
   flex: 1;
   min-height: 0;
-  padding: 12px 16px 20px;
+  padding: 8px 20px 20px;
   overflow: auto;
-  background: #f7f9fc;
 }
 .im__cards {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
 /* ---- 镜像卡片 ---- */
 .img-card {
+  position: relative;
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
-  padding: 10px 12px;
-  font: inherit;
-  color: var(--tk-text);
-  text-align: left;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  padding: 12px 16px;
   cursor: pointer;
+  background: #fff;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
 }
 .img-card:hover {
-  border-color: var(--tk-border-strong);
+  border-color: #b1b7bc;
 }
 .img-card--active {
-  background: #f5f9ff;
-  border-color: var(--tk-primary);
+  border-color: #0066cc;
 }
-.img-card__main {
+.img-card__top {
   display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
 }
-.img-card__tags {
+.img-card__chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  min-height: 18px;
+  gap: 8px;
+  min-height: 20px;
 }
-.img-card__tag {
+.chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 20px;
   padding: 0 6px;
-  color: var(--tk-text-2);
+  color: #3b444c;
   font-size: 11px;
-  background: #f2f4f8;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  line-height: 18px;
+  background: #edf1f5;
+  border-radius: 2px;
 }
-.img-card__tag--active {
-  color: #1f8f5f;
-  background: #e8f8f0;
-  border-color: #c4ecd9;
-}
-.img-card__ref {
-  font-size: 12px;
-  font-weight: 600;
-  word-break: break-all;
-}
-.img-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  color: var(--tk-text-3);
-  font-size: 11px;
-}
-.img-card__sep {
-  color: var(--tk-border-strong);
+.chip--active {
+  color: #1dad70;
+  background: #e8f7f0;
 }
 .img-card__pick {
   display: flex;
@@ -622,15 +657,134 @@ watch(
   height: 16px;
   margin-top: 2px;
   color: #fff;
-  border: 1px solid var(--tk-border-strong);
+  border: 1px solid #b1b7bc;
   border-radius: 50%;
 }
 .img-card--active .img-card__pick {
-  background: var(--tk-primary);
-  border-color: var(--tk-primary);
+  background: #0066cc;
+  border-color: #0066cc;
+}
+.img-card__ref {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #000a14;
+  font-size: 12px;
+  font-weight: 600;
+}
+.img-card__tag {
+  font-family: var(--tk-mono);
+}
+.img-card__when {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+.img-card__labels {
+  align-self: flex-start;
+  padding: 3px 10px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px dashed #b1b7bc;
+  border-radius: 4px;
+}
+.img-card__more {
+  position: absolute;
+  right: 16px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: #596168;
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.img-card__info {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 6px 0 22px;
+  padding-top: 8px;
+  border-top: 1px solid #edf1f5;
+  font-size: 12px;
+}
+.img-card__info dt {
+  color: #767d84;
+}
+.img-card__info dd {
+  margin: 0;
+  overflow: hidden;
+  color: #3b444c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- 底部 ---- */
+.im__foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.im__tile {
+  display: flex;
+  align-items: stretch;
+  height: 42px;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
+}
+.im__tile-deploy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  color: #3b444c;
+  font-size: 12px;
+}
+.im__tile-value {
+  color: #3b444c;
+  font-weight: 600;
+}
+.im__diff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  color: #3b444c;
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 0;
+  border-left: 1px solid #d0d4d9;
+  cursor: pointer;
+}
+.im__diff:hover {
+  background: #f7fafc;
+}
+.im__review {
+  color: #0066cc;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.im__hint {
+  flex: 1;
+  overflow: hidden;
+  color: #767d84;
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 导入 ---- */
 .imp {
   display: flex;
   flex-direction: column;
@@ -649,24 +803,6 @@ watch(
   margin: 0;
   color: var(--tk-text-3);
   font-size: 11px;
-}
-.im__foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.im__saved {
-  color: var(--tk-text-2);
-}
-.im__saved b {
-  color: var(--tk-text);
-}
-.im__hint {
-  color: var(--tk-text-3);
-  font-size: 12px;
-}
-.im__push {
-  flex: 1;
 }
 
 /* ---- Review ---- */
@@ -694,8 +830,8 @@ watch(
   font-weight: 600;
 }
 .rv__error-hint {
-  margin: 0 0 4px;
   max-width: 420px;
+  margin: 0 0 4px;
   color: var(--tk-text-3);
   font-size: 12px;
 }
@@ -726,9 +862,9 @@ watch(
 }
 .rv__canary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 .rv__canary-input {
   width: 180px;
@@ -752,7 +888,8 @@ watch(
 .rv__code {
   max-height: 180px;
 }
-.rv__foot {  display: flex;
+.rv__foot {
+  display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;

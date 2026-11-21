@@ -6,10 +6,9 @@ import { MessagePlugin } from 'tdesign-vue-next'
 import { getApplication, getConfig, getWorkflow, listBindings, listEnvironments, saveWorkflow } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
-import PageHeader from '@/components/PageHeader.vue'
-import PipelineGraph from '@/views/apps/components/pipeline/PipelineGraph.vue'
-import type { GraphRow } from '@/views/apps/components/pipeline/PipelineGraph.vue'
-import StatusTag from '@/components/StatusTag.vue'
+import TriggerGraph from '@/views/apps/components/pipeline/TriggerGraph.vue'
+import type { TriggerRow } from '@/views/apps/components/pipeline/TriggerGraph.vue'
+import { ciDisplayName, workflowDisplayName } from '@/views/apps/components/pipeline/naming'
 import type {
   AppConfig,
   Application,
@@ -21,14 +20,6 @@ import type {
   Workflow,
 } from '@/types'
 
-
-interface PipelineRow {
-  id: string
-  kindLabel: string
-  scope: string
-  trigger: string
-  enabled: boolean
-}
 
 type TemplateKey = 'build_deploy' | 'external_image'
 type TriggerMode = 'manual' | 'on_ci_success'
@@ -138,18 +129,7 @@ const templateOptions = [
   { label: '镜像部署（Deploy from External Image）', value: 'external_image' },
 ]
 
-const pipelineColumns = [
-  { colKey: 'edit', title: '', width: 62 },
-
-  { colKey: 'id', title: 'Pipeline ID', width: 200 },
-  { colKey: 'kindLabel', title: 'Kind', width: 80 },
-  { colKey: 'scope', title: '分支 / 环境', width: 180 },
-  { colKey: 'trigger', title: '触发方式', width: 170 },
-  { colKey: 'enabled', title: '状态', width: 100 },
-]
-
 const hasWorkflow = computed(() => (workflow.value?.items.length ?? 0) > 0)
-const versionText = computed(() => (workflow.value ? `v${workflow.value.version}` : '—'))
 const ciItem = computed<Pipeline | null>(() => workflow.value?.items.find((item) => item.kind === 'ci') ?? null)
 const cdItems = computed<Pipeline[]>(() => (workflow.value?.items ?? []).filter((item) => item.kind === 'cd'))
 const templateNeedsBranch = computed(() => templateKey.value !== 'external_image')
@@ -184,56 +164,47 @@ function isCIDefinition(definition: CIDefinition | CDDefinition): definition is 
   return 'branch' in definition
 }
 
-function triggerText(item: Pipeline): string {
-  const definition = item.definition
-  if (isCIDefinition(definition)) {
-    const parts: string[] = []
-    if (definition.manual) parts.push('手动')
-    if (definition.push) parts.push('Push')
-    return parts.length > 0 ? parts.join(' + ') : '未配置触发'
-  }
-  return definition.triggerMode === 'on_ci_success' ? 'CI 成功后自动' : '手动触发'
+/** 仓库地址 → Devtron 的 `/repo` 形式 */
+function repoName(url: string): string {
+  const trimmed = url.replace(/\.git$/, '').replace(/[/:]+$/, '')
+  return trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
 }
 
-function pipelineScope(item: Pipeline): string {
-  const definition = item.definition
-  if (isCIDefinition(definition)) return `分支 ${definition.branch}`
-  return envNameOfBinding(item.bindingId)
+function triggerOf(item: Pipeline): 'MANUAL' | 'AUTO' {
+  if (isCIDefinition(item.definition)) return item.definition.manual ? 'MANUAL' : 'AUTO'
+  return item.definition.triggerMode === 'on_ci_success' ? 'AUTO' : 'MANUAL'
 }
 
-const graphRows = computed<GraphRow[]>(() => {
+const graphRows = computed<TriggerRow[]>(() => {
   const git = config.value?.gitConfig ?? null
+  const repo = repoName(git?.repositoryUrl ?? '')
   const items = workflow.value?.items ?? []
+  const source = git && repo
+    ? { kind: 'git' as const, repo, branch: git.branch }
+    : { kind: 'webhook' as const, repo: 'External source', branch: '' }
   const ciItemRow = items.find((item) => item.kind === 'ci')
   const ciNodeData = ciItemRow
     ? {
         id: ciItemRow.id,
-        kind: 'ci' as const,
-        kicker: 'Build',
-        title: ciItemRow.id,
-        icon: 'tools',
+        name: ciDisplayName(appId.value, ciItemRow.id),
+        trigger: triggerOf(ciItemRow),
       }
     : null
   const cdNodes = items
     .filter((item) => item.kind === 'cd')
     .map((cd) => ({
       id: cd.id,
-      kind: 'cd' as const,
-      kicker: 'Deploy: Rolling',
-      title: envNameOfBinding(cd.bindingId),
-      icon: 'rocket',
+      bindingId: cd.bindingId ?? '',
+      environment: envNameOfBinding(cd.bindingId),
+      strategy: 'rolling',
+      trigger: triggerOf(cd),
     }))
   if (!ciNodeData && !cdNodes.length) return []
   return [
     {
       key: 'main',
-      name: `wf-1-${(ciNodeData?.id ?? cdNodes[0].id).split('-').pop()}`,
-      source: {
-        kicker: git ? 'Git' : 'External source',
-        value: git ? git.repositoryUrl : '外部镜像交付（无源码仓库）',
-        branch: git ? git.branch : undefined,
-        icon: git ? 'git' : 'image',
-      },
+      name: workflowDisplayName(appId.value, ciNodeData?.id ?? cdNodes[0].id),
+      source,
       ci: ciNodeData,
       cds: cdNodes,
     },
@@ -264,15 +235,12 @@ function onGraphAdd(): void {
   createVisible.value = true
 }
 
-const pipelineRows = computed<PipelineRow[]>(() =>
-  (workflow.value?.items ?? []).map((item) => ({
-    id: item.id,
-    kindLabel: item.kind === 'ci' ? 'CI' : 'CD',
-    scope: pipelineScope(item),
-    trigger: triggerText(item),
-    enabled: item.enabled,
-  })),
-)
+const workflowSearch = ref('')
+const visibleRows = computed<TriggerRow[]>(() => {
+  const keyword = workflowSearch.value.trim().toLowerCase()
+  if (!keyword) return graphRows.value
+  return graphRows.value.filter((row) => row.name.toLowerCase().includes(keyword))
+})
 
 async function load(): Promise<void> {
   if (!appId.value) return
@@ -436,18 +404,31 @@ watch(appId, load, { immediate: true })
 
 <template>
   <div class="sec">
-    <PageHeader title="工作流" description="从源码到环境的流水线编排；关系图展示 CI 与各环境 CD 的依赖。">
-      <template #actions>
-        <t-button v-if="hasWorkflow" variant="outline" :disabled="loading || workflow === null" @click="openTrigger">
-          <template #icon><t-icon name="refresh" /></template>
+    <div class="wfhead">
+      <div class="wfhead__title">
+        <h1>工作流编辑器</h1>
+        <t-tooltip content="点击节点编辑流水线；节点右侧的 + / 删除用于增删流水线。" placement="top">
+          <t-icon name="info-circle" size="15px" class="wfhead__info" />
+        </t-tooltip>
+      </div>
+      <div class="wfhead__actions">
+        <t-input
+          v-model="workflowSearch"
+          class="wfhead__search"
+          size="small"
+          clearable
+          placeholder="搜索工作流"
+        >
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <t-button v-if="hasWorkflow" size="small" variant="outline" :disabled="loading" @click="openTrigger">
           更新触发方式
         </t-button>
-        <t-button v-else theme="primary" :disabled="loading" @click="openCreate">
+        <t-button size="small" theme="primary" :disabled="loading" @click="openCreate">
           <template #icon><t-icon name="add" /></template>
-          从模板创建工作流
-        </t-button>
-      </template>
-    </PageHeader>
+          新建工作流
+        </t-button>      </div>
+    </div>
 
     <div v-if="loading" class="sec__state">
       <t-loading size="small" text="加载中…" />
@@ -470,40 +451,21 @@ watch(appId, load, { immediate: true })
     </div>
 
     <template v-else>
-      <section class="tk-panel">
-        <div class="tk-panel__head">
-          <span>关系图</span>
-          <span class="u-dim">工作流版本 {{ versionText }}</span>
-        </div>
-        <div class="tk-panel__body">
-          <PipelineGraph :rows="graphRows" editable @edit="onGraphEdit" @remove-pipeline="onGraphRemove" @add-pipeline="onGraphAdd" />
-        </div>
+      <section v-if="visibleRows.length" class="wfcanvas">
+        <TriggerGraph
+          :rows="visibleRows"
+          editable
+          @edit="onGraphEdit"
+          @remove="onGraphRemove"
+          @add="onGraphAdd"
+        />
       </section>
-
-      <section class="tk-panel">
-        <div class="tk-panel__head">
-          <span>流水线</span>
-          <span class="u-dim">只读；触发方式通过「更新触发方式」调整</span>
-        </div>
-        <t-table :data="pipelineRows" :columns="pipelineColumns" row-key="id" size="small" :hover="false">
-          <template #edit="{ row }">
-            <t-button
-              size="small"
-              variant="text"
-              @click="openEdit(workflow?.items.find((item) => item.id === row.id) ?? ciItem!)"
-            >
-              编辑
-            </t-button>
-          </template>
-          <template #enabled="{ row }">
-            <StatusTag
-              kind="setup"
-              :value="row.enabled ? 'complete' : 'not_required'"
-              :text="row.enabled ? '启用' : '停用'"
-            />
-          </template>
-        </t-table>
-      </section>
+      <EmptyState
+        v-else
+        compact
+        title="没有匹配的工作流"
+        description="清空搜索条件后再试。"
+      />
     </template>
 
     <t-dialog v-model:visible="createVisible" header="从模板创建工作流" :footer="false" width="560px" @close="closeCreate">
@@ -668,6 +630,41 @@ watch(appId, load, { immediate: true })
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* ---- Devtron Workflow Editor 头部 ---- */
+.wfhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0 2px;
+}
+.wfhead__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wfhead__title h1 {
+  margin: 0;
+  color: #000a14;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.wfhead__info {
+  color: #767d84;
+  cursor: help;
+}
+.wfhead__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wfhead__search {
+  width: 240px;
+}
+.wfcanvas {
+  min-width: 0;
 }
 .sec__state {
   display: flex;

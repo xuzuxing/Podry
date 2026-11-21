@@ -1,34 +1,51 @@
 <script setup lang="ts">
+/**
+ * 发布历史：对齐真实 Devtron 的 Deployment History 布局。
+ * 左列 = Select Environment + 该环境的发布列表；右侧 = 时间线 + Source/Configuration 页签。
+ */
 import { computed, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import type { SelectValue } from 'tdesign-vue-next'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
-  getDeploymentMetrics,
+  advanceCanary,
+  getConfig,
   listArtifacts,
   listBindings,
+  listBuilds,
+  listCommits,
   listDeployments,
   listEnvironments,
   MockError,
-  advanceCanary,
   promoteDeployment,
   reconcileDeployment,
   rollbackDeployment,
 } from '@/api'
-import type { MetricPoint } from '@/api'
-import EmptyState from '@/components/EmptyState.vue'
-import ErrorState from '@/components/ErrorState.vue'
-import Sparkline from '@/components/Sparkline.vue'
-import StatusTag from '@/components/StatusTag.vue'
-import type { Artifact, Binding, DeployStrategy, Deployment, Environment } from '@/types'
-import { fmtRelative, fmtTime, shortDigest } from '@/utils/format'
+import type {
+  AppConfig,
+  Artifact,
+  Binding,
+  Build,
+  DeployStrategy,
+  Deployment,
+  DeployValues,
+  Environment,
+  GitCommit,
+} from '@/types'
+import { fmtTime, shortDigest } from '@/utils/format'
 
 const route = useRoute()
+const router = useRouter()
 const appId = computed(() => String(route.params.appId ?? ''))
 
-const kindMap: Record<Deployment['kind'], string> = {
-  deploy: '发布',
+/* ---------------- 展示映射 ---------------- */
+type Tone = 'success' | 'failed' | 'progress' | 'unknown'
+
+const kindMap: Record<Deployment['kind'], string> = { deploy: '部署', promote: '晋级', rollback: '回滚' }
+
+const timelineKindMap: Record<Deployment['kind'], string> = {
+  deploy: '部署',
   promote: '晋级',
   rollback: '回滚',
 }
@@ -39,59 +56,65 @@ const strategyMap: Record<DeployStrategy, string> = {
   bluegreen: '蓝绿发布',
 }
 
-const statusMap: Record<Deployment['status'], string> = {
-  queued: '排队中',
-  submitting: '提交中',
-  observing: '观察中',
-  succeeded: '成功',
-  failed: '失败',
-  unknown: '结果未知',
+function toneOfStatus(status: Deployment['status']): Tone {
+  if (status === 'succeeded') return 'success'
+  if (status === 'failed') return 'failed'
+  if (status === 'unknown') return 'unknown'
+  return 'progress'
 }
 
+function labelOfStatus(status: Deployment['status']): string {
+  if (status === 'succeeded') return '成功'
+  if (status === 'failed') return '失败'
+  if (status === 'queued') return '排队中'
+  if (status === 'submitting') return '提交中'
+  if (status === 'observing') return '部署中'
+  return '待核对'
+}
+
+const iconOfTone: Record<Tone, string> = {
+  success: 'check-circle-filled',
+  failed: 'close-circle-filled',
+  progress: 'loading',
+  unknown: 'error-circle-filled',
+}
+
+/* ---------------- 数据 ---------------- */
 const deployments = ref<Deployment[]>([])
-const listLoading = ref(true)
-const listError = ref('')
 const bindings = ref<Binding[]>([])
 const environments = ref<Environment[]>([])
 const artifacts = ref<Artifact[]>([])
-const envFilter = ref('all')
-const selectedId = ref('')
+const builds = ref<Build[]>([])
+const commits = ref<GitCommit[]>([])
+const config = ref<AppConfig | null>(null)
 
-const acting = ref(false)
-const reconciling = ref(false)
-const advancing = ref(false)
-const promoteTargetId = ref('')
-const rollbackReason = ref('')
-const actionError = ref('')
-const actionErrorCode = ref('')
+const loading = ref(true)
+const loadError = ref('')
+const selectedEnvId = ref('')
+const selectedDeploymentId = ref('')
+const activeTab = ref<'source' | 'config'>('source')
 
-const envOptions = computed(() => [
-  { label: '全部环境', value: 'all' },
-  ...environments.value.map((item) => ({ label: item.name, value: item.id })),
-])
+const envOptions = computed(() => environments.value.map((item) => ({ label: item.name, value: item.id })))
 
-function bindingById(id: string): Binding | null {
-  return bindings.value.find((item) => item.id === id) ?? null
+const selectedEnv = computed(() => environments.value.find((item) => item.id === selectedEnvId.value) ?? null)
+const envName = computed(() => selectedEnv.value?.name ?? '')
+
+function deploymentsOfEnv(envId: string): Deployment[] {
+  if (!envId) return []
+  const bindingIds = new Set(bindings.value.filter((item) => item.environmentId === envId).map((item) => item.id))
+  return deployments.value.filter((item) => bindingIds.has(item.bindingId))
 }
 
-function envNameOf(binding: Binding | null): string {
-  if (!binding) return '未绑定环境'
-  return environments.value.find((item) => item.id === binding.environmentId)?.name ?? binding.environmentId
-}
-
-const visibleDeployments = computed(() => {
-  if (envFilter.value === 'all') return deployments.value
-  return deployments.value.filter((item) => bindingById(item.bindingId)?.environmentId === envFilter.value)
-})
+const envDeployments = computed(() => deploymentsOfEnv(selectedEnvId.value))
 
 const detail = computed<Deployment | null>(
-  () => deployments.value.find((item) => item.id === selectedId.value) ?? null,
+  () => envDeployments.value.find((item) => item.id === selectedDeploymentId.value) ?? null,
 )
 
 const detailBinding = computed<Binding | null>(() => {
   const current = detail.value
   if (!current) return null
-  return bindingById(current.bindingId)
+  return bindings.value.find((item) => item.id === current.bindingId) ?? null
 })
 
 const detailArtifact = computed<Artifact | null>(() => {
@@ -100,40 +123,133 @@ const detailArtifact = computed<Artifact | null>(() => {
   return artifacts.value.find((item) => item.id === current.artifactId) ?? null
 })
 
-/* P2：发布指标趋势（mock 序列） */
-const metrics = ref<MetricPoint[]>([])
-const metricsLoading = ref(false)
+const detailBuild = computed<Build | null>(() => {
+  const artifact = detailArtifact.value
+  if (!artifact?.buildId) return null
+  return builds.value.find((item) => item.id === artifact.buildId) ?? null
+})
 
-async function loadMetrics(): Promise<void> {
-  const current = detail.value
-  if (!current) {
-    metrics.value = []
-    return
-  }
-  metricsLoading.value = true
-  try {
-    metrics.value = await getDeploymentMetrics(current.id)
-  } catch {
-    metrics.value = []
-  } finally {
-    metricsLoading.value = false
-  }
+const detailCommit = computed<GitCommit | null>(() => {
+  const sha = detailBuild.value?.commitSha
+  if (!sha) return null
+  return commits.value.find((item) => item.sha === sha) ?? null
+})
+
+const canary = computed(() => detail.value?.canary ?? null)
+
+const statusInfo = computed<{ label: string; tone: Tone }>(() => {
+  const value = detail.value?.status ?? 'unknown'
+  return { label: labelOfStatus(value), tone: toneOfStatus(value) }
+})
+
+/* ---------------- 时间 / 镜像格式化 ---------------- */
+/** 本地化时间：2026-11-21 14:41 */
+function fmtWhen(iso: string | null | undefined): string {
+  return fmtTime(iso)
 }
 
-watch(detail, () => void loadMetrics(), { immediate: true })
+function imageTagOf(imageRef: string): string {
+  const last = imageRef.split('/').pop() ?? imageRef
+  const index = last.lastIndexOf(':')
+  return index >= 0 ? last.slice(index + 1) : last
+}
+
+function shortTag(imageRef: string): string {
+  const tag = imageTagOf(imageRef)
+  return tag.length > 14 ? `…${tag.slice(-12)}` : tag
+}
+
+function shortCommit(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 7) : '—'
+}
+
+const repoUrl = computed(() => config.value?.gitConfig?.repositoryUrl ?? '')
+const repoLabel = computed(() => {
+  const url = repoUrl.value
+  if (!url) return '未配置 Git 源'
+  const withoutProtocol = url.replace(/^[a-z]+:\/\//i, '').replace(/\.git$/i, '')
+  const parts = withoutProtocol.split('/')
+  return parts.slice(-2).join('/')
+})
+const branchLabel = computed(() => config.value?.gitConfig?.branch || '—')
+const commitSha = computed(() => detailBuild.value?.commitSha ?? '')
+const commitSubject = computed(() => detailBuild.value?.commitSubject ?? '')
+const commitAuthor = computed(() => detailCommit.value?.authorName ?? '—')
+const commitWhen = computed(() => fmtWhen(detailCommit.value?.committedAt))
+
+/* ---------------- 配置详情 ---------------- */
+interface ValueRow {
+  key: string
+  value: string
+  overridden: boolean
+}
+
+const valueRows = computed<ValueRow[]>(() => {
+  const appValues: DeployValues = config.value?.deployValues ?? {}
+  const overrides: DeployValues = detailBinding.value?.overrideValues ?? {}
+  const rows: ValueRow[] = []
+
+  function push(key: string, appValue: number | string | undefined, overValue: number | string | undefined): void {
+    if (appValue === undefined && overValue === undefined) return
+    const overridden = overValue !== undefined && String(overValue) !== String(appValue ?? '')
+    rows.push({ key, value: String(overValue ?? appValue), overridden })
+  }
+
+  push('replicaCount', appValues.replicaCount, overrides.replicaCount)
+  push('containerPort', appValues.containerPort, overrides.containerPort)
+  push('host', appValues.host, overrides.host)
+  push('job.backoffLimit', appValues.job?.backoffLimit, overrides.job?.backoffLimit)
+  push('job.activeDeadlineSeconds', appValues.job?.activeDeadlineSeconds, overrides.job?.activeDeadlineSeconds)
+
+  const envKeys = new Set([...Object.keys(appValues.env ?? {}), ...Object.keys(overrides.env ?? {})])
+  for (const key of envKeys) {
+    push(`env.${key}`, appValues.env?.[key], overrides.env?.[key])
+  }
+  return rows
+})
+
+const configDrift = computed(() => {
+  if (!config.value || !detail.value) return false
+  return config.value.version !== detail.value.configVersion
+})
+
+/* ---------------- 动作 ---------------- */
+const acting = ref(false)
+const reconciling = ref(false)
+const advancing = ref(false)
+const promoteOpen = ref(false)
+const rollbackOpen = ref(false)
+const labelOpen = ref(false)
+const promoteTargetId = ref('')
+const rollbackReason = ref('')
+const labelDraft = ref('')
+const actionError = ref('')
+const actionErrorCode = ref('')
+const localLabels = ref<Record<string, string[]>>({})
+
+const currentLabels = computed<string[]>(() => (detail.value ? localLabels.value[detail.value.id] ?? [] : []))
 
 const promoteOptions = computed(() =>
   bindings.value
     .filter((item) => item.id !== detail.value?.bindingId)
     .map((item) => ({
-      label: `${envNameOf(item)} · ${item.target.namespace} / ${item.target.releaseName}`,
+      label: `${environments.value.find((env) => env.id === item.environmentId)?.name ?? item.environmentId} · ${item.target.namespace} / ${item.target.releaseName}`,
       value: item.id,
     })),
 )
 
-const statusText = computed(() => statusMap[detail.value?.status ?? 'queued'])
-
-const canRollback = computed(() => rollbackReason.value.trim().length > 0 && !acting.value)
+const canPromote = computed(() => !!detail.value && detail.value.status === 'succeeded' && promoteOptions.value.length > 0)
+const canRollback = computed(() => {
+  const status = detail.value?.status
+  return status === 'succeeded' || status === 'failed' || status === 'observing'
+})
+const canAdvanceCanary = computed(
+  () =>
+    !!detail.value &&
+    !!canary.value &&
+    detail.value.status === 'observing' &&
+    canary.value.currentStep < canary.value.steps.length - 1,
+)
 
 function errorCodeOf(err: unknown): string {
   return err instanceof MockError ? err.code : ''
@@ -143,50 +259,110 @@ function errorTextOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
 }
 
-async function loadDeployments(): Promise<void> {
-  listLoading.value = true
-  listError.value = ''
+async function copyText(text: string): Promise<void> {
   try {
-    const result = await listDeployments(appId.value)
-    deployments.value = result.items
-    if (selectedId.value && !deployments.value.some((item) => item.id === selectedId.value)) {
-      selectedId.value = ''
-    }
-    // 首次进入自动选中最新一条，避免右侧空白
-    if (!selectedId.value && deployments.value.length) {
-      selectedId.value = deployments.value[0].id
-    }
-  } catch (err) {
-    listError.value = errorTextOf(err, '发布记录加载失败')
-  } finally {
-    listLoading.value = false
+    await navigator.clipboard.writeText(text)
+    MessagePlugin.success('已复制到剪贴板')
+  } catch {
+    MessagePlugin.warning('浏览器未授权剪贴板，请手动选择文本')
   }
 }
 
-async function loadMeta(): Promise<void> {
+function syncEnvQuery(envId: string): void {
+  const query = { ...route.query }
+  if (envId) query.env = envId
+  else delete query.env
+  void router.replace({ query })
+}
+
+function selectEnv(envId: string): void {
+  selectedEnvId.value = envId
+  activeTab.value = 'source'
+  selectedDeploymentId.value = envId ? deploymentsOfEnv(envId)[0]?.id ?? '' : ''
+  syncEnvQuery(envId)
+}
+
+function onEnvChange(value: SelectValue): void {
+  selectEnv(typeof value === 'string' ? value : '')
+}
+
+/* ---------------- 加载 ---------------- */
+async function loadDeployments(): Promise<void> {
+  const result = await listDeployments(appId.value)
+  deployments.value = result.items
+}
+
+async function loadAll(): Promise<void> {
+  loading.value = true
+  loadError.value = ''
   try {
-    const [bindingList, environmentList, artifactList] = await Promise.all([
+    const [result, bindingList, environmentList, artifactList] = await Promise.all([
+      listDeployments(appId.value),
       listBindings(appId.value),
       listEnvironments(),
       listArtifacts(appId.value),
     ])
+    deployments.value = result.items
     bindings.value = bindingList
     environments.value = environmentList
     artifacts.value = artifactList
+
+    const wanted = typeof route.query.env === 'string' ? route.query.env : ''
+    if (wanted && environmentList.some((item) => item.id === wanted)) {
+      selectedEnvId.value = wanted
+    }
+  } catch (err) {
+    loadError.value = errorTextOf(err, '发布记录加载失败')
+  } finally {
+    loading.value = false
+  }
+  void loadSourceMeta()
+}
+
+async function loadSourceMeta(): Promise<void> {
+  try {
+    const [appConfig, buildPage] = await Promise.all([getConfig(appId.value), listBuilds(appId.value)])
+    config.value = appConfig
+    builds.value = buildPage.items
+    const branch = appConfig.gitConfig?.branch
+    commits.value = branch ? await listCommits(branch) : []
   } catch {
-    bindings.value = []
-    environments.value = []
-    artifacts.value = []
+    config.value = null
+    builds.value = []
+    commits.value = []
   }
 }
 
-async function refresh(): Promise<void> {
-  await Promise.all([loadDeployments(), loadMeta()])
+/* ---------------- 动作实现 ---------------- */
+function openPromote(): void {
+  actionError.value = ''
+  actionErrorCode.value = ''
+  promoteTargetId.value = ''
+  promoteOpen.value = true
 }
 
-function onFilterChange(value: SelectValue): void {
-  const next = typeof value === 'string' ? value : 'all'
-  envFilter.value = next
+function openRollback(): void {
+  actionError.value = ''
+  actionErrorCode.value = ''
+  rollbackReason.value = ''
+  rollbackOpen.value = true
+}
+
+function openLabel(): void {
+  labelDraft.value = ''
+  labelOpen.value = true
+}
+
+function saveLabel(): void {
+  const text = labelDraft.value.trim()
+  const current = detail.value
+  if (!text || !current) return
+  localLabels.value = {
+    ...localLabels.value,
+    [current.id]: [...(localLabels.value[current.id] ?? []), text],
+  }
+  labelDraft.value = ''
+  labelOpen.value = false
 }
 
 function onPromoteTargetChange(value: SelectValue): void {
@@ -203,14 +379,58 @@ async function onPromote(): Promise<void> {
   try {
     const created = await promoteDeployment(current.id, target)
     MessagePlugin.success('已提交晋级发布')
-    promoteTargetId.value = ''
+    promoteOpen.value = false
     await loadDeployments()
-    selectedId.value = created.id
+    const targetBinding = bindings.value.find((item) => item.id === created.bindingId)
+    if (targetBinding) selectedEnvId.value = targetBinding.environmentId
+    selectedDeploymentId.value = created.id
+    syncEnvQuery(selectedEnvId.value)
   } catch (err) {
     actionErrorCode.value = errorCodeOf(err)
     actionError.value = errorTextOf(err, '晋级失败')
   } finally {
     acting.value = false
+  }
+}
+
+async function onRollback(): Promise<void> {
+  const current = detail.value
+  const reason = rollbackReason.value.trim()
+  if (!current || !reason || acting.value) return
+  acting.value = true
+  actionError.value = ''
+  actionErrorCode.value = ''
+  try {
+    const created = await rollbackDeployment(current.id, reason)
+    MessagePlugin.success('已提交回滚发布')
+    rollbackOpen.value = false
+    rollbackReason.value = ''
+    await loadDeployments()
+    selectedDeploymentId.value = created.id
+  } catch (err) {
+    actionErrorCode.value = errorCodeOf(err)
+    actionError.value = errorTextOf(err, '回滚失败')
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onReconcile(): Promise<void> {
+  const current = detail.value
+  if (!current || reconciling.value) return
+  reconciling.value = true
+  actionError.value = ''
+  actionErrorCode.value = ''
+  try {
+    const updated = await reconcileDeployment(current.id)
+    MessagePlugin.success(`核对完成：${updated.status === 'succeeded' ? 'release 已就绪' : '仍未就绪'}`)
+    await loadDeployments()
+    selectedDeploymentId.value = updated.id
+  } catch (err) {
+    actionErrorCode.value = errorCodeOf(err)
+    actionError.value = errorTextOf(err, '核对失败')
+  } finally {
+    reconciling.value = false
   }
 }
 
@@ -228,7 +448,7 @@ async function onAdvanceCanary(): Promise<void> {
         : `已推进到 ${updated.canary?.steps[updated.canary.currentStep] ?? 0}%`,
     )
     await loadDeployments()
-    selectedId.value = updated.id
+    selectedDeploymentId.value = updated.id
   } catch (err) {
     actionErrorCode.value = errorCodeOf(err)
     actionError.value = errorTextOf(err, '推进灰度失败')
@@ -237,509 +457,1244 @@ async function onAdvanceCanary(): Promise<void> {
   }
 }
 
-async function onReconcile(): Promise<void> {
-  const current = detail.value
-  if (!current || reconciling.value) return
-  reconciling.value = true
-  actionError.value = ''
-  actionErrorCode.value = ''
-  try {
-    const updated = await reconcileDeployment(current.id)
-    MessagePlugin.success(`核对完成：${updated.status === 'succeeded' ? 'release 已就绪' : '仍未就绪'}`)
-    await loadDeployments()
-    selectedId.value = updated.id
-  } catch (err) {
-    actionErrorCode.value = errorCodeOf(err)
-    actionError.value = errorTextOf(err, '核对失败')
-  } finally {
-    reconciling.value = false
+/* ---------------- 联动 ---------------- */
+/** 环境切换 / 数据刷新后，保证选中的是该环境里最新一条发布 */
+watch(envDeployments, (list) => {
+  if (!selectedDeploymentId.value || !list.some((item) => item.id === selectedDeploymentId.value)) {
+    selectedDeploymentId.value = list[0]?.id ?? ''
   }
-}
-
-async function onRollback(): Promise<void> {
-  const current = detail.value
-  if (!current || !canRollback.value) return
-  acting.value = true
-  actionError.value = ''
-  actionErrorCode.value = ''
-  try {
-    const created = await rollbackDeployment(current.id, rollbackReason.value.trim())
-    MessagePlugin.success('已提交回滚发布')
-    rollbackReason.value = ''
-    await loadDeployments()
-    selectedId.value = created.id
-  } catch (err) {
-    actionErrorCode.value = errorCodeOf(err)
-    actionError.value = errorTextOf(err, '回滚失败')
-  } finally {
-    acting.value = false
-  }
-}
+})
 
 watch(
   appId,
   () => {
-    selectedId.value = ''
+    selectedEnvId.value = ''
+    selectedDeploymentId.value = ''
     promoteTargetId.value = ''
     rollbackReason.value = ''
-    void refresh()
+    actionError.value = ''
+    void loadAll()
   },
   { immediate: true },
 )
 </script>
 
 <template>
-  <div class="deploy">
-    <section class="tk-panel deploy__list">
-      <div class="tk-panel__head">
-        <span>
-          发布记录
-          <span class="u-dim">（{{ visibleDeployments.length }}）</span>
-        </span>
-        <t-button size="small" variant="text" :loading="listLoading" @click="refresh">
-          <template #icon><t-icon name="refresh" /></template>
-          刷新
-        </t-button>
-      </div>
-      <div class="deploy__filter">
-        <t-select :value="envFilter" :options="envOptions" size="small" @change="onFilterChange" />
-      </div>
-      <div class="deploy__scroll">
-        <div v-if="listLoading && !deployments.length" class="deploy__state">
-          <t-loading size="small" />
-          <span class="u-muted">加载发布记录…</span>
-        </div>
-        <ErrorState v-else-if="listError" :message="listError" @retry="refresh" />
-        <EmptyState
-          v-else-if="!visibleDeployments.length"
-          title="当前筛选下没有发布记录"
-          description="在构建发布页选择镜像并确认发布后，这里会出现记录。"
-          compact
+  <div class="dh">
+    <!-- 左列：环境选择 + 发布列表 -->
+    <aside class="dh__side">
+      <div class="dh__side-head">
+        <p class="dh__side-title">选择环境</p>
+        <t-select
+          class="dh-env-select"
+          :value="selectedEnvId"
+          :options="envOptions"
+          placeholder="Select..."
+          clearable
+          @change="onEnvChange"
         />
-        <ul v-else class="deploy-list">
-          <li v-for="item in visibleDeployments" :key="item.id">
-            <button
-              type="button"
-              class="deploy-item"
-              :class="{ 'deploy-item--active': item.id === selectedId }"
-              @click="selectedId = item.id"
-            >
-              <span class="deploy-item__top">
-                <span class="deploy-item__env">{{ envNameOf(bindingById(item.bindingId)) }}</span>
-                <t-tag variant="outline" size="small">{{ kindMap[item.kind] }}</t-tag>
-                <StatusTag class="deploy-item__status" kind="deploy" :value="item.status" />
+      </div>
+
+      <ul v-if="selectedEnv && envDeployments.length" class="dh__deploys">
+        <li v-for="item in envDeployments" :key="item.id">
+          <button
+            type="button"
+            class="dh-row"
+            :class="{ 'dh-row--active': item.id === selectedDeploymentId }"
+            @click="selectedDeploymentId = item.id"
+          >
+            <span class="dh-row__icon" :class="`dh-row__icon--${toneOfStatus(item.status)}`">
+              <t-icon
+                :name="iconOfTone[toneOfStatus(item.status)]"
+                size="16px"
+                :class="toneOfStatus(item.status) === 'progress' ? 'dh-spin' : ''"
+              />
+            </span>
+            <span class="dh-row__body">
+              <span class="dh-row__time">{{ fmtWhen(item.createdAt) }}</span>
+              <span class="dh-row__meta">
+                {{ kindMap[item.kind] }} · {{ shortTag(item.imageRef) }} · {{ item.operator }}
               </span>
-              <span class="deploy-item__meta u-dim">{{ fmtRelative(item.createdAt) }} · {{ item.operator }}</span>
-            </button>
-          </li>
-        </ul>
-      </div>
-    </section>
+            </span>
+          </button>
+        </li>
+      </ul>
+      <p v-else-if="selectedEnv && !loading" class="dh__side-empty">该环境暂无发布记录</p>
+    </aside>
 
-    <section class="tk-panel deploy__detail">
-      <div v-if="!selectedId" class="deploy__state deploy__state--tall">
-        <EmptyState title="选择左侧发布记录查看详情" description="详情包含目标环境、镜像 digest 与晋级/回滚操作。" />
-      </div>
-      <template v-else-if="detail">
-        <div class="deploy-head">
-          <div class="deploy-head__main">
-            <p class="deploy-head__image u-mono">{{ detail.imageRef }}</p>
-            <div class="u-flex u-gap-8">
-              <StatusTag kind="deploy" :value="detail.status" />
-              <t-tag variant="outline" size="small">{{ kindMap[detail.kind] }}</t-tag>
-              <span class="u-dim">操作人 {{ detail.operator }}</span>
-              <span class="u-dim">· {{ fmtTime(detail.createdAt) }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="detail.status === 'failed' || detail.status === 'unknown'" class="deploy__block">
-          <t-alert v-if="detail.status === 'failed'" theme="error" :message="detail.reason || '发布失败，未记录原因'" />
-          <t-alert v-else theme="warning">
-            <div class="deploy-alert">
-              <span>结果未知，需核对实际 release 状态</span>
-              <span v-if="detail.reason" class="u-dim">{{ detail.reason }}</span>
-              <div class="deploy-alert__row">
-                <t-button size="small" theme="primary" variant="outline" :loading="reconciling" @click="onReconcile">
-                  <template #icon><t-icon name="refresh" /></template>
-                  核对结果
-                </t-button>
-                <span class="u-dim">不允许自动重试；核对会读回 Helm release 的实际状态。</span>
+    <!-- 右侧：时间线 + 页签 + 内容 -->
+    <section class="dh__main">
+      <header v-if="detail" class="dh-timeline">
+        <div class="dh-steps">
+          <div class="dh-step">
+            <span class="dh-step__icon"><t-icon name="check-circle-filled" size="16px" /></span>
+            <div class="dh-step__body">
+              <div class="dh-step__line">
+                <span class="dh-step__strong">触发</span>
+                <span class="dh-step__dot">•</span>
+                <span>{{ timelineKindMap[detail.kind] }}</span>
+                <span class="dh-step__arrow">→</span>
+                <span class="dh-step__strong">{{ envName }}</span>
+                <span class="dh-step__meta">{{ fmtWhen(detail.createdAt) }}</span>
+                <span class="dh-step__dot">•</span>
+                <span class="dh-step__meta">{{ detail.operator }}</span>
+                <span class="dh-chip" :title="detail.imageRef">
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                    <rect x="1" y="1.5" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="4.9" y="1.5" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="8.8" y="1.5" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="1" y="5.4" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="4.9" y="5.4" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="8.8" y="5.4" width="2.2" height="2.2" rx="0.3" />
+                    <rect x="1" y="9.3" width="10" height="1.6" rx="0.5" />
+                  </svg>
+                  <span>{{ shortTag(detail.imageRef) }}</span>
+                </span>
               </div>
             </div>
-          </t-alert>
+          </div>
+
+          <div class="dh-step">
+            <span class="dh-step__icon dh-step__icon--last" :class="`dh-step__icon--${statusInfo.tone}`">
+              <t-icon
+                :name="iconOfTone[statusInfo.tone]"
+                size="16px"
+                :class="statusInfo.tone === 'progress' ? 'dh-spin' : ''"
+              />
+            </span>
+            <div class="dh-step__body">
+              <div class="dh-step__line">
+                <span class="dh-step__status" :class="`dh-step__status--${statusInfo.tone}`">
+                  {{ statusInfo.label }}
+                </span>
+                <span class="dh-step__meta">{{ fmtWhen(detail.createdAt) }}</span>
+              </div>
+              <p
+                v-if="detail.reason && (detail.status === 'failed' || detail.status === 'unknown')"
+                class="dh-step__reason"
+                :class="`dh-step__reason--${statusInfo.tone}`"
+              >
+                {{ detail.reason }}
+              </p>
+            </div>
+          </div>
         </div>
 
-        <div class="deploy__block">
-          <div class="deploy-metrics__head">
-            <span class="deploy__label">近 6 小时指标</span>
-            <t-button size="small" variant="text" :loading="metricsLoading" @click="loadMetrics">刷新</t-button>
-          </div>
-          <div class="deploy-metrics">
-            <div class="deploy-metric">
-              <span class="deploy-metric__label">CPU 使用率</span>
-              <Sparkline :values="metrics.map((point) => point.cpu)" unit="%" />
-            </div>
-            <div class="deploy-metric">
-              <span class="deploy-metric__label">内存（MiB）</span>
-              <Sparkline :values="metrics.map((point) => point.memory)" unit="" tone="success" />
-            </div>
-            <div class="deploy-metric">
-              <span class="deploy-metric__label">副本数</span>
-              <Sparkline :values="metrics.map((point) => point.replicas)" unit="" tone="warning" />
-            </div>
-          </div>
-          <p class="u-dim deploy-metrics__hint">
-            指标为 mock 序列（{{ metrics.length }} 个采样点）；接入后来源为 metrics-server / Prometheus。
+        <div class="dh-actions">
+          <t-button
+            v-if="detail.status === 'unknown'"
+            size="small"
+            variant="outline"
+            :loading="reconciling"
+            @click="onReconcile"
+          >
+            核对结果
+          </t-button>
+          <t-button v-if="canPromote" size="small" variant="outline" @click="openPromote">晋级</t-button>
+          <t-button v-if="canRollback" size="small" variant="outline" theme="danger" @click="openRollback">回滚</t-button>
+        </div>
+      </header>
+
+      <nav v-if="selectedEnv" class="dh-tabs">
+        <button
+          type="button"
+          class="dh-tab"
+          :class="{ 'dh-tab--active': activeTab === 'source' }"
+          @click="activeTab = 'source'"
+        >
+          源码
+        </button>
+        <button
+          type="button"
+          class="dh-tab"
+          :class="{ 'dh-tab--active': activeTab === 'config' }"
+          @click="activeTab = 'config'"
+        >
+          配置
+        </button>
+      </nav>
+
+      <div class="dh-content" :class="{ 'dh-content--plain': !detail }">
+        <div v-if="loading" class="dh-loading"><t-loading size="small" /><span>加载发布记录…</span></div>
+
+        <div v-else-if="loadError" class="dh-loading">
+          <t-icon name="error-circle" size="20px" class="dh-loading__error" />
+          <span>{{ loadError }}</span>
+          <t-button size="small" variant="outline" @click="loadAll">重试</t-button>
+        </div>
+
+        <!-- 未选环境 / 无发布：空态 -->
+        <div v-else-if="!selectedEnv" class="dh-empty">
+          <svg class="dh-empty__art" viewBox="0 0 240 150" fill="none" aria-hidden="true">
+            <rect x="52" y="18" width="44" height="30" rx="4" fill="#1c3f8f" />
+            <path d="M67 28l14 14M81 28L67 42" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
+            <rect x="110" y="8" width="44" height="30" rx="4" fill="#1c3f8f" />
+            <circle cx="132" cy="23" r="8" fill="#f4a623" />
+            <path d="M132 18.5v5.5" stroke="#1c3f8f" stroke-width="2" stroke-linecap="round" />
+            <circle cx="132" cy="27.5" r="1.2" fill="#1c3f8f" />
+            <rect x="184" y="82" width="4" height="30" rx="2" fill="#c7d3e8" />
+            <rect x="148" y="108" width="40" height="4" rx="2" fill="#c7d3e8" />
+            <rect x="185" y="112" width="3" height="12" fill="#c7d3e8" />
+            <circle cx="165" cy="62" r="10" fill="#f6b48c" />
+            <path d="M154 64c0-9 5-14 11-14s11 5 11 14c-3-6-6-8-11-8s-8 2-11 8Z" fill="#d6452f" />
+            <rect x="161" y="70" width="8" height="10" fill="#f6b48c" />
+            <path d="M153 108c0-16 5-28 12-28s12 12 12 28h-24Z" fill="#1f5bd6" />
+            <path d="M156 90c-9 2-18 6-24 8" stroke="#1f5bd6" stroke-width="6" stroke-linecap="round" />
+            <path d="M164 108h-21" stroke="#1d4ed8" stroke-width="9" stroke-linecap="round" />
+            <path d="M143 108v20" stroke="#1d4ed8" stroke-width="9" stroke-linecap="round" />
+            <rect x="135" y="126" width="15" height="4" rx="2" fill="#0f2350" />
+            <rect x="88" y="76" width="40" height="28" rx="2" fill="#12306b" />
+            <path d="M82 104h52l-3 3H85l-3-3Z" fill="#9fb2d4" />
+            <rect x="40" y="118" width="160" height="3" rx="1.5" fill="#c7d3e8" />
+            <rect x="50" y="121" width="3" height="20" fill="#c7d3e8" />
+            <rect x="187" y="121" width="3" height="20" fill="#c7d3e8" />
+          </svg>
+          <p class="dh-empty__title">
+            {{ environments.length ? '未选择环境' : '没有可用环境' }}
+          </p>
+          <p class="dh-empty__desc">
+            {{
+              environments.length
+                ? '请选择一个环境，查看该环境的发布记录。'
+                : 'Create an environment and bind this application first.'
+            }}
           </p>
         </div>
 
-        <div class="deploy__block">
-          <dl class="tk-kv">
-            <dt>环境绑定</dt>
-            <dd>
-              <template v-if="detailBinding">
-                {{ envNameOf(detailBinding) }} · {{ detailBinding.target.namespace }} /
-                {{ detailBinding.target.releaseName }}
-              </template>
-              <template v-else>—</template>
-            </dd>
-            <dt>集群 / 命名空间</dt>
-            <dd class="u-mono">{{ detailBinding ? `${detailBinding.target.clusterId} / ${detailBinding.target.namespace}` : '—' }}</dd>
-            <dt>releaseName</dt>
-            <dd class="u-mono">{{ detailBinding?.target.releaseName ?? '—' }}</dd>
-            <dt>镜像 digest</dt>
-            <dd class="u-mono">{{ detailArtifact ? shortDigest(detailArtifact.digest) : '—' }}</dd>
-            <dt>配置版本</dt>
-            <dd>v{{ detail.configVersion }}</dd>
-            <dt>Helm revision</dt>
-            <dd>{{ detail.helmRevision ?? '—' }}</dd>
-            <dt>类型</dt>
-            <dd>{{ kindMap[detail.kind] }}</dd>
-            <dt>发布策略</dt>
-            <dd>{{ strategyMap[detail.strategy ?? 'rolling'] }}</dd>
-          </dl>
+        <div v-else-if="!detail" class="dh-empty">
+          <svg class="dh-empty__art" viewBox="0 0 240 150" fill="none" aria-hidden="true">
+            <rect x="52" y="18" width="44" height="30" rx="4" fill="#1c3f8f" />
+            <path d="M67 28l14 14M81 28L67 42" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
+            <rect x="110" y="8" width="44" height="30" rx="4" fill="#1c3f8f" />
+            <circle cx="132" cy="23" r="8" fill="#f4a623" />
+            <path d="M132 18.5v5.5" stroke="#1c3f8f" stroke-width="2" stroke-linecap="round" />
+            <circle cx="132" cy="27.5" r="1.2" fill="#1c3f8f" />
+            <rect x="184" y="82" width="4" height="30" rx="2" fill="#c7d3e8" />
+            <rect x="148" y="108" width="40" height="4" rx="2" fill="#c7d3e8" />
+            <rect x="185" y="112" width="3" height="12" fill="#c7d3e8" />
+            <circle cx="165" cy="62" r="10" fill="#f6b48c" />
+            <path d="M154 64c0-9 5-14 11-14s11 5 11 14c-3-6-6-8-11-8s-8 2-11 8Z" fill="#d6452f" />
+            <rect x="161" y="70" width="8" height="10" fill="#f6b48c" />
+            <path d="M153 108c0-16 5-28 12-28s12 12 12 28h-24Z" fill="#1f5bd6" />
+            <path d="M156 90c-9 2-18 6-24 8" stroke="#1f5bd6" stroke-width="6" stroke-linecap="round" />
+            <path d="M164 108h-21" stroke="#1d4ed8" stroke-width="9" stroke-linecap="round" />
+            <path d="M143 108v20" stroke="#1d4ed8" stroke-width="9" stroke-linecap="round" />
+            <rect x="135" y="126" width="15" height="4" rx="2" fill="#0f2350" />
+            <rect x="88" y="76" width="40" height="28" rx="2" fill="#12306b" />
+            <path d="M82 104h52l-3 3H85l-3-3Z" fill="#9fb2d4" />
+            <rect x="40" y="118" width="160" height="3" rx="1.5" fill="#c7d3e8" />
+            <rect x="50" y="121" width="3" height="20" fill="#c7d3e8" />
+            <rect x="187" y="121" width="3" height="20" fill="#c7d3e8" />
+          </svg>
+          <p class="dh-empty__title">No deployment found</p>
+          <p class="dh-empty__desc">This environment has no CD deployment yet. Pick another environment from the list.</p>
+        </div>
 
-          <div v-if="detail.canary" class="deploy-canary">
-            <div class="deploy-canary__head">
-              <span class="deploy-canary__title">灰度进度</span>
-              <span class="u-dim">
-                第 {{ detail.canary.currentStep + 1 }} / {{ detail.canary.steps.length }} 档 · 当前
-                {{ detail.canary.steps[detail.canary.currentStep] }}%
+        <!-- Source 页签 -->
+        <div v-else-if="activeTab === 'source'" class="dh-source">
+          <article class="dh-card">
+            <header class="dh-repo">
+              <t-icon name="logo-github" size="16px" class="dh-repo__icon" />
+              <span class="dh-repo__name">{{ repoLabel }}</span>
+              <span class="dh-repo__slash">/</span>
+              <t-icon name="git-branch" size="14px" class="dh-repo__branch-icon" />
+              <span class="dh-repo__branch">{{ branchLabel }}</span>
+              <t-tooltip :content="repoUrl || '未配置 Git 源'">
+                <t-icon name="info-circle" size="14px" class="dh-repo__info" />
+              </t-tooltip>
+            </header>
+
+            <div class="dh-commit">
+              <template v-if="commitSha">
+                <span class="dh-sha">{{ shortCommit(commitSha) }}</span>
+                <p class="dh-commit__subject">{{ commitSubject }}</p>
+                <p class="dh-commit__line">
+                  <t-icon name="user" size="13px" />
+                  <span>{{ commitAuthor }}</span>
+                </p>
+                <p class="dh-commit__line">
+                  <t-icon name="time" size="13px" />
+                  <span>{{ commitWhen }}</span>
+                </p>
+              </template>
+              <p v-else class="dh-commit__empty">暂无数据 · 该提交没有可用的源码信息</p>
+            </div>
+          </article>
+
+          <div class="dh-chain" aria-hidden="true">
+            <span class="dh-chain__line"></span>
+            <span class="dh-chain__node"><t-icon name="arrow-down" size="12px" /></span>
+            <span class="dh-chain__line"></span>
+          </div>
+
+          <article class="dh-card dh-artifact">
+            <div class="dh-artifact__main">
+              <span class="dh-artifact__badge">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0066cc" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 8.4 12 3 3 8.4v7.2L12 21l9-5.4V8.4Z" />
+                  <path d="M3.3 8.5 12 13.7l8.7-5.2M12 21v-7.3" />
+                </svg>
+              </span>
+              <div class="dh-artifact__body">
+                <p class="dh-artifact__tag">
+                  <span>{{ imageTagOf(detail.imageRef) }}</span>
+                  <button type="button" class="dh-copy" title="复制 tag" @click="copyText(imageTagOf(detail.imageRef))">
+                    <t-icon name="copy" size="12px" />
+                  </button>
+                </p>
+                <p class="dh-artifact__ref">
+                  <span>{{ detail.imageRef }}</span>
+                  <button type="button" class="dh-copy" title="复制镜像地址" @click="copyText(detail.imageRef)">
+                    <t-icon name="copy" size="12px" />
+                  </button>
+                </p>
+              </div>
+            </div>
+
+            <div class="dh-labels">
+              <span v-for="label in currentLabels" :key="label" class="dh-label">{{ label }}</span>
+              <button type="button" class="dh-addlabel" @click="openLabel">+ 添加标签/备注</button>
+            </div>
+          </article>
+        </div>
+
+        <!-- Configuration 页签 -->
+        <div v-else class="dh-config">
+          <p class="dh-cfg-title">Configurations used for this deployment trigger</p>
+          <p v-if="configDrift" class="dh-drift">
+            本次部署使用配置 v{{ detail.configVersion }}，当前应用配置已更新到 v{{ config?.version }}。
+          </p>
+
+          <section class="dh-card dh-spec">
+            <div class="dh-spec__field dh-spec__field--wide">
+              <span class="dh-spec__label">Image</span>
+              <span class="dh-spec__value dh-mono">{{ detail.imageRef }}</span>
+              <span v-if="detailArtifact" class="dh-spec__sub dh-mono">
+                digest {{ shortDigest(detailArtifact.digest) }}
               </span>
             </div>
-            <div class="deploy-canary__steps">
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Config version</span>
+              <span class="dh-spec__value"><span class="dh-pill">v{{ detail.configVersion }}</span></span>
+            </div>
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Helm revision</span>
+              <span class="dh-spec__value">{{ detail.helmRevision ?? '—' }}</span>
+            </div>
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Cluster / Namespace</span>
+              <span class="dh-spec__value dh-mono">
+                {{ detailBinding ? `${detailBinding.target.clusterId} / ${detailBinding.target.namespace}` : '—' }}
+              </span>
+            </div>
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Release name</span>
+              <span class="dh-spec__value dh-mono">{{ detailBinding?.target.releaseName ?? '—' }}</span>
+            </div>
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Deployment type</span>
+              <span class="dh-spec__value">{{ timelineKindMap[detail.kind] }}</span>
+            </div>
+            <div class="dh-spec__field">
+              <span class="dh-spec__label">Strategy</span>
+              <span class="dh-spec__value">{{ strategyMap[detail.strategy ?? 'rolling'] }}</span>
+            </div>
+            <div class="dh-spec__field dh-spec__field--wide">
+              <span class="dh-spec__label">触发人</span>
+              <span class="dh-spec__value">{{ detail.operator }} · {{ fmtWhen(detail.createdAt) }}</span>
+            </div>
+            <div class="dh-spec__field dh-spec__field--wide">
+              <span class="dh-spec__label">Status</span>
+              <span class="dh-spec__value">
+                <span class="dh-status-dot" :class="`dh-status-dot--${statusInfo.tone}`"></span>
+                {{ statusInfo.label }}
+                <span v-if="detail.reason" class="dh-spec__hint">{{ detail.reason }}</span>
+              </span>
+            </div>
+          </section>
+
+          <p class="dh-cfg-title dh-cfg-title--sub">Deployment values</p>
+          <section class="dh-card dh-spec">
+            <div v-for="row in valueRows" :key="row.key" class="dh-spec__field">
+              <span class="dh-spec__label dh-mono">{{ row.key }}</span>
+              <span class="dh-spec__value">
+                <span class="dh-mono">{{ row.value }}</span>
+                <span v-if="row.overridden" class="dh-badge dh-badge--override">环境覆盖</span>
+                <span v-else class="dh-badge">应用默认</span>
+              </span>
+            </div>
+            <p v-if="!valueRows.length" class="dh-cfg-empty">该环境未设置部署值，使用应用默认配置。</p>
+          </section>
+
+          <section v-if="canary" class="dh-card dh-canary">
+            <div class="dh-canary__head">
+              <span class="dh-canary__title">灰度进度</span>
+              <span class="dh-canary__hint">
+                第 {{ canary.currentStep + 1 }} / {{ canary.steps.length }} 档 · 当前
+                {{ canary.steps[canary.currentStep] }}%
+              </span>
+            </div>
+            <div class="dh-canary__steps">
               <span
-                v-for="(step, index) in detail.canary.steps"
+                v-for="(step, index) in canary.steps"
                 :key="step"
-                class="deploy-canary__step"
+                class="dh-canary__step"
                 :class="{
-                  'deploy-canary__step--done': index <= detail.canary.currentStep,
-                  'deploy-canary__step--current': index === detail.canary.currentStep,
+                  'dh-canary__step--done': index <= canary.currentStep,
+                  'dh-canary__step--current': index === canary.currentStep,
                 }"
               >
                 {{ step }}%
               </span>
             </div>
-            <div class="deploy-canary__actions">
+            <div class="dh-canary__actions">
               <t-button
-                v-if="detail.status === 'observing' && detail.canary.currentStep < detail.canary.steps.length - 1"
+                v-if="canAdvanceCanary"
                 size="small"
                 theme="primary"
                 variant="outline"
                 :loading="advancing"
                 @click="onAdvanceCanary"
               >
-                推进到 {{ detail.canary.steps[detail.canary.currentStep + 1] }}%
+                推进到 {{ canary.steps[canary.currentStep + 1] }}%
               </t-button>
-              <span v-else-if="detail.status !== 'observing'" class="u-dim">灰度已结束（{{ statusText }}）。</span>
-              <span v-else class="u-dim">已到最后一档，等待观察窗口结束。</span>
+              <span v-else-if="detail.status !== 'observing'" class="dh-canary__hint">
+                灰度已结束（{{ statusInfo.label }}）。
+              </span>
+              <span v-else class="dh-canary__hint">已到最后一档，等待观察窗口结束。</span>
             </div>
-          </div>
+          </section>
 
-          <p v-else-if="detail.strategy === 'bluegreen'" class="deploy-canary__note">
-            蓝绿：green 版本验证通过后一次性切流；回滚即切回 blue 版本。
-          </p>
-        </div>
-
-        <div class="deploy__block deploy-actions">
-          <div v-if="promoteOptions.length" class="deploy-actions__row">
-            <div class="deploy-actions__info">
-              <p class="deploy-actions__title">晋级到其他环境</p>
-              <p class="u-dim">复用当前镜像与配置版本，在目标环境新建 release。</p>
-            </div>
-            <div class="deploy-actions__form">
-              <t-select
-                class="deploy-actions__select"
-                :value="promoteTargetId"
-                :options="promoteOptions"
-                placeholder="选择目标环境"
-                size="small"
-                @change="onPromoteTargetChange"
-              />
-              <t-button
-                theme="primary"
-                variant="outline"
-                size="small"
-                :disabled="!promoteTargetId || acting"
-                :loading="acting"
-                @click="onPromote"
-              >
-                <template #icon><t-icon name="arrow-right" /></template>
-                确认晋级
-              </t-button>
-            </div>
-          </div>
-          <p v-else class="u-muted">当前应用没有其他可晋级的目标环境。</p>
-
-          <div class="deploy-actions__row">
-            <div class="deploy-actions__info">
-              <p class="deploy-actions__title">回滚到此版本</p>
-              <p class="u-dim">填写回滚原因，将在同一环境重新发布该镜像。</p>
-            </div>
-            <div class="deploy-actions__form">
-              <t-input v-model="rollbackReason" class="deploy-actions__input" placeholder="回滚原因（必填）" size="small" />
-              <t-button
-                theme="danger"
-                variant="outline"
-                size="small"
-                :disabled="!canRollback"
-                :loading="acting"
-                @click="onRollback"
-              >
-                <template #icon><t-icon name="rollback" /></template>
-                确认回滚
-              </t-button>
-            </div>
-          </div>
-
-          <p v-if="actionError" class="deploy-actions__error">
+          <p v-if="actionError" class="dh-action-error">
             {{ actionError }}
-            <span v-if="actionErrorCode" class="u-mono u-dim">（{{ actionErrorCode }}）</span>
+            <span v-if="actionErrorCode" class="dh-mono">（{{ actionErrorCode }}）</span>
           </p>
         </div>
-      </template>
+
+        <p v-if="detail && activeTab === 'source' && actionError" class="dh-action-error">
+          {{ actionError }}
+          <span v-if="actionErrorCode" class="dh-mono">（{{ actionErrorCode }}）</span>
+        </p>
+      </div>
     </section>
   </div>
+
+  <!-- 晋级 -->
+  <t-dialog
+    v-model:visible="promoteOpen"
+    header="晋级到其他环境"
+    width="480px"
+    :footer="false"
+    :close-on-overlay-click="false"
+  >
+    <div class="dh-dialog">
+      <p class="dh-dialog__hint">复用当前镜像与配置版本，在目标环境新建 release。</p>
+      <t-select
+        :value="promoteTargetId"
+        :options="promoteOptions"
+        placeholder="选择目标环境"
+        @change="onPromoteTargetChange"
+      />
+      <p v-if="actionError" class="dh-dialog__error">
+        {{ actionError }}
+        <span v-if="actionErrorCode" class="dh-mono">（{{ actionErrorCode }}）</span>
+      </p>
+      <div class="dh-dialog__foot">
+        <t-button variant="outline" @click="promoteOpen = false">取消</t-button>
+        <t-button theme="primary" :disabled="!promoteTargetId || acting" :loading="acting" @click="onPromote">
+          确认晋级
+        </t-button>
+      </div>
+    </div>
+  </t-dialog>
+
+  <!-- 回滚 -->
+  <t-dialog
+    v-model:visible="rollbackOpen"
+    header="回滚到此版本"
+    width="480px"
+    :footer="false"
+    :close-on-overlay-click="false"
+  >
+    <div class="dh-dialog">
+      <p class="dh-dialog__hint">填写回滚原因，将在同一环境重新发布该镜像。</p>
+      <t-input v-model="rollbackReason" placeholder="回滚原因（必填）" />
+      <p v-if="actionError" class="dh-dialog__error">
+        {{ actionError }}
+        <span v-if="actionErrorCode" class="dh-mono">（{{ actionErrorCode }}）</span>
+      </p>
+      <div class="dh-dialog__foot">
+        <t-button variant="outline" @click="rollbackOpen = false">取消</t-button>
+        <t-button
+          theme="danger"
+          :disabled="!rollbackReason.trim() || acting"
+          :loading="acting"
+          @click="onRollback"
+        >
+          确认回滚
+        </t-button>
+      </div>
+    </div>
+  </t-dialog>
+
+  <!-- 标签 / 备注 -->
+  <t-dialog v-model:visible="labelOpen" header="添加标签/备注" width="440px" :footer="false">
+    <div class="dh-dialog">
+      <p class="dh-dialog__hint">mock 阶段仅记录在当前会话中，接入元数据接口后会持久化。</p>
+      <t-input v-model="labelDraft" placeholder="例如：已验证支付回调" @enter="saveLabel" />
+      <div class="dh-dialog__foot">
+        <t-button variant="outline" @click="labelOpen = false">取消</t-button>
+        <t-button theme="primary" :disabled="!labelDraft.trim()" @click="saveLabel">添加</t-button>
+      </div>
+    </div>
+  </t-dialog>
 </template>
 
 <style scoped>
-.deploy {
+/* ---------------- 整页骨架 ---------------- */
+.dh {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: 296px minmax(0, 1fr);
+  height: calc(100vh - 130px);
+  min-height: 480px;
+  margin: -12px -16px -24px;
+  overflow: hidden;
+  color: #000a14;
+  background: #ffffff;
 }
-.deploy__list {
+
+/* ---------------- 左列 ---------------- */
+.dh__side {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow-y: auto;
+  background: #ffffff;
+  border-right: 1px solid #e6e9ef;
 }
-.deploy__filter {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--tk-border);
+.dh__side-head {
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid #e6e9ef;
 }
-.deploy__scroll {
-  max-height: 640px;
-  overflow: auto;
+.dh__side-title {
+  margin: 0 0 8px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 16px;
 }
-.deploy__state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 28px 12px;
-}
-.deploy__state--tall {
-  min-height: 260px;
-}
-.deploy__detail {
-  min-width: 0;
-  min-height: 320px;
-}
-.deploy-list {
-  display: flex;
-  flex-direction: column;
-}
-.deploy-list > li + li {
-  border-top: 1px solid var(--tk-border);
-}
-.deploy-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.dh-env-select {
   width: 100%;
-  padding: 8px 10px;
+}
+.dh-env-select :deep(.t-input) {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+  border-color: #d0d4d9;
+  border-radius: 4px;
+}
+.dh-env-select :deep(.t-input:hover) {
+  border-color: #0066cc;
+}
+.dh__deploys {
+  display: flex;
+  flex-direction: column;
+}
+.dh__side-empty {
+  margin: 12px 16px;
+  color: #596168;
+  font-size: 12px;
+}
+.dh-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 10px 16px;
   font: inherit;
-  color: var(--tk-text);
+  color: inherit;
   text-align: left;
   background: none;
   border: 0;
-  border-left: 2px solid transparent;
   cursor: pointer;
 }
-.deploy-item:hover {
-  background: var(--tk-bg);
+.dh-row:hover {
+  background: #f7f9fc;
 }
-.deploy-item--active {
-  background: var(--tk-primary-weak);
-  border-left-color: var(--tk-primary);
+.dh-row--active {
+  background: #f0f7ff;
 }
-.deploy-item__top {
-  display: flex;
+.dh-row__icon {
+  display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: 6px;
+  height: 18px;
+  color: #8a94a6;
 }
-.deploy-item__env {
-  font-weight: 600;
+.dh-row__icon--success {
+  color: #2ba471;
 }
-.deploy-item__status {
-  margin-left: auto;
+.dh-row__icon--failed {
+  color: #d54941;
 }
-.deploy-item__meta {
-  font-size: 11px;
+.dh-row__icon--progress,
+.dh-row__icon--unknown {
+  color: #e37318;
 }
-.deploy-head {
+.dh-row__body {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  border-bottom: 1px solid var(--tk-border);
-}
-.deploy-head__main {
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
-.deploy-head__image {
-  margin: 0 0 6px;
+.dh-row__time {
+  color: #000a14;
   font-size: 13px;
   font-weight: 600;
-  word-break: break-all;
+  line-height: 18px;
 }
-.deploy__block {
-  padding: 12px;
-}
-.deploy__block + .deploy__block {
-  border-top: 1px solid var(--tk-border);
-}
-.deploy-metrics__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.deploy-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
-}
-.deploy-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.deploy-metric__label {
-  color: var(--tk-text-2);
+.dh-row__meta {
+  overflow: hidden;
+  color: #596168;
   font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.deploy-metrics__hint {
-  margin: 8px 0 0;
-  font-size: 11px;
-}
-.deploy-alert {
+
+/* ---------------- 右侧主区 ---------------- */
+.dh__main {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  background: #ffffff;
 }
-.deploy-alert__row {
+.dh-timeline {
   display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.deploy-canary {
-  margin-top: 12px;
-  padding: 10px 12px;
-  background: #f7f9fc;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.deploy-canary__head {
-  display: flex;
-  align-items: center;
+  gap: 16px;
+  align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 8px;
+  padding: 16px 20px 12px 24px;
 }
-.deploy-canary__title {
-  font-weight: 600;
-}
-.deploy-canary__steps {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-.deploy-canary__step {
-  padding: 2px 8px;
-  color: var(--tk-text-2);
-  font-size: 12px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: 10px;
-}
-.deploy-canary__step--done {
-  color: var(--tk-primary);
-  border-color: #b9d0f5;
-  background: #eef4fd;
-}
-.deploy-canary__step--current {
-  color: #fff;
-  background: var(--tk-primary);
-  border-color: var(--tk-primary);
-}
-.deploy-canary__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.deploy-canary__note {
-  margin: 10px 0 0;
-  color: var(--tk-text-2);
-}
-.deploy-actions {
+.dh-steps {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-.deploy-actions__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.deploy-actions__info {
+  gap: 20px;
   min-width: 0;
 }
-.deploy-actions__title {
-  margin: 0;
+.dh-step {
+  position: relative;
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.dh-step:first-child::after {
+  content: '';
+  position: absolute;
+  top: 20px;
+  left: 7px;
+  width: 1px;
+  height: 16px;
+  background: #c7ced9;
+}
+.dh-step__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 18px;
+  color: #2ba471;
+}
+.dh-step__icon--success {
+  color: #2ba471;
+}
+.dh-step__icon--failed {
+  color: #d54941;
+}
+.dh-step__icon--progress,
+.dh-step__icon--unknown {
+  color: #e37318;
+}
+.dh-step__body {
+  min-width: 0;
+}
+.dh-step__line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 18px;
+  color: #3b444c;
+  font-size: 13px;
+  line-height: 18px;
+}
+.dh-step__strong {
+  color: #000a14;
   font-weight: 600;
 }
-.deploy-actions__info p {
-  margin: 2px 0 0;
+.dh-step__dot {
+  color: #8a94a6;
 }
-.deploy-actions__form {
-  display: flex;
+.dh-step__arrow {
+  color: #596168;
+}
+.dh-step__meta {
+  color: #596168;
+  font-size: 12px;
+}
+.dh-step__status {
+  font-weight: 600;
+}
+.dh-step__status--success {
+  color: #2ba471;
+}
+.dh-step__status--failed {
+  color: #d54941;
+}
+.dh-step__status--progress,
+.dh-step__status--unknown {
+  color: #e37318;
+}
+.dh-step__reason {
+  margin: 4px 0 0;
+  color: #d54941;
+  font-size: 12px;
+  line-height: 16px;
+}
+.dh-step__reason--unknown {
+  color: #e37318;
+}
+.dh-chip {
+  display: inline-flex;
+  gap: 4px;
   align-items: center;
-  gap: 8px;
+  height: 20px;
+  padding: 0 7px;
+  color: #0066cc;
+  font-family: var(--tk-mono);
+  font-size: 11px;
+  background: #eaf2ff;
+  border-radius: 3px;
+}
+.dh-chip svg {
   flex: none;
+  color: #2f7bff;
 }
-.deploy-actions__select {
-  width: 260px;
+.dh-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  padding-top: 1px;
 }
-.deploy-actions__input {
+.dh-spin {
+  animation: dh-spin 1.1s linear infinite;
+}
+@keyframes dh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------- 页签 ---------------- */
+.dh-tabs {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  height: 44px;
+  padding: 0 24px 0 53px;
+  background: #ffffff;
+  border-bottom: 1px solid #e6e9ef;
+}
+.dh-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  padding: 0;
+  color: #3b444c;
+  font: inherit;
+  font-size: 13px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.dh-tab:hover {
+  color: #0066cc;
+}
+.dh-tab--active {
+  color: #0066cc;
+  font-weight: 600;
+}
+.dh-tab--active::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: #0066cc;
+}
+
+/* ---------------- 内容区 ---------------- */
+.dh-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  background: #f2f4f7;
+}
+.dh-content--plain {
+  background: #ffffff;
+}
+.dh-loading {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  color: #596168;
+  font-size: 13px;
+}
+.dh-loading__error {
+  color: #d54941;
+}
+
+/* ---------------- 空态 ---------------- */
+.dh-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 24px 24px 64px;
+  text-align: center;
+}
+.dh-empty__art {
   width: 240px;
+  height: 150px;
+  margin-bottom: 10px;
 }
-.deploy-actions__error {
+.dh-empty__title {
   margin: 0;
-  color: var(--tk-danger);
+  color: #3b444c;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+.dh-empty__desc {
+  max-width: 340px;
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* ---------------- Source ---------------- */
+.dh-source {
+  display: flex;
+  flex-direction: column;
+}
+.dh-card {
+  max-width: 800px;
+  background: #ffffff;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
+}
+.dh-repo {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  height: 44px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-bottom: 1px solid #e6e9ef;
+}
+.dh-repo__icon {
+  color: #24292f;
+}
+.dh-repo__name {
+  color: #000a14;
+  font-weight: 600;
+}
+.dh-repo__slash {
+  color: #8a94a6;
+}
+.dh-repo__branch-icon,
+.dh-repo__branch {
+  color: #3b444c;
+  font-size: 12px;
+}
+.dh-repo__info {
+  margin-left: 2px;
+  color: #8a94a6;
+  cursor: help;
+}
+.dh-commit {
+  padding: 14px 16px 16px;
+}
+.dh-sha {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  color: #0066cc;
+  font-family: var(--tk-mono);
+  font-size: 11px;
+  background: #eaf2ff;
+  border-radius: 3px;
+}
+.dh-commit__subject {
+  margin: 10px 0 8px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  word-break: break-word;
+}
+.dh-commit__line {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0 0 4px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 16px;
+}
+.dh-commit__line:last-child {
+  margin-bottom: 0;
+}
+.dh-commit__empty {
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+.dh-chain {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  max-width: 800px;
+  height: 46px;
+  padding: 0;
+}
+.dh-chain__line {
+  flex: 1;
+  height: 0;
+  border-top: 1px dashed #c7ced9;
+}
+.dh-chain__node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: #596168;
+  background: #ffffff;
+  border: 1px solid #d0d4d9;
+  border-radius: 50%;
+}
+.dh-artifact {
+  padding: 14px 16px 16px;
+}
+.dh-artifact__main {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.dh-artifact__badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  background: #eaf2ff;
+  border-radius: 4px;
+}
+.dh-artifact__body {
+  min-width: 0;
+}
+.dh-artifact__tag {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin: 1px 0 2px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.dh-artifact__ref {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+  line-height: 16px;
+  word-break: break-all;
+}
+.dh-copy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 2px;
+  color: #8a94a6;
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.dh-copy:hover {
+  color: #0066cc;
+  background: #f2f4f7;
+}
+.dh-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 12px;
+}
+.dh-label {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  color: #3b444c;
+  font-size: 11px;
+  background: #f2f4f7;
+  border: 1px solid #e6e9ef;
+  border-radius: 3px;
+}
+.dh-addlabel {
+  height: 22px;
+  padding: 0 8px;
+  color: #3b444c;
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 1px dashed #d0d4d9;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.dh-addlabel:hover {
+  color: #0066cc;
+  border-color: #0066cc;
+}
+
+/* ---------------- Configuration ---------------- */
+.dh-config {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.dh-cfg-title {
+  margin: 0 0 10px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.dh-cfg-title--sub {
+  margin-top: 18px;
+}
+.dh-drift {
+  margin: -2px 0 10px;
+  padding: 6px 10px;
+  color: #e37318;
+  font-size: 12px;
+  line-height: 16px;
+  background: #fff7ec;
+  border: 1px solid #f5d3ac;
+  border-radius: 3px;
+}
+.dh-config .dh-card {
+  width: 100%;
+}
+.dh-spec {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 24px;
+  padding: 14px 16px;
+}
+.dh-spec__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.dh-spec__field--wide {
+  grid-column: 1 / -1;
+}
+.dh-spec__label {
+  color: #596168;
+  font-size: 11px;
+  line-height: 15px;
+}
+.dh-spec__value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: #000a14;
+  font-size: 12px;
+  line-height: 16px;
+  word-break: break-all;
+}
+.dh-spec__sub {
+  color: #8a94a6;
+  font-size: 11px;
+}
+.dh-spec__value.dh-mono,
+.dh-spec__value .dh-mono {
+  font-size: 12px;
+}
+.dh-spec__hint {
+  color: #596168;
+}
+.dh-cfg-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+}
+.dh-mono {
+  font-family: var(--tk-mono);
+  font-size: 11px;
+}
+.dh-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  color: #0066cc;
+  font-family: var(--tk-mono);
+  font-size: 11px;
+  background: #eaf2ff;
+  border-radius: 3px;
+}
+.dh-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 5px;
+  color: #596168;
+  font-size: 11px;
+  background: #f2f4f7;
+  border: 1px solid #e6e9ef;
+  border-radius: 2px;
+}
+.dh-badge--override {
+  color: #0066cc;
+  background: #eaf2ff;
+  border-color: #cfe2ff;
+}
+.dh-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-radius: 50%;
+}
+.dh-status-dot--success {
+  background: #2ba471;
+}
+.dh-status-dot--failed {
+  background: #d54941;
+}
+.dh-status-dot--progress,
+.dh-status-dot--unknown {
+  background: #e37318;
+}
+.dh-canary {
+  width: 100%;
+  margin-top: 18px;
+  padding: 12px 14px;
+}
+.dh-canary__head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.dh-canary__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.dh-canary__hint {
+  color: #596168;
+  font-size: 12px;
+}
+.dh-canary__steps {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.dh-canary__step {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  color: #596168;
+  font-size: 11px;
+  background: #ffffff;
+  border: 1px solid #d0d4d9;
+  border-radius: 10px;
+}
+.dh-canary__step--done {
+  color: #0066cc;
+  background: #eaf2ff;
+  border-color: #cfe2ff;
+}
+.dh-canary__step--current {
+  color: #ffffff;
+  background: #0066cc;
+  border-color: #0066cc;
+}
+.dh-canary__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.dh-action-error {
+  max-width: 800px;
+  margin: 12px 0 0;
+  color: #d54941;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* ---------------- 弹窗 ---------------- */
+.dh-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+.dh-dialog__hint {
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+.dh-dialog__error {
+  margin: 0;
+  color: #d54941;
+  font-size: 12px;
+  line-height: 16px;
+}
+.dh-dialog__foot {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 </style>

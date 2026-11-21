@@ -26,7 +26,7 @@ npm run check:pages -- http://localhost:4173   # Chrome 逐路由截图 + 运行
 | 应用 / 构建发布 | `…/trigger` | `views/apps/BuildDeployView.vue` |
 | 应用 / 构建历史 | `…/builds` | `views/apps/BuildHistoryView.vue` |
 | 应用 / 发布历史 | `…/deployments` | `views/apps/DeploymentHistoryView.vue` |
-| 应用 / 配置 | `…/config/{git,build,base,workflow,overrides}` | `views/apps/config/*.vue` |
+| 应用 / 配置 | `…/config/{git,build,workflow}`、`…/config/base/{deployment-template,configmaps,secrets}`、`…/config/overrides/:envId/{deployment-template,configmaps,secrets}` | `views/apps/config/*.vue`（左侧导航对齐 Devtron Configurations：Git 仓库 / 构建配置 / 基础配置 / 工作流编辑器 + 环境覆盖 + 删除应用；基础配置与环境覆盖共用 部署模板 / ConfigMaps / Secrets 三个分区） |
 | 应用 / 运行资源 | `…/resources?env=<bindingId>&view=analyzer&tab=<页签id>` | `views/apps/AppResourcesView.vue`（页签：K8s 资源 / 日志分析 / 点开的资源页签；资源按 Deployment → ReplicaSet → Pod → Containers 分层展示，`components/resource/ResourceHierarchy.vue`） |
 | 集群资源 | `/clusters` | `views/clusters/ClusterListView.vue` |
 | 集群工作区 | `/clusters/:clusterId` | `views/clusters/ClusterWorkspaceView.vue`（页签：概览 / 当前资源类型（Node、Event、Namespace、Deployment…，随左侧选择改名）/ 点击资源打开的资源页签；左侧列表顶部固定 Nodes、Events、Namespaces，下面按分类分组；`?resource=`、`?tab=`、`?open=` 可深链，兼容旧 `?view=`） |
@@ -65,6 +65,10 @@ src/
 ## 视觉与交互约定
 
 - 布局对齐 docs/references/devtron-live/ 的 27 张真实截图：64px 图标轨道侧栏、顶部面包屑 + 应用页签、工作流图（Source → CI → 多 CD）、App Details 的环境条与两张状态卡、K8s Resources 页签、分类树 + 表格。
+- 构建发布页按真实 Devtron Build & Deploy 复刻（`components/pipeline/TriggerGraph.vue`）：1280 固定画布、来源卡 200×64、CI/CD 节点 200×126、左侧 16px `MANUAL`/`AUTO` 触发条、2px 连线 + 实心箭头、一 CI 多 CD 的竖向主干分叉；工作流与 CI 显示名 `wf-<n>-<4位>` / `ci-<n>-<4位>` 由 `components/pipeline/naming.ts` 统一生成，配置页与画布同名。
+- App 工作区逐页对齐 Devtron 并做中文落地：Overview 左档案 + 关于/环境（环境 / 最近部署 / 提交 / 部署时间）、App Details 三张状态卡（应用状态 / 部署状态 / 已部署提交）+ K8s 资源、Build History（选择流水线 + 时间线 + 日志/源码/产物）、Deployment History（选择环境 + 时间线 + 源码/配置）。
+- Configurations 对齐 Devtron：基础配置 / 环境覆盖都拆成 部署模板、ConfigMaps、Secrets 三个分区；部署模板有 配置/继承/不覆盖/试运行 页签、GUI|YAML、带行号的 YAML 编辑器与 保存修改。工作流编辑器与 构建发布 共用 `TriggerGraph`（`editable` 模式：点击节点编辑，节点右侧 + / 删除增删流水线），不再使用旧的关系图 + 流水线表格。ConfigMap/Secret 是按 Devtron 结构补充的 mock 扩展（`types/index.ts` 的 `ConfigMapEntry` / `SecretEntry`，`api/index.ts` 的 list/save/delete），Backend 合同尚未定义，接真实后端时需要新增对应接口；Secret 只保存 key，不保存明文。
+- Select Material / Select Image 为 1024px 右侧全高弹窗（49px 标题栏 + 74px 操作栏），分别对应 `Build Pipeline '<ci>'` 与 `Deploy to <env>`，与 Devtron 的抽屉尺寸、底栏按钮和提交/镜像卡片一致。
 - 直角体系：`--tk-radius: 2px`；正文 12px / 行高 18px；页底 `#f2f4f8`；主色 `#0052d9`；无阴影。
 - 顶栏 48px、侧栏 190px（`≤1120px` 折叠为 64px）、页签栏 36px。
 - 状态色只在 `utils/format.ts` 定义，页面用 `StatusTag` 渲染，禁止各页自写 `statusMap`。

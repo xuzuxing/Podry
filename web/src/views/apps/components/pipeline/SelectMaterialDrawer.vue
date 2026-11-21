@@ -52,6 +52,20 @@ const gitUnavailable = computed(
 )
 const branchOptions = computed(() => branches.value.map((item) => ({ label: item.name, value: item.name })))
 
+/** 仓库名，Devtron 左侧仓库卡展示 `/checkout-api` 形式 */
+const repoLabel = computed(() => {
+  const trimmed = props.repositoryUrl.replace(/\.git$/, '').replace(/[/:]+$/, '')
+  const name = trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
+  return name ? `/${name}` : '—'
+})
+
+/** 提交分组标题：2026年11月21日 */
+function dateLabel(value: string): string {
+  const parts = value.split('-')
+  if (parts.length !== 3) return value
+  return `${parts[0]}年${Number(parts[1])}月${Number(parts[2])}日`
+}
+
 const filteredCommits = computed(() => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return commits.value
@@ -194,36 +208,72 @@ watch(
 <template>
   <t-drawer
     :visible="visible"
-    size="720px"
+    size="1024px"
     placement="right"
-    :header="`Build Pipeline '${pipelineName}'`"
+    :header="`构建流水线 '${pipelineName}'`"
     :close-btn="true"
     drawer-class-name="bd-material"
     @close="close"
   >
     <div class="mt">
       <aside class="mt__side">
-        <p class="mt__side-label">Git Repository</p>
-        <t-select
-          class="mt__branch-select"
-          size="small"
-          :value="branchName"
-          :options="branchOptions"
-          :disabled="branchesLoading || gitNotConfigured"
-          placeholder="选择分支"
-          @change="onBranchChange"
-        />
-        <p class="mt__repo" :title="repositoryUrl">{{ repositoryUrl || '—' }}</p>
-        <p v-if="latestCommitAt" class="mt__repo-meta u-dim">
-          <t-icon name="time" size="12px" />
-          最近提交 {{ fmtRelative(latestCommitAt) }}
-        </p>
+        <p class="mt__side-title">Git 仓库</p>
+        <div class="mt__repo">
+          <div class="mt__repo-head">
+            <svg class="mt__repo-icon" width="20" height="20" viewBox="0 0 48 48">
+              <path
+                fill="#F4511E"
+                d="M42.2,22.1L25.9,5.8C25.4,5.3,24.7,5,24,5c0,0,0,0,0,0c-0.7,0-1.4,0.3-1.9,0.8l-3.5,3.5l4.1,4.1c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3c0,0.5-0.1,0.9-0.3,1.3l4,4c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3s-1.3,3-3,3c-1.7,0-3-1.3-3-3c0-0.5,0.1-0.9,0.3-1.3l-4-4c-0.1,0-0.2,0.1-0.3,0.1v10.4c1.2,0.4,2,1.5,2,2.8c0,1.7-1.3,3-3,3s-3-1.3-3-3c0-1.3,0.8-2.4,2-2.8V18.8c-1.2-0.4-2-1.5-2-2.8c0-0.5,0.1-0.9,0.3-1.3l-4.1-4.1L5.8,22.1C5.3,22.6,5,23.3,5,24c0,0.7,0.3,1.4,0.8,1.9l16.3,16.3c0,0,0,0,0,0c0.5,0.5,1.2,0.8,1.9,0.8s1.4-0.3,1.9-0.8l16.3-16.3c0.5-0.5,0.8-1.2,0.8-1.9C43,23.3,42.7,22.6,42.2,22.1z"
+              />
+            </svg>
+            <span class="mt__repo-name" :title="repositoryUrl">{{ repoLabel }}</span>
+          </div>
+          <div class="mt__repo-branch">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M4.25 9.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0v3.25m0-3.25h5.5a2 2 0 0 0 2-2V6.25m0 0a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z"
+                stroke="#596168"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <t-select
+              class="mt__branch"
+              size="small"
+              variant="borderless"
+              :value="branchName"
+              :options="branchOptions"
+              :disabled="branchesLoading || gitNotConfigured"
+              placeholder="选择分支"
+              @change="onBranchChange"
+            />
+            <svg class="mt__info" width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="5.6" stroke="#b1b7bc" stroke-width="1.2" />
+              <path d="M8 7.4v3.2M8 5.1v.9" stroke="#b1b7bc" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div v-if="latestCommitAt" class="mt__repo-updated">
+            <span>更新于 {{ fmtRelative(latestCommitAt) }}</span>
+            <button type="button" class="mt__refresh" title="刷新分支与提交" @click="loadBranches">
+              <t-icon name="refresh" size="14px" />
+            </button>
+          </div>
+        </div>
       </aside>
 
       <section class="mt__main">
         <div class="mt__head">
           <span class="mt__branch-tag">
-            <t-icon name="git-branch" size="13px" />
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M4.25 9.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0v3.25m0-3.25h5.5a2 2 0 0 0 2-2V6.25m0 0a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z"
+                stroke="#3b444c"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
             {{ branchName || '分支' }}
           </span>
           <t-input
@@ -232,7 +282,7 @@ watch(
             class="mt__search"
             size="small"
             clearable
-            placeholder="Search by commit hash"
+            placeholder="按提交哈希搜索"
           >
             <template #prefix-icon><t-icon name="search" /></template>
           </t-input>
@@ -284,7 +334,7 @@ watch(
 
           <template v-else>
             <div v-for="group in commitGroups" :key="group.date" class="mt__group">
-              <p class="mt__date">{{ group.date }}</p>
+              <p class="mt__date">{{ dateLabel(group.date) }}</p>
               <ul class="mt__commits">
                 <li v-for="commit in group.items" :key="commit.sha">
                   <button
@@ -293,13 +343,15 @@ watch(
                     :class="{ 'cmt--active': commit.sha === selectedSha }"
                     @click="selectedSha = commit.sha"
                   >
-                    <span class="cmt__main">
-                      <span class="cmt__sha u-mono">{{ shortSha(commit.sha) }}</span>
+                    <span class="cmt__body">
+                      <span class="cmt__sha">{{ shortSha(commit.sha) }}</span>
                       <span class="cmt__subject">{{ commit.subject }}</span>
                       <span class="cmt__meta">
                         <t-icon name="user" size="12px" />
                         {{ commit.authorName }}
-                        <t-icon name="time" size="12px" class="cmt__meta-gap" />
+                      </span>
+                      <span class="cmt__meta">
+                        <t-icon name="calendar" size="12px" />
                         {{ fmtTime(commit.committedAt) }}
                       </span>
                     </span>
@@ -317,12 +369,15 @@ watch(
 
     <template #footer>
       <div class="mt__foot">
-        <span class="mt__hint" :class="{ 'mt__hint--error': footerError }">{{ footerText }}</span>
-        <span v-if="startErrorCode" class="mt__hint-code u-mono">{{ startErrorCode }}</span>
-        <span class="mt__push" />
+        <div class="mt__foot-text">
+          <span class="mt__cache">未配置对象存储，缓存不可用</span>
+          <span class="mt__hint" :class="{ 'mt__hint--error': footerError }">
+            {{ footerError ? footerText : '想缩短构建时间？配置对象存储' }}
+          </span>
+        </div>
         <t-button theme="primary" :disabled="!canStart" :loading="starting" @click="startBuild">
-          <template #icon><t-icon name="play-circle" /></template>
-          Start Build
+          <template #icon><t-icon name="play" /></template>
+          开始构建
         </t-button>
       </div>
     </template>
@@ -330,78 +385,146 @@ watch(
 </template>
 
 <style scoped>
+/* Devtron 弹窗：右侧 1024 宽、全高、白底，49px 标题栏 / 74px 底部操作栏 */
+:global(.bd-material) {
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.14);
+}
+:global(.bd-material .t-drawer__header) {
+  min-height: 49px;
+  padding: 12px 20px;
+  color: #000a14;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  border-bottom: 1px solid #e6e9ef;
+}
 :global(.bd-material .t-drawer__body) {
   padding: 0;
   overflow: hidden;
 }
+:global(.bd-material .t-drawer__footer) {
+  padding: 16px 20px;
+  border-top: 1px solid #e6e9ef;
+}
 
 .mt {
-  display: flex;
+  display: grid;
+  grid-template-columns: 234px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
 
-/* ---- 左列：仓库与分支 ---- */
+/* ---- 左列：仓库 ---- */
 .mt__side {
   display: flex;
-  flex: none;
   flex-direction: column;
-  gap: 6px;
-  width: 216px;
-  padding: 14px 12px;
-  overflow: auto;
-  background: var(--tk-surface);
-  border-right: 1px solid var(--tk-border);
+  min-height: 0;
+  border-right: 1px solid #e6e9ef;
 }
-.mt__side-label {
+.mt__side-title {
+  flex: none;
   margin: 0;
-  color: var(--tk-text-3);
-  font-size: 11px;
+  padding: 12px 20px;
+  color: #000a14;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.mt__branch-select {
-  width: 100%;
+  line-height: 20px;
+  border-bottom: 1px solid #e6e9ef;
 }
 .mt__repo {
-  margin: 4px 0 0;
-  color: var(--tk-text-2);
-  font-family: var(--tk-mono);
-  font-size: 11px;
-  line-height: 16px;
-  word-break: break-all;
+  margin: 16px;
+  padding: 12px;
+  background: #f7fafc;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
 }
-.mt__repo-meta {
+.mt__repo-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mt__repo-icon {
+  flex: none;
+}
+.mt__repo-name {
+  overflow: hidden;
+  color: #000a14;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt__repo-branch {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin: 0;
+  margin-top: 4px;
+  color: #3b444c;
+  font-size: 12px;
+}
+.mt__branch {
+  width: 118px;
+}
+:global(.bd-material .mt__branch .t-input) {
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+}
+:global(.bd-material .mt__branch .t-input__inner) {
+  color: #3b444c;
+  font-size: 12px;
+}
+.mt__info {
+  flex: none;
+}
+.mt__repo-updated {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 10px;
+  color: #767d84;
   font-size: 11px;
+}
+.mt__refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: #596168;
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.mt__refresh:hover {
+  background: #edf1f5;
 }
 
 /* ---- 右列：提交列表 ---- */
 .mt__main {
   display: flex;
-  flex: 1;
   flex-direction: column;
   min-width: 0;
-  background: #f7f9fc;
+  min-height: 0;
+  background: #f2f4f7;
 }
 .mt__head {
   display: flex;
   flex: none;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
-  background: var(--tk-surface);
-  border-bottom: 1px solid var(--tk-border);
+  padding: 8px 16px;
+  background: #f2f4f7;
 }
 .mt__branch-tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: var(--tk-text);
+  gap: 6px;
+  color: #000a14;
+  font-size: 13px;
   font-weight: 600;
 }
 .mt__search {
@@ -411,7 +534,7 @@ watch(
 .mt__list {
   flex: 1;
   min-height: 0;
-  padding: 12px 16px 20px;
+  padding: 8px 20px 20px;
   overflow: auto;
 }
 .mt__state {
@@ -427,9 +550,9 @@ watch(
   align-items: flex-start;
   gap: 4px;
   padding: 16px;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  background: #fff;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
 }
 .mt__notice-title {
   margin: 0;
@@ -438,17 +561,15 @@ watch(
 .mt__notice p {
   margin: 0;
 }
-.mt__group + .mt__group {
-  margin-top: 4px;
-}
 .mt__date {
-  margin: 10px 0 6px;
-  padding-left: 2px;
-  color: var(--tk-text-3);
-  font-size: 11px;
+  margin: 12px 0 8px;
+  color: #3b444c;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
 }
 .mt__group:first-child .mt__date {
-  margin-top: 0;
+  margin-top: 8px;
 }
 .mt__commits {
   display: flex;
@@ -459,52 +580,52 @@ watch(
   display: flex;
   gap: 12px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 12px 16px;
   font: inherit;
-  color: var(--tk-text);
+  color: #000a14;
   text-align: left;
-  background: var(--tk-surface);
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  background: #fff;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
   cursor: pointer;
 }
 .cmt:hover {
-  border-color: var(--tk-border-strong);
+  border-color: #b1b7bc;
 }
 .cmt--active {
-  background: #f5f9ff;
-  border-color: var(--tk-primary);
+  background: #f7fbff;
+  border-color: #0066cc;
 }
-.cmt__main {
+.cmt__body {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
   min-width: 0;
 }
 .cmt__sha {
   align-self: flex-start;
-  padding: 1px 6px;
-  color: var(--tk-text-2);
-  background: #f2f4f8;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
+  padding: 0 6px;
+  color: #0066cc;
+  font-size: 11px;
+  line-height: 18px;
+  background: #e8f0fe;
+  border-radius: 2px;
 }
 .cmt__subject {
-  font-weight: 600;
-  line-height: 19px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
   word-break: break-word;
 }
 .cmt__meta {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  color: var(--tk-text-3);
-  font-size: 11px;
-}
-.cmt__meta-gap {
-  margin-left: 8px;
+  gap: 6px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
 }
 .cmt__pick {
   display: flex;
@@ -515,31 +636,42 @@ watch(
   height: 16px;
   margin-top: 2px;
   color: #fff;
-  border: 1px solid var(--tk-border-strong);
+  border: 1px solid #b1b7bc;
   border-radius: 50%;
 }
 .cmt--active .cmt__pick {
-  background: var(--tk-primary);
-  border-color: var(--tk-primary);
+  background: #0066cc;
+  border-color: #0066cc;
 }
 
 /* ---- 底部 ---- */
 .mt__foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mt__foot-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mt__cache {
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
 }
 .mt__hint {
-  color: var(--tk-text-3);
+  overflow: hidden;
+  color: #596168;
   font-size: 12px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mt__hint--error {
-  color: var(--tk-danger);
-}
-.mt__hint-code {
-  color: var(--tk-text-3);
-}
-.mt__push {
-  flex: 1;
+  color: #f33e3e;
 }
 </style>

@@ -128,3 +128,4 @@ export function shortDigest(digest: string | null | undefined): string {
   const value = digest.replace('sha256:', '')
   return `sha256:${value.slice(0, 12)}`
 }
+

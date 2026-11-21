@@ -80,8 +80,25 @@ const routes: RouteRecordRaw[] = [
               {
                 path: 'base',
                 name: 'config-base',
-                component: () => import('@/views/apps/config/BaseSection.vue'),
-                meta: { title: '基础部署配置' },
+                redirect: { name: 'config-base-deployment' },
+              },
+              {
+                path: 'base/deployment-template',
+                name: 'config-base-deployment',
+                component: () => import('@/views/apps/config/DeploymentTemplateSection.vue'),
+                meta: { title: 'Deployment Template' },
+              },
+              {
+                path: 'base/configmaps',
+                name: 'config-base-configmaps',
+                component: () => import('@/views/apps/config/ConfigMapsSection.vue'),
+                meta: { title: 'ConfigMaps' },
+              },
+              {
+                path: 'base/secrets',
+                name: 'config-base-secrets',
+                component: () => import('@/views/apps/config/SecretsSection.vue'),
+                meta: { title: 'Secrets' },
               },
               {
                 path: 'workflow',
@@ -92,8 +109,26 @@ const routes: RouteRecordRaw[] = [
               {
                 path: 'overrides',
                 name: 'config-overrides',
-                component: () => import('@/views/apps/config/OverridesSection.vue'),
+                component: () => import('@/views/apps/config/OverridesLanding.vue'),
                 meta: { title: '环境覆盖' },
+              },
+              {
+                path: 'overrides/:envId/deployment-template',
+                name: 'config-override-deployment',
+                component: () => import('@/views/apps/config/DeploymentTemplateSection.vue'),
+                meta: { title: 'Deployment Template' },
+              },
+              {
+                path: 'overrides/:envId/configmaps',
+                name: 'config-override-configmaps',
+                component: () => import('@/views/apps/config/ConfigMapsSection.vue'),
+                meta: { title: 'ConfigMaps' },
+              },
+              {
+                path: 'overrides/:envId/secrets',
+                name: 'config-override-secrets',
+                component: () => import('@/views/apps/config/SecretsSection.vue'),
+                meta: { title: 'Secrets' },
               },
             ],
           },

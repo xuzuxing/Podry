@@ -14,6 +14,8 @@ import type {
   GitCommit,
   K8sResource,
   Member,
+  ConfigMapEntry,
+  SecretEntry,
   ClusterOverview,
   Namespace,
   NodeDetail,
@@ -1598,6 +1600,78 @@ export const credentials: Credential[] = [
 export const registries: Registry[] = [
   { id: 'r-harbor', name: 'harbor.acme.dev', endpoint: 'https://harbor.acme.dev', credentialId: 'cr-registry' },
   { id: 'r-dockerhub', name: 'docker.io', endpoint: 'https://docker.io', credentialId: null },
+]
+
+// ---- 配置管理：ConfigMap / Secret（mock 扩展，对齐 Devtron Base Configurations） ----
+// environmentId 为 null 表示 Base；Secret 只保存 key，不保存明文值。
+export const configMaps: ConfigMapEntry[] = [
+  {
+    id: 'cm-checkout-base',
+    appId: 'a-checkout',
+    environmentId: null,
+    name: 'checkout-api-config',
+    data: { LOG_LEVEL: 'info', CURRENCY: 'CNY', CACHE_TTL_SECONDS: '60' },
+    updatedAt: ago(320),
+  },
+  {
+    id: 'cm-checkout-dev',
+    appId: 'a-checkout',
+    environmentId: 'e-dev',
+    name: 'checkout-api-config',
+    data: { LOG_LEVEL: 'debug' },
+    updatedAt: ago(95),
+  },
+  {
+    id: 'cm-checkout-prod',
+    appId: 'a-checkout',
+    environmentId: 'e-prod',
+    name: 'checkout-api-config',
+    data: { LOG_LEVEL: 'warn', CURRENCY: 'CNY' },
+    updatedAt: ago(42),
+  },
+  {
+    id: 'cm-payment-base',
+    appId: 'a-payment',
+    environmentId: null,
+    name: 'payment-worker-config',
+    data: { QUEUE_NAME: 'payments', RETRY_LIMIT: '3' },
+    updatedAt: ago(600),
+  },
+]
+
+export const configSecrets: SecretEntry[] = [
+  {
+    id: 'sc-checkout-base',
+    appId: 'a-checkout',
+    environmentId: null,
+    name: 'checkout-api-secret',
+    keys: ['DB_PASSWORD', 'API_TOKEN'],
+    updatedAt: ago(500),
+  },
+  {
+    id: 'sc-checkout-dev',
+    appId: 'a-checkout',
+    environmentId: 'e-dev',
+    name: 'checkout-db',
+    keys: ['DB_PASSWORD'],
+    updatedAt: ago(120),
+  },
+  {
+    id: 'sc-checkout-prod',
+    appId: 'a-checkout',
+    environmentId: 'e-prod',
+    name: 'checkout-api-secret',
+    keys: ['DB_PASSWORD', 'API_TOKEN', 'SIGNING_KEY'],
+    updatedAt: ago(42),
+  },
+  {
+    id: 'sc-payment-base',
+    appId: 'a-payment',
+    environmentId: null,
+    name: 'payment-worker-secret',
+    keys: ['DB_PASSWORD', 'GATEWAY_KEY'],
+    updatedAt: ago(610),
+  },
 ]
 
 // ---- 查询辅助（页面直接引用，避免重复过滤逻辑） ----

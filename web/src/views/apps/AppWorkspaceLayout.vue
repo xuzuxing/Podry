@@ -25,10 +25,15 @@ const activeTab = computed(() => {
   if (name.startsWith('config')) return '配置'
   return appTabs.find((tab) => tab.name === name)?.title ?? '概览'
 })
+
+/** 构建发布 / 配置页在 Devtron 中是整页白底，不带外层内边距 */
+const flush = computed(() => route.name === 'app-trigger' || String(route.name ?? '').startsWith('config'))
+/** 概览页使用 Devtron 的浅蓝渐变背景 */
+const tint = computed(() => route.name === 'app-overview')
 </script>
 
 <template>
-  <div class="app-workspace">
+  <div class="app-workspace" :class="{ 'app-workspace--flush': flush, 'app-workspace--tint': tint }">
     <!-- 对齐 Devtron：面包屑 + 应用切换器 + 环境计数，页签紧贴其下 -->
     <div class="app-head">
       <div class="app-head__row">
@@ -42,7 +47,7 @@ const activeTab = computed(() => {
 
         <span class="app-head__envs">
           <t-icon name="menu-fold" size="13px" />
-          {{ app?.envCount ?? 0 }}/{{ app?.envCount ?? 0 }} Environments
+          {{ app?.envCount ?? 0 }}/{{ app?.envCount ?? 0 }} 个环境
         </span>
         <StatusTag v-if="app" kind="health" :value="app.health" :dot="false" />
         <span class="u-right u-dim">{{ app?.sourceMode === 'image' ? '已有镜像' : 'Git 源码' }}</span>
@@ -62,7 +67,7 @@ const activeTab = computed(() => {
       </nav>
     </div>
 
-    <div class="app-workspace__body">
+    <div class="app-workspace__body" :class="{ 'app-workspace__body--flush': flush }">
       <router-view />
     </div>
   </div>
@@ -153,5 +158,21 @@ const activeTab = computed(() => {
 }
 .app-workspace__body {
   padding: 12px 16px 24px;
+}
+/* 构建发布：整页白底、由页面自己控制内边距，并铺满视口剩余高度 */
+.app-workspace--flush {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 48px);
+  margin-bottom: -24px;
+  background: #fff;
+}
+.app-workspace__body--flush {
+  flex: 1;
+  padding: 0;
+}
+/* 概览：Devtron 的极浅蓝渐变底 */
+.app-workspace--tint {
+  background: radial-gradient(120% 90% at 8% 0%, #f7fbff 0%, #eef5fd 55%, #e9f1fb 100%);
 }
 </style>

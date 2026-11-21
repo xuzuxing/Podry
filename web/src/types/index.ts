@@ -105,6 +105,28 @@ export interface AppConfig {
   deployValues: DeployValues
 }
 
+/**
+ * ConfigMap / Secret 配置条目（mock 扩展，对齐 Devtron Base Configurations）。
+ * environmentId 为 null 表示 Base，非空表示该环境的覆盖；Secret 只保存 key，不保存明文值。
+ */
+export interface ConfigMapEntry {
+  id: string
+  appId: string
+  environmentId: string | null
+  name: string
+  data: Record<string, string>
+  updatedAt: string
+}
+
+export interface SecretEntry {
+  id: string
+  appId: string
+  environmentId: string | null
+  name: string
+  keys: string[]
+  updatedAt: string
+}
+
 export interface SetupStep {
   key: SetupKey
   status: SetupStatus

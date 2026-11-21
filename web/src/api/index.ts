@@ -9,6 +9,8 @@ import type {
   Build,
   Cluster,
   Credential,
+  ConfigMapEntry,
+  SecretEntry,
   DeployValues,
   Deployment,
   Environment,
@@ -198,6 +200,113 @@ export async function saveConfig(appId: string, input: ConfigSectionInput): Prom
   const setup = db.setups[appId]
   if (setup) setup.configVersion = config.version
   return clone(config)
+}
+
+// ---------------- ConfigMap / Secret（mock 扩展） ----------------
+export async function listConfigMaps(appId: string, environmentId: string | null): Promise<ConfigMapEntry[]> {
+  await delay(100)
+  return clone(
+    db.configMaps.filter((item) => item.appId === appId && item.environmentId === (environmentId || null)),
+  )
+}
+
+export interface ConfigMapInput {
+  id?: string
+  appId: string
+  environmentId: string | null
+  name: string
+  data: Record<string, string>
+}
+
+export async function saveConfigMap(input: ConfigMapInput): Promise<ConfigMapEntry> {
+  await delay(220)
+  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
+    throw new MockError('validation_error', '名称需为 3–63 位小写字母、数字或连字符', 422)
+  }
+  if (!Object.keys(input.data).length) throw new MockError('validation_error', '至少需要一个 key', 422)
+  const duplicated = db.configMaps.some(
+    (item) =>
+      item.appId === input.appId &&
+      item.environmentId === input.environmentId &&
+      item.name === input.name &&
+      item.id !== input.id,
+  )
+  if (duplicated) throw new MockError('conflict', '同一范围内已存在同名 ConfigMap', 409)
+  const existing = input.id ? db.configMaps.find((item) => item.id === input.id) : undefined
+  if (existing) {
+    existing.name = input.name
+    existing.data = { ...input.data }
+    existing.updatedAt = new Date().toISOString()
+    return clone(existing)
+  }
+  const created: ConfigMapEntry = {
+    id: `cm-${Date.now()}`,
+    appId: input.appId,
+    environmentId: input.environmentId,
+    name: input.name,
+    data: { ...input.data },
+    updatedAt: new Date().toISOString(),
+  }
+  db.configMaps.push(created)
+  return clone(created)
+}
+
+export async function deleteConfigMap(id: string): Promise<void> {
+  await delay(160)
+  const index = db.configMaps.findIndex((item) => item.id === id)
+  if (index >= 0) db.configMaps.splice(index, 1)
+}
+
+export async function listSecrets(appId: string, environmentId: string | null): Promise<SecretEntry[]> {
+  await delay(100)
+  return clone(db.configSecrets.filter((item) => item.appId === appId && item.environmentId === (environmentId || null)))
+}
+
+export interface SecretInput {
+  id?: string
+  appId: string
+  environmentId: string | null
+  name: string
+  keys: string[]
+}
+
+export async function saveSecret(input: SecretInput): Promise<SecretEntry> {
+  await delay(220)
+  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
+    throw new MockError('validation_error', '名称需为 3–63 位小写字母、数字或连字符', 422)
+  }
+  if (!input.keys.length) throw new MockError('validation_error', '至少需要一个 key', 422)
+  const duplicated = db.configSecrets.some(
+    (item) =>
+      item.appId === input.appId &&
+      item.environmentId === input.environmentId &&
+      item.name === input.name &&
+      item.id !== input.id,
+  )
+  if (duplicated) throw new MockError('conflict', '同一范围内已存在同名 Secret', 409)
+  const existing = input.id ? db.configSecrets.find((item) => item.id === input.id) : undefined
+  if (existing) {
+    existing.name = input.name
+    existing.keys = [...input.keys]
+    existing.updatedAt = new Date().toISOString()
+    return clone(existing)
+  }
+  const created: SecretEntry = {
+    id: `sc-${Date.now()}`,
+    appId: input.appId,
+    environmentId: input.environmentId,
+    name: input.name,
+    keys: [...input.keys],
+    updatedAt: new Date().toISOString(),
+  }
+  db.configSecrets.push(created)
+  return clone(created)
+}
+
+export async function deleteSecret(id: string): Promise<void> {
+  await delay(160)
+  const index = db.configSecrets.findIndex((item) => item.id === id)
+  if (index >= 0) db.configSecrets.splice(index, 1)
 }
 
 export async function getSetup(appId: string): Promise<ApplicationSetup> {
@@ -1071,7 +1180,7 @@ export async function getDeploymentMetrics(deploymentId: string): Promise<Metric
 /** 应用元信息编辑：描述 / 所属项目 / 标签 / Readme */
 export async function updateApplication(
   appId: string,
-  patch: { description?: string; projectId?: string; tags?: string[]; readme?: string },
+  patch: { description?: string; projectId?: string; tags?: string[]; readme?: string; archived?: boolean },
 ): Promise<Application> {
   await delay(220)
   const app = db.appById(appId)
@@ -1083,6 +1192,9 @@ export async function updateApplication(
   if (patch.projectId) app.projectId = patch.projectId
   if (Array.isArray(patch.tags)) app.tags = patch.tags
   if (typeof patch.readme === 'string') app.readme = patch.readme
+  if (typeof patch.archived === 'boolean') {
+    app.archivedAt = patch.archived ? new Date().toISOString() : null
+  }
   app.updatedAt = new Date().toISOString()
   return clone(app)
 }
