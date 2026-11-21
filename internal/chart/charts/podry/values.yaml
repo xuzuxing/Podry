@@ -1,0 +1,17 @@
+replicaCount: 1
+containerPort: 8080
+resources: {}
+env: {}
+service:
+  enabled: false
+  port: 80
+  type: ClusterIP
+ingress:
+  enabled: false
+  host: ""
+job:
+  completions: 1
+  parallelism: 1
+  restartPolicy: Never
+  backoffLimit: 0
+  activeDeadlineSeconds: 600

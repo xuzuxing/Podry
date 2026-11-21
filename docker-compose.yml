@@ -3,20 +3,37 @@ services:
     image: ghcr.io/xuzuxing/podry:${PODRY_VERSION:-latest}
     container_name: podry
     restart: unless-stopped
+    stop_grace_period: ${PODRY_STOP_GRACE_PERIOD:-45s}
     ports:
       - "${PODRY_PORT:-5000}:5000"
     environment:
       # 初始管理员口令(首启建账;之后改这里不改库)。务必改掉。
-      PODRY_ADMIN_PASSWORD: ${PODRY_ADMIN_PASSWORD:?请在 .env 设置 PODRY_ADMIN_PASSWORD}
+      # 上述为历史说明；B1 改为显式 admin init --password-stdin，不再自动建账。
+      DATABASE_URL: postgres://podry:${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}@postgres:5432/podry?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 设置至少 32 字节的独立 JWT_SECRET}
+      JWT_ACCESS_TOKEN_EXPIRE: ${JWT_ACCESS_TOKEN_EXPIRE:-15m}
+      PODRY_CREDENTIAL_KEY: ${PODRY_CREDENTIAL_KEY:-}
+      PODRY_DATA_DIR: /data
+      PODRY_SHUTDOWN_TIMEOUT: ${PODRY_SHUTDOWN_TIMEOUT:-30s}
+      PODRY_BUILD_ENABLED: ${PODRY_BUILD_ENABLED:-false}
+      PODRY_HTTP_ALLOWED_HOSTS: ${PODRY_HTTP_ALLOWED_HOSTS:-}
+      PODRY_BUILD_CLUSTER_ID: ${PODRY_BUILD_CLUSTER_ID:-}
+      PODRY_BUILD_NAMESPACE: ${PODRY_BUILD_NAMESPACE:-}
+      PODRY_BUILDKIT_ADDR: ${PODRY_BUILDKIT_ADDR:-}
+      PODRY_BUILD_RUNNER_IMAGE: ${PODRY_BUILD_RUNNER_IMAGE:-}
+      PODRY_BUILD_PLATFORM: ${PODRY_BUILD_PLATFORM:-linux/amd64}
+      PODRY_BUILD_CONCURRENCY: ${PODRY_BUILD_CONCURRENCY:-1}
+      PODRY_RELEASE_ENABLED: ${PODRY_RELEASE_ENABLED:-false}
+      PODRY_RELEASE_CONCURRENCY: ${PODRY_RELEASE_CONCURRENCY:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - podry-data:/data
     healthcheck:
       # 静态镜像无 curl/wget;用二进制自身做 TCP 探活的最小手段:复用 --version(进程可执行即健康)。
-      test: ["CMD", "/podry", "--version"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      # 上述是未实现的历史方案；禁用该错误命令，不引入二进制自检功能。
+      disable: true
 
   postgres:
     image: postgres:16-alpine

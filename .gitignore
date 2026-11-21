@@ -56,3 +56,6 @@
 
 # Local controller identity / runtime journals (never source)
 /.podry/
+
+# Local Kubernetes test credentials (never source)
+/docs/k3s.yaml

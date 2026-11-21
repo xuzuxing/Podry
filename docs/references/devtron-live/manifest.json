@@ -1,0 +1,317 @@
+{
+  "recordedDate": "2026-11-19",
+  "timezone": "Asia/Shanghai",
+  "origin": "https://devtron.xuzuxing.cn",
+  "captureMethod": "Owned local Chrome headless via CDP; temporary authenticated profile removed after observation.",
+  "viewport": {
+    "width": 1440,
+    "height": 1000,
+    "deviceScaleFactor": 1
+  },
+  "scope": "User-authorized login, page navigation, read-only resource/log viewing and opening noncommitting forms. No build, deployment, configuration save, resource apply/delete or remote terminal session.",
+  "limits": [
+    "The deployed Devtron version/edition was not identified. This is a deployment-specific interaction baseline, not a latest-release statement.",
+    "Screenshots contain deployment-owned names and metadata and are intended for local design reference. Credentials, cookies and authentication storage are not retained.",
+    "Remote terminal connections and write confirmations were not exercised.",
+    "REA scenario navigation timed out before capture; successful screenshots were produced by local CDP, not REA Evidence."
+  ],
+  "screenshots": [
+    {
+      "id": "01-application-list",
+      "title": "应用列表",
+      "route": "/dashboard/application-management/devtron-app/list",
+      "observation": "搜索、Filter、Create；未配置应用与已部署应用同表。",
+      "category": "applications",
+      "file": "01-application-list.png",
+      "sha256": "8dfaaf260ff10bce4a5a602c774a725c7974bdaad8c3d1f1d0483e4fbf24ca7b",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "02-create-menu",
+      "title": "创建类型菜单",
+      "route": "/dashboard/application-management/devtron-app/list",
+      "observation": "Create 先打开 Custom app / Chart store / Job 菜单。",
+      "category": "applications",
+      "file": "02-create-menu.png",
+      "sha256": "a08691d899152c74d76ceffa095e4363adde44268f196f8b920eae25006d5e9c",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "03-create-application",
+      "title": "创建应用抽屉",
+      "route": "/dashboard/application-management/devtron-app/list/create-app",
+      "observation": "右侧大抽屉，左说明与创建/克隆，右项目名称表单，底部固定按钮；未提交。",
+      "category": "applications",
+      "file": "03-create-application.png",
+      "sha256": "66e45cfe6840ed77da66a4d31c6fa1f760f15c3a5ed4040e620dfb16d3d06f6e",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "04-app-details",
+      "title": "应用运行详情",
+      "route": "/dashboard/application-management/devtron-app/1/details/3/k8s-resources/pod",
+      "observation": "环境选择、健康/部署状态、K8s Resources、Pod 快捷操作、All resources。",
+      "category": "applications",
+      "file": "04-app-details.png",
+      "sha256": "1a347d5dba93cf53dd3c1f04e76fcd9b4c86bdade97df99895a259cc0782819a",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "05-build-deploy",
+      "title": "构建与部署画布",
+      "route": "/dashboard/application-management/devtron-app/1/trigger",
+      "observation": "执行入口与配置入口分离；样例含外部镜像部署和独立 CI 两个流程。",
+      "category": "applications",
+      "file": "05-build-deploy.png",
+      "sha256": "fe648a7025181eea5f2a102193a0d4f8536d7ed2c3195e713cb7ca579f90d849",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "06-workflow-editor",
+      "title": "工作流配置画布",
+      "route": "/dashboard/application-management/devtron-app/1/edit/workflow",
+      "observation": "配置左侧菜单、画布节点编辑与添加控件。",
+      "category": "applications",
+      "file": "06-workflow-editor.png",
+      "sha256": "07a5f3a732f698dc1be1b8d78ff6386f8ed33db70a20e976fa53b3eea8213a8c",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "07-git-repository",
+      "title": "Git 仓库配置",
+      "route": "/dashboard/application-management/devtron-app/1/edit/materials",
+      "observation": "独立仓库卡片与 Add Git Repository。",
+      "category": "applications",
+      "file": "07-git-repository.png",
+      "sha256": "b3274a63174c0de11f5ef7edd16309665bc834e3326a13ae878f0b3aa45318d4",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "08-build-configuration",
+      "title": "构建配置",
+      "route": "/dashboard/application-management/devtron-app/1/edit/docker-build-config",
+      "observation": "Registry / Repository、Dockerfile 与 Context、构建方式、保存按钮。",
+      "category": "applications",
+      "file": "08-build-configuration.png",
+      "sha256": "853400c73f311da504e47edae98dfb640cb0dee5a9096ed7534841c0b4db74ff",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "09-base-configuration",
+      "title": "基础部署配置",
+      "route": "/dashboard/application-management/devtron-app/1/edit/base-config/deployment-template?headerTab=values",
+      "observation": "聚焦侧栏：返回、Compare、Deployment Template / ConfigMaps / Secrets；GUI / YAML / Dry run。",
+      "category": "applications",
+      "file": "09-base-configuration.png",
+      "sha256": "761e73dbab400c085a814a5b891cfef236dec730f00dd5d8f2f0d79bb715c67e",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "10-select-material",
+      "title": "选择构建提交",
+      "route": "/dashboard/application-management/devtron-app/1/trigger/build/2",
+      "observation": "右侧大抽屉，左仓库分支、右提交卡片、底部 Start Build；未启动构建。",
+      "category": "applications",
+      "file": "10-select-material.png",
+      "sha256": "84e0738d134b0126818cf1a0694b978935eb3fcc43879d0bfb6419497daf279c",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "11-select-image",
+      "title": "选择部署镜像",
+      "route": "/dashboard/application-management/devtron-app/1/trigger?cd-node=2&node-type=CD&sortBy=sort-config&sortOrder=ASC",
+      "observation": "右侧大抽屉：当前环境、镜像单选、底部 Last saved config / Review / Deploy；未发布。",
+      "category": "applications",
+      "file": "11-select-image.png",
+      "sha256": "1e9579d7eca7321b576ee2f64805e191994041493f059b84c69fe5fb1f76e296",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "12-build-history",
+      "title": "构建历史与日志空态",
+      "route": "/dashboard/application-management/devtron-app/1/ci-details/2/2/logs",
+      "observation": "左流水线和执行列表、右时间线与 Logs / Source / Artifacts；存储未配置，日志不可用。",
+      "category": "applications",
+      "file": "12-build-history.png",
+      "sha256": "45f3eacbb0fa60eb6ddce1f0e1583aa34b4a6807d047abc121d36d3642c54100",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "13-deployment-history",
+      "title": "发布历史与源信息空态",
+      "route": "/dashboard/application-management/devtron-app/1/cd-details/3/2/3/source-code",
+      "observation": "左环境与时间列表、右发布状态、Source / Configuration；来源信息不可用。",
+      "category": "applications",
+      "file": "13-deployment-history.png",
+      "sha256": "17a35f4c957dbf3eec1cc8698be44f65062439c70fb6104c4077a97ccd0817f5",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "14-resource-clusters",
+      "title": "资源浏览器集群入口",
+      "route": "/dashboard/infrastructure-management/resource-browser/list",
+      "observation": "集群健康统计和集群表格；点击集群进入 Nodes。",
+      "category": "resources",
+      "file": "14-resource-clusters.png",
+      "sha256": "b47bf4284065e001d014028f1b3fc6a53e2774bc271b7f5228c7a3726b49d101",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "15-cluster-nodes",
+      "title": "节点列表",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/node/longhorn.io",
+      "observation": "现场导航落在 node/longhorn.io，页面渲染 Nodes；记录实际路由，不据此推断 Node 所属 API group。",
+      "category": "resources",
+      "file": "15-cluster-nodes.png",
+      "sha256": "d73b0f25510d887578aefb35183e9326dc9180675c1b96fa3b697feca41e49de",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "16-resource-pods",
+      "title": "Pod 资源列表",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/pod/k8sEmptyGroup",
+      "observation": "分类树 Workloads 展开、Pod 表格、All namespaces。",
+      "category": "resources",
+      "file": "16-resource-pods.png",
+      "sha256": "8f428706bc93b9df8e4f8a2e1abef9781448bc9180797fb940502c5bf2920567",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "17-resource-manifest",
+      "title": "资源 Manifest 页签",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/dev/pod/k8sEmptyGroup/beaconix-web-development-589556d45d-c4q6m/manifest",
+      "observation": "全宽详情，顶部保留 Overview / Pod / 资源页签，内层 Manifest / Events / Logs / Terminal。",
+      "category": "resources",
+      "file": "17-resource-manifest.png",
+      "sha256": "af61197366f82c8368916e6668205fa02998d6691d2107932f5b543b7723dfdf",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "18-resource-events",
+      "title": "资源事件空态",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/dev/pod/k8sEmptyGroup/beaconix-web-development-589556d45d-c4q6m/events",
+      "observation": "Events not available；没有补造事件。",
+      "category": "resources",
+      "file": "18-resource-events.png",
+      "sha256": "fddf771a8c3669a8d43d5de706bb17a2ab0a9e1b8c1190965842e59d4ab79fc6",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "19-resource-logs",
+      "title": "资源日志",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/dev/pod/k8sEmptyGroup/beaconix-web-development-589556d45d-c4q6m/logs",
+      "observation": "容器、previous、行数、日志正文与连接状态。未进入终端。",
+      "category": "resources",
+      "file": "19-resource-logs.png",
+      "sha256": "9d873ffd9e0d08d8e622ccf0dbf7cdf6715e8b673c1ce805fa1df8a88fd50015",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "20-create-resource",
+      "title": "创建 K8s 资源抽屉",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/dev/pod/k8sEmptyGroup/beaconix-web-development-589556d45d-c4q6m/logs",
+      "observation": "右侧 YAML 抽屉，提示多文档，底部 Cancel / Apply；未输入或提交。",
+      "category": "resources",
+      "file": "20-create-resource.png",
+      "sha256": "df599c4c72515f54e4cbf6131908f2fd75fdf8642bd19c152c60ae08ed708342",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "21-namespace-filter",
+      "title": "Namespace 筛选与页签保留",
+      "route": "/dashboard/infrastructure-management/resource-browser/1/pod/k8sEmptyGroup?namespace=dev",
+      "observation": "列表筛选为 dev，之前打开的资源页签仍保留。",
+      "category": "resources",
+      "file": "21-namespace-filter.png",
+      "sha256": "5ec04b8180dd44abd9d57a16b3d450a94823a27c48371a6172844d417bf1fc87",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "22-ci-node-edit",
+      "title": "编辑 CI 节点",
+      "route": "/dashboard/application-management/devtron-app/1/edit/workflow/3/ci-pipeline/2/build",
+      "observation": "右侧管线编辑抽屉，Pre-build / Build / Post-build，代码来源和构建覆盖；未保存。",
+      "category": "applications",
+      "file": "22-ci-node-edit.png",
+      "sha256": "d3052c185d92ad7f9a1dbd3ffa52c7a76cb8420e010a83ac362bf888900a0f04",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "23-cd-node-edit",
+      "title": "编辑 CD 节点",
+      "route": "/dashboard/application-management/devtron-app/1/edit/workflow/2/webhook/0/cd-pipeline/2/build",
+      "observation": "右侧部署管线编辑抽屉，目标环境、Namespace、触发方式、Rolling、digest 开关；未保存。",
+      "category": "applications",
+      "file": "23-cd-node-edit.png",
+      "sha256": "89dcb7251c7e56b2fddf462a44f3faab7befa1c1f47ba99f82b9ca69b650d565",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "24-environment-override",
+      "title": "环境继承配置",
+      "route": "/dashboard/application-management/devtron-app/1/edit/env-override/3/deployment-template?headerTab=inherited",
+      "observation": "环境聚焦导航、Inherited / No override / Dry run、基础配置来源；未保存。",
+      "category": "applications",
+      "file": "24-environment-override.png",
+      "sha256": "6a0a38a690bb7d6ddad3540f4fb431b04650cc7354c13cf86e4a89aeb594cae3",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "25-app-overview",
+      "title": "应用概览",
+      "route": "/dashboard/application-management/devtron-app/1/overview?tab=about",
+      "observation": "左应用元信息，右 About / Environments / Readme。",
+      "category": "applications",
+      "file": "25-app-overview.png",
+      "sha256": "c0339fd71f4a8ce1f9bff2f0cc8347571d044deb6eecca20ec2c6f28c214e308",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "26-app-resource-logs",
+      "title": "应用内资源日志页签",
+      "route": "/dashboard/application-management/devtron-app/1/details/3/k8s-resources/pod/beaconix-web-development-589556d45d-c4q6m/logs",
+      "observation": "仍保留应用头部、环境、状态、K8s Resources 与资源页签；没有跳出到全局 Resource Browser。",
+      "category": "applications",
+      "file": "26-app-resource-logs.png",
+      "sha256": "86e809070690d8d78b0bb1b9c20b0666e9b02a2d1154aade2ac36a8f6a70bcb9",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "id": "27-app-resource-manifest",
+      "title": "应用内资源 Manifest",
+      "route": "/dashboard/application-management/devtron-app/1/details/3/k8s-resources/pod/beaconix-web-development-589556d45d-c4q6m/manifest",
+      "observation": "应用资源详情与全局资源浏览器复用内容，但保留应用上下文；未编辑。",
+      "category": "applications",
+      "file": "27-app-resource-manifest.png",
+      "sha256": "a629defc1382aa5d04cd821f18dd0d80166593dd7ea024f2ff2e952fb97d2354",
+      "width": 1440,
+      "height": 1000
+    }
+  ]
+}

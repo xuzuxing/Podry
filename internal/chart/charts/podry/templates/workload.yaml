@@ -1,0 +1,32 @@
+{{- if eq .Values.podry.workloadKind "Deployment" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.podry.workloadName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "podry.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      podry.io/binding-id: {{ .Values.podry.bindingId | quote }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  template:
+    {{- include "podry.pod" . | nindent 4 }}
+{{- else }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.podry.workloadName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "podry.labels" . | nindent 4 }}
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  template:
+    {{- include "podry.pod" . | nindent 4 }}
+{{- end }}

@@ -13,19 +13,70 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
+	"github.com/xuzuxing/podry/internal/application"
+	"github.com/xuzuxing/podry/internal/audit"
+	"github.com/xuzuxing/podry/internal/auth"
+	"github.com/xuzuxing/podry/internal/httpx"
+	"github.com/xuzuxing/podry/internal/platform"
+	"github.com/xuzuxing/podry/internal/project"
+	"github.com/xuzuxing/podry/internal/resource"
 )
 
+type Dependencies struct {
+	Auth        *auth.Service
+	Project     *project.Service
+	Audit       *audit.Service
+	Platform    *platform.Service
+	Application *application.Service
+	Resource    *resource.Service
+}
+
 // New 构建服务端的 HTTP 路由。
-func New(webFS fs.FS) http.Handler {
+func New(webFS fs.FS, dependencies ...Dependencies) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// 未配置可信代理前使用 TCP 对端，避免客户端伪造 X-Forwarded-For 绕过登录限流。
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger)
-	r.Use(httprate.LimitByIP(100, time.Minute))
+	r.Use(httprate.Limit(100, time.Minute, httprate.WithKeyFuncs(httprate.KeyByIP), httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteError(w, r, httpx.Fail(429, "rate_limited", "请求过于频繁"))
+	})))
 	r.Use(middleware.Compress(5))
 
 	r.Get("/healthz", handleHealthz)
+	r.Route("/api", func(r chi.Router) {
+		r.Use(httpx.RequestBoundary)
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) { httpx.WriteError(w, r, httpx.NotFound()) })
+		r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+			httpx.WriteError(w, r, httpx.Fail(405, "method_not_allowed", "此接口不支持该请求方法"))
+		})
+		if len(dependencies) > 0 && dependencies[0].Auth != nil {
+			d := dependencies[0]
+			d.Auth.Register(r)
+			r.Group(func(r chi.Router) {
+				r.Use(d.Auth.RequireUser)
+				if d.Audit != nil {
+					r.Use(d.Audit.Denials)
+				}
+				if d.Project != nil {
+					d.Project.Register(r)
+				}
+				if d.Platform != nil {
+					d.Platform.Register(r, func(cluster chi.Router) {
+						if d.Resource != nil {
+							d.Resource.Register(cluster)
+						}
+					})
+				}
+				if d.Application != nil {
+					d.Application.Register(r)
+				}
+				if d.Audit != nil {
+					d.Audit.Register(r)
+				}
+			})
+		}
+	})
 
 	// 内嵌前端兜底路由:静态命中直接返回,其余路径交给 SPA 前端路由。
 	r.Handle("/*", spaHandler(webFS))

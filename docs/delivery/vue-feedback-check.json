@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-20",
+  "checks": 6,
+  "results": [
+    "Chinese workbench separates source build from three independent environment releases",
+    "Pointer hover lifts the Build node with a visible shadow; all three Deploy targets remain rendered",
+    "Keyboard Tab reaches pipeline settings with a visible focus outline",
+    "Clicking the pipeline name opens the editor drawer; closing returns to the same canvas",
+    "Reduced-motion preference removes node movement and shortens transitions",
+    "No browser errors or warnings during visual feedback checks"
+  ],
+  "hover": {
+    "transform": "matrix(1, 0, 0, 1, 0, -2)",
+    "shadow": "rgba(28, 48, 85, 0.09) 0px 4px 16px 0px, rgba(28, 48, 85, 0.04) 0px 1px 3px 0px"
+  },
+  "reduced": {
+    "transition": "1e-05s",
+    "transform": "none"
+  },
+  "errors": [],
+  "warnings": [],
+  "scope": "Local Vue prototype and MSW only; no backend or visual acceptance claim."
+}
