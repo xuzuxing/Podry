@@ -164,23 +164,44 @@ onMounted(() => {
       </t-table>
     </t-loading>
 
-    <t-dialog v-model:visible="inviteVisible" header="邀请成员" width="440px" confirm-btn="发送邀请" @confirm="confirmInvite">
-      <label class="members__field">
-        <span>邮箱</span>
-        <t-input v-model="inviteEmail" placeholder="name@company.dev" />
-      </label>
-      <label class="members__field">
-        <span>角色</span>
-        <t-select v-model="inviteRole" :options="roleOptions" />
-      </label>
-      <p class="members__hint">邀请只关联已有账户，不会创建新账户，也不会真正发送邮件。</p>
-    </t-dialog>
+    <t-drawer v-model:visible="inviteVisible" header="邀请成员" size="520px" :footer="false" @close="inviteVisible = false">
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">邮箱</span>
+            <t-input v-model="inviteEmail" placeholder="name@company.dev" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">角色</span>
+            <t-select v-model="inviteRole" :options="roleOptions" />
+          </label>
+          <p class="settings-drawer__hint">邀请只关联已有账户，不会创建新账户，也不会真正发送邮件。</p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="inviteVisible = false">取消</t-button>
+          <t-button theme="primary" @click="confirmInvite">发送邀请</t-button>
+        </div>
+      </div>
+    </t-drawer>
 
-    <t-dialog v-model:visible="removeVisible" header="移除成员" theme="warning" width="440px" confirm-btn="确认移除" @confirm="confirmRemove">
-      <p class="members__hint members__hint--plain">
-        确定移除 {{ removeTarget?.name }}（{{ removeTarget?.email }}）？移除后该成员将失去当前工作空间的访问权限。
-      </p>
-    </t-dialog>
+    <t-drawer v-model:visible="removeVisible" header="移除成员" size="480px" :footer="false" @close="removeVisible = false">
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <t-alert
+            theme="warning"
+            title="移除后立即失去访问权限"
+            message="该成员在当前工作空间的项目、应用与配置访问都会被收回。"
+          />
+          <p class="settings-drawer__hint">
+            确定移除 {{ removeTarget?.name }}（{{ removeTarget?.email }}）？
+          </p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="removeVisible = false">取消</t-button>
+          <t-button theme="danger" @click="confirmRemove">确认移除</t-button>
+        </div>
+      </div>
+    </t-drawer>
   </div>
 </template>
 

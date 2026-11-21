@@ -4,10 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { getConfig, listRegistries, MockError, saveConfig } from '@/api'
-import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
-import PageHeader from '@/components/PageHeader.vue'
 import type { AppConfig, BuildConfig, Registry } from '@/types'
+import { notifySetupChanged } from '@/utils/appEvents'
 
 interface BuildForm {
   registryId: string
@@ -50,7 +49,6 @@ function blankForm(): BuildForm {
 
 const versionText = computed(() => (config.value ? `v${config.value.version}` : '—'))
 const dirty = computed(() => JSON.stringify(form.value) !== JSON.stringify(saved.value))
-const savedReady = computed(() => config.value?.buildConfig !== null && config.value?.buildConfig !== undefined)
 const registryOptions = computed(() =>
   registries.value.map((item) => ({ label: `${item.name} · ${item.endpoint}`, value: item.id })),
 )
@@ -115,7 +113,7 @@ function validate(): boolean {
 }
 
 async function goNext(): Promise<void> {
-  const ok = await save()
+  const ok = dirty.value ? await save() : true
   if (!ok) return
   await router.push({ name: 'config-base', params: { projectId: route.params.projectId, appId: appId.value } })
 }
@@ -141,6 +139,7 @@ async function save(): Promise<boolean> {
     config.value = updated
     fill(payload)
     MessagePlugin.success(`已保存（配置版本 v${updated.version}）`)
+    notifySetupChanged(appId.value)
     return true
   } catch (err) {
     if (err instanceof MockError && err.code === 'revision_conflict') conflict.value = true
@@ -155,25 +154,21 @@ watch(appId, load, { immediate: true })
 </script>
 
 <template>
-  <div class="sec">
-    <PageHeader title="Build Configuration" description="定义镜像产出位置与构建上下文；路径均为仓库内相对路径。">
-      <template #actions>
-        <span v-if="dirty" class="hint-dirty">有未保存修改</span>
-        <t-button variant="outline" :loading="saving" :disabled="loading || config === null || !savedReady" @click="goNext">
-          保存并下一步
-        </t-button>
-        <t-button theme="primary" :loading="saving" :disabled="loading || config === null" @click="save">
-          <template #icon><t-icon name="save" /></template>
-          保存
-        </t-button>
-      </template>
-    </PageHeader>
+  <div class="build-page">
+    <header class="build-page__head">
+      <div>
+        <h1>构建配置</h1>
+        <p>定义镜像存储位置与构建方式；Dockerfile 与 Context 均相对仓库根目录。</p>
+      </div>
+      <span class="build-page__doc">查看文档</span>
+    </header>
 
     <t-alert
       v-if="conflict"
       theme="warning"
       title="配置已被他人更新"
       message="当前表单仍保留你的输入；重新读取会以服务端版本覆盖本地改动。"
+      class="build-page__alert"
     >
       <template #operation>
         <t-button size="small" variant="outline" @click="load">
@@ -183,7 +178,7 @@ watch(appId, load, { immediate: true })
       </template>
     </t-alert>
 
-    <div v-if="loading" class="sec__state">
+    <div v-if="loading" class="build-page__state">
       <t-loading size="small" text="加载中…" />
     </div>
     <ErrorState v-else-if="error" :message="error" @retry="load" />
@@ -194,125 +189,252 @@ watch(appId, load, { immediate: true })
         theme="warning"
         title="尚未接入镜像仓库"
         message="请先在「平台设置 → 镜像仓库」中登记仓库，保存构建配置前必须选择仓库。"
+        class="build-page__alert"
       />
 
-      <section class="tk-panel">
-        <div class="tk-panel__head">
-          <span>镜像</span>
-          <span class="u-dim">配置版本 {{ versionText }}</span>
+      <section class="build-card">
+        <h2 class="build-card__title">存储容器镜像</h2>
+        <div class="build-grid">
+          <label class="build-field">
+            <span class="build-field__label">镜像仓库 <em>*</em></span>
+            <t-select v-model="form.registryId" :options="registryOptions" placeholder="选择镜像仓库" clearable />
+            <span v-if="errors.registryId" class="build-field__error">{{ errors.registryId }}</span>
+            <span v-else class="build-field__hint">推送凭据由仓库自身的凭据引用决定。</span>
+          </label>
+          <label class="build-field">
+            <span class="build-field__label">镜像 Repository <em>*</em></span>
+            <t-input v-model="form.imageRepository" placeholder="acme/checkout-api" />
+            <span v-if="errors.imageRepository" class="build-field__error">{{ errors.imageRepository }}</span>
+            <span v-else class="build-field__hint u-ellipsis">推送地址：{{ imagePreview }}</span>
+          </label>
         </div>
-        <div class="tk-panel__body">
-          <div class="fld-grid">
-            <div class="fld">
-              <span class="fld__label">镜像仓库 <em>*</em></span>
-              <t-select v-model="form.registryId" :options="registryOptions" placeholder="选择镜像仓库" clearable />
-              <span v-if="errors.registryId" class="fld__err">{{ errors.registryId }}</span>
-              <span class="u-dim">推送凭据由仓库自身的凭据引用决定，此处不做选择。</span>
-            </div>
-            <div class="fld">
-              <span class="fld__label">镜像 Repository <em>*</em></span>
-              <t-input v-model="form.imageRepository" placeholder="acme/checkout-api" />
-              <span v-if="errors.imageRepository" class="fld__err">{{ errors.imageRepository }}</span>
-              <span class="u-dim u-ellipsis">推送地址：{{ imagePreview }}</span>
-            </div>
-            <div v-if="registries.length === 0" class="fld fld--wide">
-              <EmptyState
-                compact
-                icon="info-circle"
-                title="暂无可用镜像仓库"
-                description="登记仓库后返回本分区即可选择；未选择仓库无法保存构建配置。"
-              />
-            </div>
-          </div>
+        <div class="build-info">
+          <t-icon name="info-circle" size="14px" />
+          覆盖：镜像仓库与 Dockerfile 位置可按流水线覆盖，此处保存的是默认值。
         </div>
       </section>
 
-      <section class="tk-panel">
-        <div class="tk-panel__head">
-          <span>构建定义</span>
-          <span class="u-dim">Dockerfile 与 Context 都相对仓库根目录</span>
-        </div>
-        <div class="tk-panel__body">
-          <div class="fld-grid">
-            <div class="fld">
-              <span class="fld__label">Dockerfile 路径 <em>*</em></span>
-              <t-input v-model="form.dockerfile" placeholder="docker/Dockerfile" />
-              <span v-if="errors.dockerfile" class="fld__err">{{ errors.dockerfile }}</span>
-              <span class="u-dim">例如 docker/Dockerfile；不能以 / 开头，也不能包含 ..。</span>
-            </div>
-            <div class="fld">
-              <span class="fld__label">Context 路径 <em>*</em></span>
-              <t-input v-model="form.context" placeholder="." />
-              <span v-if="errors.context" class="fld__err">{{ errors.context }}</span>
-              <span class="u-dim">构建上下文目录，通常为 . 或 docker。</span>
-            </div>
-            <div class="fld">
-              <span class="fld__label">目标平台</span>
-              <t-select v-model="form.platform" :options="platformOptions" />
-              <span class="u-dim">单平台构建；跨平台镜像需在流水线中分别构建。</span>
-            </div>
-            <div class="fld">
-              <span class="fld__label">构建超时（秒） <em>*</em></span>
-              <t-input-number
-                v-model="form.timeoutSeconds"
-                :min="60"
-                :max="86400"
-                :step="60"
-                theme="normal"
-                placeholder="1800"
-              />
-              <span v-if="errors.timeoutSeconds" class="fld__err">{{ errors.timeoutSeconds }}</span>
-              <span class="u-dim">超时后构建 Job 被终止，可在构建历史中看到失败原因。</span>
+      <section class="build-card">
+        <h2 class="build-card__title">如何构建容器镜像？</h2>
+
+        <div class="build-modes">
+          <div class="build-mode build-mode--active">
+            <span class="build-mode__icon"><t-icon name="file" size="16px" /></span>
+            <div>
+              <p class="build-mode__title">使用仓库中的 Dockerfile</p>
+              <p class="build-mode__desc">指定仓库内的 Dockerfile 与构建上下文，完全控制构建过程。</p>
             </div>
           </div>
+        </div>
+
+        <div class="build-grid">
+          <label class="build-field">
+            <span class="build-field__label">Dockerfile 路径 <em>*</em></span>
+            <t-input v-model="form.dockerfile" placeholder="docker/Dockerfile" />
+            <span v-if="errors.dockerfile" class="build-field__error">{{ errors.dockerfile }}</span>
+            <span v-else class="build-field__hint">例如 docker/Dockerfile；不能以 / 开头，也不能包含 ..。</span>
+          </label>
+          <label class="build-field">
+            <span class="build-field__label">Context 路径 <em>*</em></span>
+            <t-input v-model="form.context" placeholder="." />
+            <span v-if="errors.context" class="build-field__error">{{ errors.context }}</span>
+            <span v-else class="build-field__hint">构建上下文目录，通常为 . 或 docker。</span>
+          </label>
+        </div>
+
+        <div class="build-grid">
+          <label class="build-field">
+            <span class="build-field__label">目标平台</span>
+            <t-select v-model="form.platform" :options="platformOptions" />
+            <span class="build-field__hint">单平台构建；跨平台镜像需在流水线中分别构建。</span>
+          </label>
+          <label class="build-field">
+            <span class="build-field__label">构建超时（秒） <em>*</em></span>
+            <t-input-number
+              v-model="form.timeoutSeconds"
+              :min="60"
+              :max="86400"
+              :step="60"
+              theme="normal"
+              placeholder="1800"
+            />
+            <span v-if="errors.timeoutSeconds" class="build-field__error">{{ errors.timeoutSeconds }}</span>
+            <span v-else class="build-field__hint">超时后构建 Job 被终止，可在构建历史中看到失败原因。</span>
+          </label>
         </div>
       </section>
     </template>
+
+    <footer v-if="!loading && !error" class="build-page__foot">
+      <span class="build-page__meta">
+        配置版本 {{ versionText }}
+        <em v-if="dirty">· 有未保存修改</em>
+      </span>
+      <div class="build-page__actions">
+        <t-button variant="outline" :loading="saving" :disabled="!dirty" @click="save">保存</t-button>
+        <t-button theme="primary" :loading="saving" :disabled="!registries.length" @click="goNext">
+          保存并下一步
+        </t-button>
+      </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.sec {
+.build-page {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: 12px;
+  min-height: 0;
+  padding: 20px 24px;
+  background: #fff;
 }
-.sec__state {
+.build-page__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.build-page__head h1 {
+  margin: 0 0 6px;
+  color: #000a14;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+}
+.build-page__head p {
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+.build-page__doc {
+  color: #0066cc;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.build-page__alert {
+  margin-bottom: 12px;
+}
+.build-page__state {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40px 16px;
+  padding: 80px 0;
 }
-.hint-dirty {
-  color: var(--tk-warning);
+.build-card {
+  padding: 20px;
+  margin-bottom: 16px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
 }
-.fld-grid {
+.build-card__title {
+  margin: 0 0 16px;
+  color: #000a14;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+.build-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 24px;
 }
-.fld {
+.build-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
+  margin-bottom: 12px;
 }
-.fld--wide {
-  grid-column: 1 / -1;
+.build-field__label {
+  color: #3b444c;
+  font-size: 12px;
+  line-height: 18px;
 }
-.fld__label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--tk-text-2);
-}
-.fld__label em {
-  color: var(--tk-danger);
+.build-field__label em {
+  color: #f33e3e;
   font-style: normal;
 }
-.fld__err {
-  color: var(--tk-danger);
+.build-field__hint {
+  overflow: hidden;
+  color: #767d84;
   font-size: 11px;
   line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.build-field__error {
+  color: #f33e3e;
+  font-size: 11px;
+  line-height: 16px;
+}
+.build-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  color: #0066cc;
+  font-size: 12px;
+  line-height: 18px;
+  background: #eef5ff;
+  border-radius: 2px;
+}
+.build-modes {
+  margin-bottom: 16px;
+}
+.build-mode {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: #f7fafc;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.build-mode--active {
+  background: #f2f7ff;
+  border-color: #b5d4f8;
+}
+.build-mode__icon {
+  color: #0066cc;
+  line-height: 1;
+}
+.build-mode__title {
+  margin: 0 0 2px;
+  color: #000a14;
+  font-size: 13px;
+  line-height: 18px;
+}
+.build-mode__desc {
+  margin: 0;
+  color: #767d84;
+  font-size: 11px;
+  line-height: 16px;
+}
+.build-page__foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 20px;
+}
+.build-page__meta {
+  color: #767d84;
+  font-size: 11px;
+}
+.build-page__meta em {
+  color: #e37318;
+  font-style: normal;
+}
+.build-page__actions {
+  display: flex;
+  gap: 8px;
 }
 </style>

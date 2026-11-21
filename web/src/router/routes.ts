@@ -61,6 +61,12 @@ const routes: RouteRecordRaw[] = [
             meta: { title: '发布历史' },
           },
           {
+            path: 'metrics',
+            name: 'app-metrics',
+            component: () => import('@/views/apps/DeploymentMetricsView.vue'),
+            meta: { title: '发布指标' },
+          },
+          {
             path: 'config',
             component: () => import('@/views/apps/config/ConfigLayout.vue'),
             children: [
@@ -69,7 +75,7 @@ const routes: RouteRecordRaw[] = [
                 path: 'git',
                 name: 'config-git',
                 component: () => import('@/views/apps/config/GitSection.vue'),
-                meta: { title: 'Git 源' },
+                meta: { title: 'Git 仓库' },
               },
               {
                 path: 'build',
@@ -86,7 +92,7 @@ const routes: RouteRecordRaw[] = [
                 path: 'base/deployment-template',
                 name: 'config-base-deployment',
                 component: () => import('@/views/apps/config/DeploymentTemplateSection.vue'),
-                meta: { title: 'Deployment Template' },
+                meta: { title: '部署模板' },
               },
               {
                 path: 'base/configmaps',
@@ -104,7 +110,7 @@ const routes: RouteRecordRaw[] = [
                 path: 'workflow',
                 name: 'config-workflow',
                 component: () => import('@/views/apps/config/WorkflowSection.vue'),
-                meta: { title: '工作流' },
+                meta: { title: '工作流编辑器' },
               },
               {
                 path: 'overrides',
@@ -116,7 +122,7 @@ const routes: RouteRecordRaw[] = [
                 path: 'overrides/:envId/deployment-template',
                 name: 'config-override-deployment',
                 component: () => import('@/views/apps/config/DeploymentTemplateSection.vue'),
-                meta: { title: 'Deployment Template' },
+                meta: { title: '部署模板' },
               },
               {
                 path: 'overrides/:envId/configmaps',

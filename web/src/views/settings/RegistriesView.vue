@@ -12,6 +12,7 @@ const rows = ref<Registry[]>([])
 const credentials = ref<Credential[]>([])
 const loading = ref(false)
 const error = ref('')
+const keyword = ref('')
 
 const dialogVisible = ref(false)
 const editingId = ref('')
@@ -36,6 +37,15 @@ function credentialName(id: string | null): string {
   if (!id) return '未绑定'
   return credentials.value.find((item) => item.id === id)?.name ?? '未绑定'
 }
+
+const filteredRows = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return rows.value
+  return rows.value.filter((registry) =>
+    [registry.name, registry.endpoint, credentialName(registry.credentialId)]
+      .some((value) => value.toLowerCase().includes(kw)),
+  )
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -114,7 +124,14 @@ onMounted(() => {
     <ErrorState v-if="error" :message="error" @retry="load" />
 
     <t-loading v-else :loading="loading">
-      <t-table row-key="id" :data="rows" :columns="columns" size="small" hover>
+      <div class="registries__toolbar">
+        <t-input v-model="keyword" size="small" clearable placeholder="搜索仓库名称 / Endpoint" class="registries__search">
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <span class="registries__count">共 {{ filteredRows.length }} 个仓库</span>
+      </div>
+
+      <t-table row-key="id" :data="filteredRows" :columns="columns" size="small" hover>
         <template #name="{ row }">{{ row.name }}</template>
         <template #endpoint="{ row }">
           <span class="u-mono">{{ row.endpoint }}</span>
@@ -126,40 +143,68 @@ onMounted(() => {
           <t-button size="small" variant="text" @click="openEdit(row)">编辑</t-button>
         </template>
         <template #empty>
-          <EmptyState title="还没有镜像仓库" description="添加 Harbor、Docker Hub 或私有仓库后即可在构建配置中选择。" icon="component" compact />
+          <EmptyState
+            v-if="keyword"
+            title="没有匹配的镜像仓库"
+            description="调整关键字后再试。"
+            icon="search"
+            compact
+          />
+          <EmptyState v-else title="还没有镜像仓库" description="添加 Harbor、Docker Hub 或私有仓库后即可在构建配置中选择。" icon="component" compact />
         </template>
       </t-table>
     </t-loading>
 
     <p class="registries__foot">未绑定凭据的仓库只允许匿名拉取；构建推送需要 registry 类型凭据。</p>
 
-    <t-dialog
+    <t-drawer
       v-model:visible="dialogVisible"
       :header="editingId ? '编辑镜像仓库' : '添加镜像仓库'"
-      width="480px"
-      :confirm-btn="editingId ? '保存' : '添加'"
-      @confirm="confirmRegistry"
+      size="560px"
+      :footer="false"
+      @close="dialogVisible = false"
     >
-      <label class="registries__field">
-        <span>名称</span>
-        <t-input v-model="registryName" placeholder="例如 harbor.acme.dev" />
-      </label>
-      <label class="registries__field">
-        <span>Endpoint</span>
-        <t-input v-model="endpoint" placeholder="https://harbor.acme.dev" />
-      </label>
-      <label class="registries__field">
-        <span>凭据</span>
-        <t-select v-model="credentialId" :options="registryCredentialOptions" placeholder="选择 registry 类型凭据" />
-      </label>
-      <p class="registries__hint">凭据只保存引用关系；未选择凭据时仓库按匿名访问处理。</p>
-    </t-dialog>
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">名称</span>
+            <t-input v-model="registryName" placeholder="例如 harbor.acme.dev" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">Endpoint</span>
+            <t-input v-model="endpoint" placeholder="https://harbor.acme.dev" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">凭据</span>
+            <t-select v-model="credentialId" :options="registryCredentialOptions" placeholder="选择 registry 类型凭据" />
+          </label>
+          <p class="settings-drawer__hint">凭据只保存引用关系；未选择凭据时仓库按匿名访问处理。</p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="dialogVisible = false">取消</t-button>
+          <t-button theme="primary" @click="confirmRegistry">{{ editingId ? '保存' : '添加' }}</t-button>
+        </div>
+      </div>
+    </t-drawer>
   </div>
 </template>
 
 <style scoped>
 .registries__foot {
   margin: 8px 0 0;
+  color: var(--tk-text-3);
+  font-size: 11px;
+}
+.registries__toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.registries__search {
+  width: 260px;
+}
+.registries__count {
+  margin-left: auto;
   color: var(--tk-text-3);
   font-size: 11px;
 }

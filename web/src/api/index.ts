@@ -23,6 +23,8 @@ import type {
   Namespace,
   Project,
   Registry,
+  SetupKey,
+  SetupStep,
   ResourceEvent,
   ResourceType,
   Team,
@@ -122,13 +124,63 @@ export async function getApplication(appId: string): Promise<Application> {
   return clone(app)
 }
 
-export async function createApplication(input: { projectId: string; name: string; description?: string; sourceMode: 'git' | 'image' }) {
+function setupStep(key: SetupKey, done: boolean): SetupStep {
+  return { key, status: done ? 'complete' : 'pending', blockers: [] }
+}
+
+/** 按当前配置与工作流重算 setup，镜像应用只有 base/workflow 两步。 */
+function syncSetup(appId: string): ApplicationSetup | null {
+  const app = db.applications.find((item) => item.id === appId)
+  if (!app) return null
+  const config = db.appConfigs[appId]
+  const workflow = db.workflows[appId]
+  const image = app.sourceMode === 'image'
+  const steps: SetupStep[] = image
+    ? [setupStep('base', Boolean(config?.chartConfig)), setupStep('workflow', Boolean(workflow?.items.length))]
+    : [
+        setupStep('git', Boolean(config?.gitConfig)),
+        setupStep('build', Boolean(config?.buildConfig)),
+        setupStep('base', Boolean(config?.chartConfig)),
+        setupStep('workflow', Boolean(workflow?.items.length)),
+      ]
+  const previous = db.setups[appId]
+  const completed = steps.filter((step) => step.status === 'complete').length
+  const next = steps.find((step) => step.status !== 'complete')?.key ?? null
+  const setup: ApplicationSetup = {
+    appId,
+    configVersion: config?.version ?? 0,
+    workflowVersion: workflow?.version ?? 0,
+    completed,
+    total: steps.length,
+    steps,
+    canBuild: !image && Boolean(config?.gitConfig && config?.buildConfig),
+    deployableBindingIds: previous?.deployableBindingIds ?? [],
+    nextSection: next,
+  }
+  db.setups[appId] = setup
+  return setup
+}
+
+export async function createApplication(input: {
+  projectId: string
+  name: string
+  description?: string
+  sourceMode: 'git' | 'image'
+  cloneFromAppId?: string
+}) {
   await delay(260)
   if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
     throw new MockError('validation_error', '名称需为 3–53 位小写字母、数字或连字符', 422)
   }
   if (db.applications.some((a) => a.projectId === input.projectId && a.name === input.name)) {
     throw new MockError('conflict', '同项目下已存在同名应用', 409)
+  }
+  const source = input.cloneFromAppId
+    ? db.applications.find((item) => item.id === input.cloneFromAppId)
+    : undefined
+  if (input.cloneFromAppId && !source) throw new MockError('not_found', '源应用不存在', 404)
+  if (source && source.sourceMode !== input.sourceMode) {
+    throw new MockError('validation_error', 'sourceMode 必须与源应用一致', 422)
   }
   const app: Application = {
     id: `a-${Date.now()}`,
@@ -143,14 +195,28 @@ export async function createApplication(input: { projectId: string; name: string
     lastDeployedAt: null,
   }
   db.applications.unshift(app)
-  db.appConfigs[app.id] = {
-    appId: app.id,
-    version: 0,
-    gitConfig: null,
-    buildConfig: null,
-    chartConfig: null,
-    deployValues: {},
+  const sourceConfig = source ? db.appConfigs[source.id] : null
+  if (sourceConfig && sourceConfig.version > 0) {
+    const copied = clone(sourceConfig)
+    db.appConfigs[app.id] = {
+      ...copied,
+      appId: app.id,
+      version: 1,
+      buildConfig: copied.buildConfig
+        ? { ...copied.buildConfig, imageRepository: `podry/${app.id}` }
+        : null,
+    }
+  } else {
+    db.appConfigs[app.id] = {
+      appId: app.id,
+      version: 0,
+      gitConfig: null,
+      buildConfig: null,
+      chartConfig: null,
+      deployValues: {},
+    }
   }
+  syncSetup(app.id)
   return clone(app)
 }
 
@@ -197,8 +263,7 @@ export async function saveConfig(appId: string, input: ConfigSectionInput): Prom
     if (input.deployValues) config.deployValues = clone(input.deployValues)
   }
   config.version += 1
-  const setup = db.setups[appId]
-  if (setup) setup.configVersion = config.version
+  syncSetup(appId)
   return clone(config)
 }
 
@@ -329,15 +394,7 @@ export async function getWorkflow(appId: string): Promise<Workflow> {
 export async function saveWorkflow(appId: string, workflow: Workflow): Promise<Workflow> {
   await delay(240)
   db.workflows[appId] = clone({ ...workflow, version: workflow.version + 1 })
-  const setup = db.setups[appId]
-  if (setup) {
-    setup.workflowVersion = db.workflows[appId].version
-    if (workflow.items.length > 0) {
-      setup.steps = setup.steps.map((s) => (s.key === 'workflow' ? { ...s, status: 'complete', blockers: [] } : s))
-      setup.completed = setup.steps.filter((s) => s.status === 'complete').length
-      setup.nextSection = null
-    }
-  }
+  syncSetup(appId)
   return clone(db.workflows[appId])
 }
 
@@ -1232,6 +1289,24 @@ export async function createEnvironment(input: {
     autoDeployAllowed: input.autoDeployAllowed,
   }
   db.environments.push(environment)
+  return clone(environment)
+}
+
+export async function updateEnvironment(
+  id: string,
+  input: { name: string; production: boolean; autoDeployAllowed: boolean },
+): Promise<Environment> {
+  await delay(220)
+  const environment = db.environments.find((item) => item.id === id)
+  if (!environment) throw new MockError('not_found', '环境不存在', 404)
+  const name = input.name.trim()
+  if (!name) throw new MockError('validation_error', '环境名称不能为空', 422)
+  if (db.environments.some((item) => item.id !== id && item.name === name)) {
+    throw new MockError('conflict', '同名环境已存在', 409)
+  }
+  environment.name = name
+  environment.production = input.production
+  environment.autoDeployAllowed = input.production ? false : input.autoDeployAllowed
   return clone(environment)
 }
 

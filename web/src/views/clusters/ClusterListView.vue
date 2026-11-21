@@ -1,29 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { listClusters, listNamespace } from '@/api'
+import { listClusters } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import type { Cluster, ConnectionStatus } from '@/types'
-import { fmtRelative } from '@/utils/format'
 
-/** 表格行：集群 + 逐个集群统计出的 Namespace 条数 */
 interface ClusterRow {
   id: string
   name: string
+  typeLabel: string
   serverVersion: string
   nodeCount: number
-  namespaceCount: string
+  nodeErrors: number
+  cpuCapacity: string
+  memoryCapacity: string
   connectionLabel: string
   connectionTone: 'ok' | 'bad' | 'idle'
   lastCheckedAt: string | null
 }
 
 const connectionLabels: Record<ConnectionStatus, string> = {
-  connected: '已连接',
-  unavailable: '连接不可用',
+  connected: '健康',
+  unavailable: '不可用',
   unknown: '未检测',
 }
 
@@ -36,61 +37,80 @@ const connectionTones: Record<ConnectionStatus, ClusterRow['connectionTone']> = 
 const router = useRouter()
 
 const clusters = ref<Cluster[]>([])
-const namespaceCounts = ref<Record<string, number>>({})
 const loading = ref(false)
 const error = ref('')
+const keyword = ref('')
+const statusFilter = ref('')
+const refreshedAt = ref(Date.now())
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | undefined
+
+const statusOptions = [
+  { label: '全部集群', value: '' },
+  { label: '健康', value: 'connected' },
+  { label: '不可用', value: 'unavailable' },
+  { label: '未检测', value: 'unknown' },
+]
 
 const columns = [
-  { colKey: 'name', title: '集群名称', width: 300 },
-  { colKey: 'serverVersion', title: '版本', width: 180 },
-  { colKey: 'nodeCount', title: '节点数', width: 110 },
-  { colKey: 'namespaceCount', title: '命名空间数', width: 140 },
-  { colKey: 'connectionLabel', title: '连接状态', width: 200 },
-  { colKey: 'lastCheckedAt', title: '最近检测', width: 170 },
+  { colKey: 'name', title: '集群', width: 260 },
+  { colKey: 'connectionLabel', title: '状态', width: 120 },
+  { colKey: 'typeLabel', title: '类型', width: 140 },
+  { colKey: 'nodeCount', title: '节点', width: 90 },
+  { colKey: 'nodeErrors', title: '节点错误', width: 110 },
+  { colKey: 'serverVersion', title: 'K8s 版本', width: 150 },
+  { colKey: 'cpuCapacity', title: 'CPU 容量', width: 120 },
+  { colKey: 'memoryCapacity', title: '内存容量', width: 130 },
   { colKey: 'ops', title: '', width: 56 },
 ]
 
 const rows = computed<ClusterRow[]>(() =>
-  clusters.value.map((cluster) => ({
-    id: cluster.id,
-    name: cluster.name,
-    serverVersion: cluster.serverVersion ?? '—',
-    nodeCount: cluster.nodeCount,
-    namespaceCount: String(namespaceCounts.value[cluster.id] ?? '—'),
-    connectionLabel: connectionLabels[cluster.connectionStatus],
-    connectionTone: connectionTones[cluster.connectionStatus],
-    lastCheckedAt: cluster.lastCheckedAt,
-  })),
+  clusters.value
+    .filter((cluster) => {
+      if (keyword.value && !cluster.name.toLowerCase().includes(keyword.value.trim().toLowerCase())) return false
+      if (statusFilter.value && cluster.connectionStatus !== statusFilter.value) return false
+      return true
+    })
+    .map((cluster) => ({
+      id: cluster.id,
+      name: cluster.name,
+      typeLabel: cluster.production ? '生产环境' : '非生产',
+      serverVersion: cluster.serverVersion ?? '—',
+      nodeCount: cluster.nodeCount,
+      nodeErrors: cluster.nodeErrors ?? 0,
+      cpuCapacity: cluster.cpuCapacity ?? '—',
+      memoryCapacity: cluster.memoryCapacity ?? '—',
+      connectionLabel: connectionLabels[cluster.connectionStatus],
+      connectionTone: connectionTones[cluster.connectionStatus],
+      lastCheckedAt: cluster.lastCheckedAt,
+    })),
 )
 
-const connectedCount = computed(() => clusters.value.filter((item) => item.connectionStatus === 'connected').length)
-const nodeTotal = computed(() => clusters.value.reduce((total, item) => total + item.nodeCount, 0))
-const namespaceTotal = computed(() =>
-  Object.values(namespaceCounts.value).reduce((total, count) => total + count, 0),
+const healthyCount = computed(() => clusters.value.filter((item) => item.connectionStatus === 'connected').length)
+const productionCount = computed(() => clusters.value.filter((item) => item.production).length)
+const healthyPercent = computed(() =>
+  clusters.value.length ? Math.round((healthyCount.value / clusters.value.length) * 100) : 0,
+)
+const productionPercent = computed(() =>
+  clusters.value.length ? Math.round((productionCount.value / clusters.value.length) * 100) : 0,
 )
 
-/** 顶部一行 4 个小统计块，对应截图里的集群概览条 */
-const stats = computed(() => [
-  { key: 'clusters', label: 'Clusters', value: clusters.value.length },
-  { key: 'connected', label: 'Connected', value: connectedCount.value },
-  { key: 'nodes', label: 'Nodes', value: nodeTotal.value },
-  { key: 'namespaces', label: 'Namespaces', value: namespaceTotal.value },
-])
+const refreshedLabel = computed(() => {
+  const seconds = Math.max(0, Math.round((now.value - refreshedAt.value) / 1000))
+  if (seconds < 10) return '刚刚'
+  if (seconds < 60) return `${seconds} 秒前`
+  return `${Math.round(seconds / 60)} 分钟前`
+})
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const list = await listClusters()
-    clusters.value = list
-    // NAMESPACES 列取 listNamespace 的条数，与工作区的命名空间下拉同源
-    const counts = await Promise.all(
-      list.map(async (cluster) => [cluster.id, (await listNamespace(cluster.id)).length] as const),
-    )
-    namespaceCounts.value = Object.fromEntries(counts)
+    clusters.value = await listClusters()
+    refreshedAt.value = Date.now()
+    now.value = Date.now()
   } catch (err) {
     clusters.value = []
-    namespaceCounts.value = {}
     error.value = err instanceof Error ? err.message : '集群列表加载失败'
   } finally {
     loading.value = false
@@ -117,32 +137,53 @@ function onMenuClick(row: ClusterRow, payload: unknown): void {
 
 onMounted(() => {
   void load()
+  ticker = setInterval(() => {
+    now.value = Date.now()
+  }, 30000)
+})
+
+onUnmounted(() => {
+  if (ticker) clearInterval(ticker)
 })
 </script>
 
 <template>
   <div class="clusters">
-    <div class="clusters__bar">
-      <div class="clusters__stats tk-panel">
-        <div v-for="stat in stats" :key="stat.key" class="clusters__stat">
-          <span class="clusters__stat-value">{{ stat.value }}</span>
-          <span class="clusters__stat-label">{{ stat.label }}</span>
-        </div>
+    <div class="clusters__toolbar">
+      <div class="clusters__toolbar-left">
+        <t-input v-model="keyword" class="clusters__search" size="small" clearable placeholder="搜索集群">
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <t-select v-model="statusFilter" :options="statusOptions" class="clusters__filter" size="small" />
       </div>
-      <div class="clusters__actions">
+      <div class="clusters__toolbar-right">
+        <span class="clusters__refreshed">最近刷新 {{ refreshedLabel }}</span>
         <t-button size="small" variant="text" :loading="loading" @click="load">
-          <template #icon>
-            <t-icon name="refresh" />
-          </template>
+          <template #icon><t-icon name="refresh" /></template>
           刷新
         </t-button>
         <t-button theme="primary" size="small" @click="goSettings">
-          <template #icon>
-            <t-icon name="add" />
-          </template>
+          <template #icon><t-icon name="add" /></template>
           接入集群
         </t-button>
       </div>
+    </div>
+
+    <div class="clusters__summary">
+      <section class="clusters__summary-card">
+        <p class="clusters__summary-value">{{ healthyCount }}/{{ clusters.length }}</p>
+        <p class="clusters__summary-label"><i class="clusters__summary-dot" />健康</p>
+        <div class="clusters__summary-bar">
+          <span class="clusters__summary-fill" :style="{ width: `${healthyPercent}%` }" />
+        </div>
+      </section>
+      <section class="clusters__summary-card">
+        <p class="clusters__summary-value">{{ productionCount }}/{{ clusters.length }}</p>
+        <p class="clusters__summary-label"><i class="clusters__summary-dot clusters__summary-dot--muted" />生产环境</p>
+        <div class="clusters__summary-bar">
+          <span class="clusters__summary-fill clusters__summary-fill--muted" :style="{ width: `${productionPercent}%` }" />
+        </div>
+      </section>
     </div>
 
     <ErrorState v-if="error" :message="error" @retry="load" />
@@ -158,23 +199,20 @@ onMounted(() => {
               </router-link>
             </div>
           </template>
-          <template #serverVersion="{ row }">
-            <span class="clusters__version">{{ row.serverVersion }}</span>
-          </template>
-          <template #nodeCount="{ row }">
-            <span class="clusters__value">{{ row.nodeCount }}</span>
-          </template>
-          <template #namespaceCount="{ row }">
-            <span class="clusters__value">{{ row.namespaceCount }}</span>
-          </template>
           <template #connectionLabel="{ row }">
             <span class="clusters__conn" :class="`clusters__conn--${row.connectionTone}`">
               <i class="clusters__dot" />
               {{ row.connectionLabel }}
             </span>
           </template>
-          <template #lastCheckedAt="{ row }">
-            <span class="clusters__value">{{ fmtRelative(row.lastCheckedAt) }}</span>
+          <template #typeLabel="{ row }">
+            <span class="clusters__type">{{ row.typeLabel }}</span>
+          </template>
+          <template #nodeErrors="{ row }">
+            <span class="clusters__value" :class="{ 'clusters__value--bad': row.nodeErrors > 0 }">{{ row.nodeErrors }}</span>
+          </template>
+          <template #serverVersion="{ row }">
+            <span class="clusters__version">{{ row.serverVersion }}</span>
           </template>
           <template #ops="{ row }">
             <t-dropdown
@@ -213,66 +251,100 @@ onMounted(() => {
   flex-direction: column;
   min-height: calc(100vh - 84px);
 }
-.clusters__bar {
+.clusters__toolbar {
   display: flex;
-  flex: none;
-  align-items: stretch;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
-/* 加载态包裹层撑满剩余高度，表格白底一直铺到页面底部（对齐 Devtron 列表页） */
+.clusters__toolbar-left,
+.clusters__toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.clusters__search {
+  width: 240px;
+}
+.clusters__filter {
+  width: 130px;
+}
+.clusters__refreshed {
+  color: #767d84;
+  font-size: 11px;
+}
+.clusters__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.clusters__summary-card {
+  padding: 14px 18px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.clusters__summary-value {
+  margin: 0 0 2px;
+  color: #000a14;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.clusters__summary-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: #3b444c;
+  font-size: 12px;
+}
+.clusters__summary-dot {
+  width: 8px;
+  height: 8px;
+  background: #1dad70;
+  border-radius: 1px;
+}
+.clusters__summary-dot--muted {
+  background: #b1b7bc;
+}
+.clusters__summary-bar {
+  height: 6px;
+  overflow: hidden;
+  background: #edf1f5;
+  border-radius: 3px;
+}
+.clusters__summary-fill {
+  display: block;
+  height: 100%;
+  background: #1dad70;
+  border-radius: 3px;
+}
+.clusters__summary-fill--muted {
+  background: #b1b7bc;
+}
 .clusters > :deep(.t-loading__parent) {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
 }
-.clusters__stats {
-  display: grid;
-  flex: 1;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  min-width: 0;
-  overflow: hidden;
-}
-.clusters__stat {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  justify-content: center;
-  padding: 8px 16px;
-  border-left: 1px solid var(--tk-border);
-}
-.clusters__stat:first-child {
-  border-left: 0;
-}
-.clusters__stat-value {
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 24px;
-}
-.clusters__stat-label {
-  color: var(--tk-text-3);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.clusters__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .clusters__table {
   flex: 1;
   overflow: hidden;
 }
 .clusters__table :deep(.t-table td) {
-  height: 40px;
+  height: 44px;
   padding: 0 12px !important;
 }
 .clusters__table :deep(.t-table th) {
-  height: 36px;
+  height: 38px;
   padding: 0 12px !important;
+  color: #767d84;
+  font-size: 11px;
+  font-weight: 500;
 }
 .clusters__name {
   display: flex;
@@ -291,15 +363,22 @@ onMounted(() => {
   border-radius: 3px;
 }
 .clusters__link {
+  color: #0066cc;
   font-weight: 500;
 }
 .clusters__version {
-  color: var(--tk-text-2);
+  color: #596168;
   font-family: var(--tk-mono);
   font-size: 11px;
 }
 .clusters__value {
-  color: var(--tk-text-2);
+  color: #3b444c;
+}
+.clusters__value--bad {
+  color: #f33e3e;
+}
+.clusters__type {
+  color: #3b444c;
 }
 .clusters__conn {
   display: inline-flex;
@@ -314,13 +393,13 @@ onMounted(() => {
   border-radius: 50%;
 }
 .clusters__conn--ok {
-  color: #2ba471;
+  color: #1dad70;
 }
 .clusters__conn--bad {
-  color: var(--tk-danger);
+  color: #f33e3e;
 }
 .clusters__conn--idle {
-  color: var(--tk-text-3);
+  color: #767d84;
 }
 .clusters__more {
   display: inline-flex;
@@ -329,7 +408,7 @@ onMounted(() => {
   width: 24px;
   height: 24px;
   padding: 0;
-  color: var(--tk-text-3);
+  color: #767d84;
   font-size: 15px;
   line-height: 1;
   background: none;
@@ -338,7 +417,7 @@ onMounted(() => {
   cursor: pointer;
 }
 .clusters__more:hover {
-  color: var(--tk-primary);
+  color: #0066cc;
   background: #f2f6fd;
 }
 </style>

@@ -4,12 +4,14 @@
  * - 主视图：Git 仓库 / 构建配置 / 基础配置 / 工作流编辑器 + 环境覆盖 + 删除应用。
  * - Base / 环境覆盖视图：左侧切换为上下文面板（返回、对比环境、部署模板 / ConfigMaps / Secrets）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { listEnvironments, updateApplication } from '@/api'
-import type { Environment } from '@/types'
+import { listEnvironments, getApplication, getSetup, updateApplication } from '@/api'
+import type { Application, ApplicationSetup, Environment, SetupKey } from '@/types'
+import { onSetupChanged } from '@/utils/appEvents'
+import ConfigCompareDialog from '@/views/apps/config/ConfigCompareDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,9 +20,34 @@ const projectId = computed(() => String(route.params.projectId ?? ''))
 const routeName = computed(() => String(route.name ?? ''))
 
 const environments = ref<Environment[]>([])
+const app = ref<Application | null>(null)
 const loadingEnv = ref(false)
+const setup = ref<ApplicationSetup | null>(null)
 const deleteVisible = ref(false)
 const deleting = ref(false)
+const deleteConfirm = ref('')
+const compareVisible = ref(false)
+
+const canDelete = computed(() => Boolean(app.value?.name) && deleteConfirm.value.trim() === app.value?.name)
+
+function openDelete(): void {
+  deleteConfirm.value = ''
+  deleteVisible.value = true
+}
+
+const setupPercent = computed(() => {
+  if (!setup.value?.total) return 0
+  return Math.round((setup.value.completed / setup.value.total) * 100)
+})
+const nextSectionLabel = computed(() => {
+  const labels: Record<SetupKey, string> = {
+    git: 'Git 仓库',
+    build: '构建配置',
+    base: '部署模板',
+    workflow: '工作流',
+  }
+  return setup.value?.nextSection ? labels[setup.value.nextSection] : ''
+})
 
 const isBase = computed(() => routeName.value.startsWith('config-base'))
 const isOverride = computed(
@@ -36,12 +63,19 @@ const section = computed<'deployment' | 'configmaps' | 'secrets'>(() => {
   return 'deployment'
 })
 
-const mainItems = [
-  { label: 'Git 仓库', name: 'config-git' },
-  { label: '构建配置', name: 'config-build' },
-  { label: '基础配置', name: 'config-base-deployment' },
-  { label: '工作流编辑器', name: 'config-workflow' },
-]
+const mainItems = computed(() =>
+  app.value?.sourceMode === 'image'
+    ? [
+        { label: '基础配置', name: 'config-base-deployment' },
+        { label: '工作流编辑器', name: 'config-workflow' },
+      ]
+    : [
+        { label: 'Git 仓库', name: 'config-git' },
+        { label: '构建配置', name: 'config-build' },
+        { label: '基础配置', name: 'config-base-deployment' },
+        { label: '工作流编辑器', name: 'config-workflow' },
+      ],
+)
 
 /** 主视图里 Base Configurations 的高亮判断 */
 function mainActive(name: string): boolean {
@@ -72,7 +106,15 @@ function createEntry(kind: 'deployment' | 'configmaps' | 'secrets'): void {
 }
 
 function compare(): void {
-  MessagePlugin.info('跨环境比较暂未接入；可在 Devtron 的 Compare With 中查看 diff。')
+  compareVisible.value = true
+}
+
+function switchEnv(id: string): void {
+  if (id === envId.value) return
+  void router.push({
+    name: `config-override-${section.value}`,
+    params: { projectId: projectId.value, appId: appId.value, envId: id },
+  })
 }
 
 async function loadEnvironments(): Promise<void> {
@@ -87,6 +129,10 @@ async function loadEnvironments(): Promise<void> {
 }
 
 async function removeApplication(): Promise<void> {
+  if (!canDelete.value) {
+    MessagePlugin.warning('请输入应用名称后再确认归档')
+    return
+  }
   deleting.value = true
   try {
     await updateApplication(appId.value, { archived: true })
@@ -100,7 +146,43 @@ async function removeApplication(): Promise<void> {
   }
 }
 
-watch(appId, loadEnvironments, { immediate: true })
+async function loadSetup(): Promise<void> {
+  try {
+    setup.value = await getSetup(appId.value)
+  } catch {
+    setup.value = null
+  }
+}
+
+async function loadApplication(): Promise<void> {
+  try {
+    app.value = await getApplication(appId.value)
+  } catch {
+    app.value = null
+  }
+}
+
+watch(
+  appId,
+  () => {
+    void loadEnvironments()
+    void loadSetup()
+    void loadApplication()
+  },
+  { immediate: true },
+)
+watch(
+  () => route.fullPath,
+  () => {
+    if (!inContext.value) void loadSetup()
+  },
+)
+
+onUnmounted(
+  onSetupChanged((id) => {
+    if (id === appId.value) void loadSetup()
+  }),
+)
 </script>
 
 <template>
@@ -108,9 +190,28 @@ watch(appId, loadEnvironments, { immediate: true })
     <aside class="cfg__nav">
       <!-- Base / 环境覆盖：上下文面板 -->
       <template v-if="inContext">
-        <router-link class="cfg__ctx" :to="{ name: 'config-workflow', params: { projectId, appId } }">
+        <t-dropdown
+          v-if="isOverride"
+          trigger="click"
+          placement="bottom-left"
+          :popup-props="{ overlayClassName: 'cfg-env-popup' }"
+        >
+          <button type="button" class="cfg__ctx cfg__ctx--switch">
+            <t-icon name="chevron-left" size="14px" />
+            <span class="cfg__ctx-name">{{ envName || '环境' }}</span>
+            <t-icon name="chevron-down" size="12px" />
+          </button>
+          <template #dropdown>
+            <t-dropdown-menu>
+              <t-dropdown-item v-for="env in environments" :key="env.id" @click="switchEnv(env.id)">
+                {{ env.name }}
+              </t-dropdown-item>
+            </t-dropdown-menu>
+          </template>
+        </t-dropdown>
+        <router-link v-else class="cfg__ctx" :to="{ name: 'config-workflow', params: { projectId, appId } }">
           <t-icon name="chevron-left" size="14px" />
-          <span class="cfg__ctx-name">{{ isBase ? '基础配置' : envName || '环境' }}</span>
+          <span class="cfg__ctx-name">基础配置</span>
         </router-link>
         <button type="button" class="cfg__compare" @click="compare">
           <t-icon name="swap" size="14px" />
@@ -141,6 +242,17 @@ watch(appId, loadEnvironments, { immediate: true })
 
       <!-- 主视图 -->
       <template v-else>
+        <div v-if="setup" class="cfg__progress">
+          <div class="cfg__progress-head">
+            <span>已完成 {{ setup.completed }}/{{ setup.total }}</span>
+            <span class="cfg__progress-help">需要帮助？</span>
+          </div>
+          <div class="cfg__progress-bar">
+            <span :style="{ width: `${setupPercent}%` }" />
+          </div>
+          <p v-if="nextSectionLabel" class="cfg__progress-next">下一步：{{ nextSectionLabel }}</p>
+        </div>
+
         <nav class="cfg__main">
           <RouterLink
             v-for="item in mainItems"
@@ -167,8 +279,16 @@ watch(appId, loadEnvironments, { immediate: true })
           <span v-else-if="!environments.length" class="cfg__env cfg__env--muted">暂无环境</span>
         </nav>
 
+        <div class="cfg__env-note">
+          <t-icon name="help-circle" size="15px" />
+          <p>
+            环境覆盖允许在创建部署流水线后，为单个环境管理专属配置。
+            <span class="cfg__env-more">了解更多</span>
+          </p>
+        </div>
+
         <div class="cfg__foot">
-          <button type="button" class="cfg__delete" @click="deleteVisible = true">删除应用</button>
+          <button type="button" class="cfg__delete" @click="openDelete">删除应用</button>
         </div>
       </template>
     </aside>
@@ -183,9 +303,24 @@ watch(appId, loadEnvironments, { immediate: true })
       :confirm-btn="deleting ? '处理中…' : '归档应用'"
       @confirm="removeApplication"
     >
-      <p>归档后该应用不再出现在应用列表中，运行中的资源不会被删除。</p>
-      <p class="u-dim">本操作为本地 mock，仅修改当前会话数据。</p>
+      <t-alert
+        theme="error"
+        title="归档后应用将从列表移除"
+        message="运行中的资源不会被删除；该操作不可撤销。"
+        class="cfg__delete-alert"
+      />
+      <p class="cfg__delete-text">
+        请输入应用名称 <span class="u-mono">{{ app?.name }}</span> 以确认。
+      </p>
+      <t-input v-model="deleteConfirm" placeholder="输入应用名称" />
+      <p class="u-dim cfg__delete-note">本操作为本地 mock，仅修改当前会话数据。</p>
     </t-dialog>
+
+    <ConfigCompareDialog
+      v-model:visible="compareVisible"
+      :app-id="appId"
+      :env-id="isOverride ? envId : ''"
+    />
   </div>
 </template>
 
@@ -204,6 +339,45 @@ watch(appId, loadEnvironments, { immediate: true })
   padding: 8px 0 12px;
   background: #fff;
   border-right: 1px solid #e6e9ef;
+}
+.cfg__progress {
+  margin: 0 12px 10px;
+  padding: 10px 12px;
+  background: #f7fafc;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.cfg__progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #3b444c;
+  font-size: 12px;
+  line-height: 18px;
+}
+.cfg__progress-help {
+  color: #0066cc;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cfg__progress-bar {
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #e6e9ef;
+  border-radius: 2px;
+}
+.cfg__progress-bar span {
+  display: block;
+  height: 100%;
+  background: #1dad70;
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+.cfg__progress-next {
+  margin: 8px 0 0;
+  color: #767d84;
+  font-size: 11px;
 }
 .cfg__main {
   display: flex;
@@ -252,6 +426,25 @@ watch(appId, loadEnvironments, { immediate: true })
 .cfg__env--muted {
   color: #959ba1;
 }
+.cfg__env-note {
+  display: flex;
+  gap: 8px;
+  margin: 12px 12px 0;
+  padding: 10px 12px;
+  color: #596168;
+  font-size: 11px;
+  line-height: 16px;
+  background: #f7f4ff;
+  border: 1px solid #e3dbff;
+  border-radius: 4px;
+}
+.cfg__env-note p {
+  margin: 0;
+}
+.cfg__env-more {
+  color: #664bee;
+  cursor: pointer;
+}
 .cfg__foot {
   margin-top: auto;
   padding: 16px;
@@ -283,6 +476,17 @@ watch(appId, loadEnvironments, { immediate: true })
   font-size: 13px;
   font-weight: 600;
   border-bottom: 1px solid #e6e9ef;
+}
+.cfg__ctx--switch {
+  width: calc(100% - 24px);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #e6e9ef;
+  cursor: pointer;
+}
+.cfg__ctx--switch:hover {
+  color: #0066cc;
 }
 .cfg__ctx-name {
   overflow: hidden;
@@ -350,6 +554,18 @@ watch(appId, loadEnvironments, { immediate: true })
   background: #dbeafe;
 }
 
+.cfg__delete-alert {
+  margin-bottom: 12px;
+}
+.cfg__delete-text {
+  margin: 0 0 8px;
+  color: #3b444c;
+  font-size: 12px;
+}
+.cfg__delete-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
 .cfg__content {
   display: flex;
   flex: 1;

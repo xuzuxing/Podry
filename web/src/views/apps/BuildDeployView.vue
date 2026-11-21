@@ -33,6 +33,7 @@ import type {
   Pipeline,
   Workflow,
 } from '@/types'
+import { fmtRelative } from '@/utils/format'
 
 import SelectImageDrawer from './components/pipeline/SelectImageDrawer.vue'
 import SelectMaterialDrawer from './components/pipeline/SelectMaterialDrawer.vue'
@@ -73,6 +74,30 @@ const buildsSorted = computed(() =>
 const deploymentsSorted = computed(() =>
   deployments.value.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
 )
+
+const latestBuild = computed(() => buildsSorted.value[0] ?? null)
+const latestDeployment = computed(() => deploymentsSorted.value[0] ?? null)
+const latestBuildStatus = computed(() => (latestBuild.value ? ciStatusMap[latestBuild.value.status] : null))
+const latestDeployStatus = computed(() =>
+  latestDeployment.value ? cdStatusMap[latestDeployment.value.status] : null,
+)
+
+function toneTheme(tone?: TriggerStatus['tone']): 'success' | 'danger' | 'warning' | 'default' | 'primary' {
+  if (tone === 'success') return 'success'
+  if (tone === 'danger') return 'danger'
+  if (tone === 'warning') return 'warning'
+  if (tone === 'info') return 'primary'
+  return 'default'
+}
+
+function environmentName(environmentId: string): string {
+  return environments.value.find((env) => env.id === environmentId)?.name ?? environmentId
+}
+
+function deploymentEnvironmentName(bindingId: string): string {
+  const binding = bindings.value.find((item) => item.id === bindingId)
+  return binding ? environmentName(binding.environmentId) : bindingId
+}
 
 function errorTextOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
@@ -291,7 +316,7 @@ watch(
 
     <ErrorState v-else-if="error" :message="error" @retry="load" />
 
-    <template v-else>
+    <div v-else>
       <EmptyState
         v-if="!rows.length"
         title="还没有工作流"
@@ -302,15 +327,48 @@ watch(
         </template>
       </EmptyState>
 
-      <TriggerGraph
-        v-else
-        :rows="rows"
-        @material="onSelectMaterial"
-        @image="onSelectImage"
-        @rollback="onRollback"
-        @details="onDetails"
-      />
-    </template>
+      <div v-else>
+        <div class="trigger-meta">
+          <div class="trigger-meta__item">
+            <span class="trigger-meta__label">最近构建</span>
+            <template v-if="latestBuild && latestBuildStatus">
+              <t-tag size="small" variant="light" :theme="toneTheme(latestBuildStatus.tone)">
+                {{ latestBuildStatus.label }}
+              </t-tag>
+              <span class="trigger-meta__sub">
+                {{ latestBuild.commitSha.slice(0, 7) }} · {{ fmtRelative(latestBuild.createdAt) }}
+              </span>
+            </template>
+            <span v-else class="trigger-meta__sub">暂无构建</span>
+          </div>
+          <div class="trigger-meta__item">
+            <span class="trigger-meta__label">最近发布</span>
+            <template v-if="latestDeployment && latestDeployStatus">
+              <t-tag size="small" variant="light" :theme="toneTheme(latestDeployStatus.tone)">
+                {{ latestDeployStatus.label }}
+              </t-tag>
+              <span class="trigger-meta__sub">
+                {{ deploymentEnvironmentName(latestDeployment.bindingId) }} ·
+                {{ fmtRelative(latestDeployment.createdAt) }}
+              </span>
+            </template>
+            <span v-else class="trigger-meta__sub">暂无发布</span>
+          </div>
+          <div class="trigger-meta__item">
+            <span class="trigger-meta__label">配置版本</span>
+            <span class="trigger-meta__value u-mono">v{{ configVersion }}</span>
+          </div>
+        </div>
+
+        <TriggerGraph
+          :rows="rows"
+          @material="onSelectMaterial"
+          @image="onSelectImage"
+          @rollback="onRollback"
+          @details="onDetails"
+        />
+      </div>
+    </div>
 
     <SelectMaterialDrawer
       v-model:visible="materialVisible"
@@ -338,6 +396,39 @@ watch(
 </template>
 
 <style scoped>
+.trigger-meta {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.trigger-meta__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.trigger-meta__label {
+  color: #767d84;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.trigger-meta__value {
+  color: #000a14;
+  font-size: 12px;
+  font-weight: 600;
+}
+.trigger-meta__sub {
+  overflow: hidden;
+  color: #3b444c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .bd {
   min-height: 100%;
   padding: 16px 20px 24px;

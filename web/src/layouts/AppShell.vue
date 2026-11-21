@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { MessagePlugin } from 'tdesign-vue-next'
 
 import { listApplications, listClusters, listProjects } from '@/api'
 import type { Application, Cluster, Project } from '@/types'
@@ -22,7 +23,7 @@ const rail: RailItem[] = [
   { title: '应用', icon: 'app', path: '/apps' },
   { title: '集群资源', icon: 'server', path: '/clusters' },
   { title: '操作记录', icon: 'history', path: '/audit' },
-  { title: '平台设置', icon: 'setting', path: '/settings' },
+  { title: '全局设置', icon: 'setting', path: '/settings' },
 ]
 
 const activePath = computed(() => {
@@ -147,6 +148,18 @@ function logout(): void {
   session.logout()
   void router.push({ name: 'login' })
 }
+
+function onHelp(data: { value?: string }): void {
+  if (data.value === 'keys') {
+    MessagePlugin.info('全局搜索聚焦 /，Esc 关闭结果；表单内按 Enter 提交。')
+    return
+  }
+  if (data.value === 'about') {
+    MessagePlugin.info('Podry Web · Vue 3 + TDesign · 当前为静态 mock 数据')
+    return
+  }
+  MessagePlugin.info('帮助文档见仓库 web/README.md')
+}
 </script>
 
 <template>
@@ -213,9 +226,19 @@ function logout(): void {
               <p v-else class="topbar__result-hint">没有匹配结果</p>
             </div>
           </div>
-          <t-button variant="text" shape="square" size="small" title="帮助">
-            <t-icon name="info-circle" />
-          </t-button>
+          <t-dropdown
+            trigger="click"
+            :options="[
+              { content: '帮助文档', value: 'docs' },
+              { content: '键盘快捷键', value: 'keys' },
+              { content: '关于 Podry', value: 'about' },
+            ]"
+            @click="onHelp"
+          >
+            <t-button variant="text" shape="square" size="small" title="帮助">
+              <t-icon name="info-circle" />
+            </t-button>
+          </t-dropdown>
           <t-dropdown
             :options="[{ content: '退出登录', value: 'logout' }]"
             trigger="click"

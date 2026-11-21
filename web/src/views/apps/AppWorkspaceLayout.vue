@@ -1,24 +1,38 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
-import { getApplication, getProject } from '@/api'
+import { getApplication, getProject, listApplications } from '@/api'
 import StatusTag from '@/components/StatusTag.vue'
 import { appTabs } from '@/router/menu'
 import type { Application, Project } from '@/types'
 
 const route = useRoute()
+const router = useRouter()
 const appId = computed(() => String(route.params.appId ?? ''))
 const projectId = computed(() => String(route.params.projectId ?? ''))
 
 const app = ref<Application | null>(null)
 const project = ref<Project | null>(null)
+const projectApps = ref<Application[]>([])
 
 async function load(): Promise<void> {
   if (!appId.value) return
-  ;[app.value, project.value] = await Promise.all([getApplication(appId.value), getProject(projectId.value)])
+  const [appItem, projectItem, appPage] = await Promise.all([
+    getApplication(appId.value),
+    getProject(projectId.value),
+    listApplications({ projectId: projectId.value, pageSize: 100 }),
+  ])
+  app.value = appItem
+  project.value = projectItem
+  projectApps.value = appPage.items
 }
 watch(appId, load, { immediate: true })
+
+function switchTo(id: string): void {
+  if (!id || id === appId.value) return
+  void router.push({ name: 'app-overview', params: { projectId: projectId.value, appId: id } })
+}
 
 const activeTab = computed(() => {
   const name = String(route.name ?? '')
@@ -42,8 +56,23 @@ const tint = computed(() => route.name === 'app-overview')
         <span class="app-head__sep">/</span>
         <router-link class="app-head__crumb" :to="`/projects/${projectId}`">{{ project?.name ?? '—' }}</router-link>
         <span class="app-head__sep">/</span>
-        <span class="app-head__name">{{ app?.name ?? '加载中…' }}</span>
-        <t-icon name="chevron-down" class="app-head__caret" />
+        <t-dropdown
+          trigger="click"
+          placement="bottom-left"
+          :popup-props="{ overlayClassName: 'app-switch-popup' }"
+        >
+          <button type="button" class="app-head__name app-head__name--switch">
+            {{ app?.name ?? '加载中…' }}
+            <t-icon name="chevron-down" size="12px" />
+          </button>
+          <template #dropdown>
+            <t-dropdown-menu>
+              <t-dropdown-item v-for="item in projectApps" :key="item.id" @click="switchTo(item.id)">
+                {{ item.name }}
+              </t-dropdown-item>
+            </t-dropdown-menu>
+          </template>
+        </t-dropdown>
 
         <span class="app-head__envs">
           <t-icon name="menu-fold" size="13px" />
@@ -110,8 +139,32 @@ const tint = computed(() => route.name === 'app-overview')
   font-size: 14px;
   font-weight: 600;
 }
-.app-head__caret {
-  color: var(--tk-text-3);
+.app-head__name--switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: #000a14;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.app-head__name--switch:hover {
+  color: #0066cc;
+}
+:global(.app-switch-popup) {
+  min-width: 220px;
+}
+:global(.app-switch-popup .t-dropdown__item) {
+  max-width: none;
+}
+:global(.app-switch-popup .t-dropdown__item-text) {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 .app-head__envs {
   display: inline-flex;

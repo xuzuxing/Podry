@@ -450,7 +450,17 @@ async function copyManifest(): Promise<void> {
 }
 
 function downloadLogs(): void {
-  MessagePlugin.info('静态演示：将下载当前容器日志（GET /clusters/{id}/pod-logs?download=1）')
+  if (!logs.value.length) {
+    MessagePlugin.warning('当前没有可下载的日志')
+    return
+  }
+  const blob = new Blob([logs.value.join('\n')], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${props.name}-${logContainer.value}.log`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 watch(
@@ -753,17 +763,44 @@ onBeforeUnmount(() => {
       :confirm-btn="action === 'delete' ? '确认删除' : '确认'"
       @confirm="confirmAction"
     >
+      <div class="rpanel__dialog-res">
+        <span class="rpanel__dialog-kind">{{ kindLabel }}</span>
+        <span class="u-mono">{{ namespace }}/{{ name }}</span>
+      </div>
+
+      <t-alert
+        v-if="action === 'delete'"
+        theme="error"
+        title="删除后不可恢复"
+        message="资源会被立即移除，请确认没有其他工作负载依赖它。"
+        class="rpanel__dialog-alert"
+      />
+
       <template v-if="action === 'delete'">
         <p class="rpanel__dialog-text">
-          删除后不可恢复。请输入资源名称 <span class="u-mono">{{ name }}</span> 以确认。
+          请输入资源名称 <span class="u-mono">{{ name }}</span> 以确认。
         </p>
         <t-input v-model="confirmName" placeholder="输入资源名称" />
       </template>
       <template v-else-if="action === 'scale'">
+        <t-alert
+          theme="info"
+          title="扩缩容会立即修改副本数"
+          message="若该工作负载由 HPA 管理，手动副本数可能被 HPA 覆盖；变更会记录审计。"
+          class="rpanel__dialog-alert"
+        />
         <p class="rpanel__dialog-text">设置新的副本数（静态演示，不会真正扩缩容）。</p>
         <t-input v-model="replicas" placeholder="例如 3" />
       </template>
-      <p v-else class="rpanel__dialog-text">将滚动重启 {{ name }} 关联的 Pod，静态演示不会真正下发。</p>
+      <template v-else>
+        <t-alert
+          theme="info"
+          title="滚动重启"
+          message="逐个替换 Pod，重启期间服务保持可用；不会修改镜像与配置。"
+          class="rpanel__dialog-alert"
+        />
+        <p class="rpanel__dialog-text">将滚动重启 {{ name }} 关联的 Pod（静态演示，不会真正下发）。</p>
+      </template>
     </t-dialog>
   </div>
 </template>
@@ -890,6 +927,28 @@ onBeforeUnmount(() => {
   margin: 6px 2px 0;
   color: var(--tk-text-3);
   font-size: 11px;
+}
+.rpanel__dialog-res {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  color: #3b444c;
+  font-size: 12px;
+  background: #f7fafc;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.rpanel__dialog-kind {
+  padding: 1px 6px;
+  color: #0066cc;
+  font-size: 11px;
+  background: #eef5ff;
+  border-radius: 2px;
+}
+.rpanel__dialog-alert {
+  margin-bottom: 12px;
 }
 .rpanel__dialog-text {
   margin: 0 0 8px;

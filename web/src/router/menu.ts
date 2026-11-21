@@ -2,6 +2,7 @@ export interface MenuItem {
   title: string
   icon: string
   path?: string
+  group?: string
   children?: MenuItem[]
 }
 
@@ -17,16 +18,16 @@ export const menu: MenuItem[] = [
   },
   { title: '集群资源', icon: 'server', path: '/clusters' },
   { title: '操作记录', icon: 'history', path: '/audit' },
-  { title: '平台设置', icon: 'setting', path: '/settings' },
+  { title: '全局设置', icon: 'setting', path: '/settings' },
 ]
 
 /** 平台设置内部子导航（由 SettingsLayout 渲染，不重复出现在全局侧栏） */
 export const settingsNav: MenuItem[] = [
-  { title: '团队与成员', icon: 'usergroup', path: '/settings/members' },
-  { title: '集群接入', icon: 'cloud', path: '/settings/clusters' },
-  { title: '基础环境', icon: 'layers', path: '/settings/environments' },
-  { title: '凭据', icon: 'key', path: '/settings/credentials' },
-  { title: '镜像仓库', icon: 'component', path: '/settings/registries' },
+  { title: '团队与成员', icon: 'usergroup', path: '/settings/members', group: '访问控制' },
+  { title: '集群接入', icon: 'cloud', path: '/settings/clusters', group: '基础设施' },
+  { title: '基础环境', icon: 'layers', path: '/settings/environments', group: '基础设施' },
+  { title: '凭据', icon: 'key', path: '/settings/credentials', group: '凭据与仓库' },
+  { title: '镜像仓库', icon: 'component', path: '/settings/registries', group: '凭据与仓库' },
 ]
 
 /** 应用工作台页签（顺序对齐 Devtron：Overview → App Details → Build & Deploy → 两类 History → Configurations） */
@@ -36,6 +37,7 @@ export const appTabs = [
   { title: '构建发布', name: 'app-trigger' },
   { title: '构建历史', name: 'app-builds' },
   { title: '发布历史', name: 'app-deployments' },
+  { title: '发布指标', name: 'app-metrics' },
   { title: '配置', name: 'config-git', icon: 'setting' },
 ]
 

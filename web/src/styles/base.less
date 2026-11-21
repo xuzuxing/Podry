@@ -367,3 +367,44 @@ h4 {
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
+
+/* 全局设置抽屉表单：与 Devtron 右侧抽屉一致的表单节奏 */
+.settings-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.settings-drawer__scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 16px;
+}
+.settings-drawer__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--tk-text-2);
+  font-size: 12px;
+}
+.settings-drawer__label {
+  color: var(--tk-text);
+  font-weight: 500;
+}
+.settings-drawer__hint {
+  margin: 0;
+  color: var(--tk-text-3);
+  font-size: 11px;
+  line-height: 17px;
+}
+.settings-drawer__footer {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--tk-border);
+}

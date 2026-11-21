@@ -197,6 +197,24 @@ function strategyText(strategy: string): string {
 function triggerText(trigger: 'MANUAL' | 'AUTO'): string {
   return trigger === 'AUTO' ? '自动' : '手动'
 }
+
+/** 工作流标题右侧的触发方式速览：构建/部署各多少条、自动与手动分布 */
+function summaryOf(row: TriggerRow): string {
+  const ci = row.ci ? `构建${triggerText(row.ci.trigger)}` : '无构建'
+  if (!row.cds.length) return `${ci} · 无部署`
+  const auto = row.cds.filter((cd) => cd.trigger === 'AUTO').length
+  const manual = row.cds.length - auto
+  const parts = [`部署 ${row.cds.length} 条`]
+  if (auto) parts.push(`自动 ${auto}`)
+  if (manual) parts.push(`手动 ${manual}`)
+  return `${ci} · ${parts.join(' / ')}`
+}
+
+function triggerHintOf(row: TriggerRow, trigger: 'MANUAL' | 'AUTO'): string {
+  const branch = row.source.branch ? `分支 ${row.source.branch}` : row.source.repo
+  if (trigger === 'AUTO') return `自动触发：监听 ${branch} 的变更后自动执行`
+  return `手动触发：由人工在构建发布页选择提交/镜像后执行`
+}
 </script>
 
 <template>
@@ -204,6 +222,7 @@ function triggerText(trigger: 'MANUAL' | 'AUTO'): string {
     <section v-for="layout in layouts" :key="layout.key" class="wf">
       <header class="wf__head">
         <span data-testid="workflow-heading" class="wf__name">{{ layout.name }}</span>
+        <span class="wf__meta">{{ summaryOf(layout.row) }}</span>
       </header>
 
       <div class="wf__well">
@@ -279,7 +298,9 @@ function triggerText(trigger: 'MANUAL' | 'AUTO'): string {
             }"
             @click="editable ? emit('edit', layout.ci.id) : layout.ci.status?.details && emit('details', 'ci', layout.ci.id)"
           >
-            <div class="tnode__trigger"><span>{{ triggerText(layout.ci.trigger) }}</span></div>
+            <div class="tnode__trigger" :title="triggerHintOf(layout.row, layout.ci.trigger)">
+              <span>{{ triggerText(layout.ci.trigger) }}</span>
+            </div>
             <div class="tnode__title">
               <div class="tnode__title-text">
                 <span class="tnode__kicker">构建</span>
@@ -320,7 +341,9 @@ function triggerText(trigger: 'MANUAL' | 'AUTO'): string {
             :style="{ left: `${cd.x}px`, top: `${cd.y}px`, width: `${cd.w}px`, height: `${cd.h}px` }"
             @click="editable ? emit('edit', cd.id) : cd.status?.details && emit('details', 'cd', cd.id)"
           >
-            <div class="tnode__trigger"><span>{{ triggerText(cd.trigger) }}</span></div>
+            <div class="tnode__trigger" :title="triggerHintOf(layout.row, cd.trigger)">
+              <span>{{ triggerText(cd.trigger) }}</span>
+            </div>
             <div class="tnode__title">
               <div class="tnode__title-text">
                 <span class="tnode__kicker">部署：{{ strategyText(cd.strategy) }}</span>
@@ -417,6 +440,11 @@ function triggerText(trigger: 'MANUAL' | 'AUTO'): string {
   font-size: 13px;
   font-weight: 600;
   line-height: 20px;
+}
+.wf__meta {
+  color: #767d84;
+  font-size: 11px;
+  line-height: 18px;
 }
 .wf__well {
   overflow: auto;

@@ -8,7 +8,11 @@ import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import TriggerGraph from '@/views/apps/components/pipeline/TriggerGraph.vue'
 import type { TriggerRow } from '@/views/apps/components/pipeline/TriggerGraph.vue'
+import PipelineBuildIcon from '@/views/apps/components/pipeline/icons/PipelineBuildIcon.vue'
+import PipelineCdIcon from '@/views/apps/components/pipeline/icons/PipelineCdIcon.vue'
+import PipelineEditDrawer from '@/views/apps/components/pipeline/PipelineEditDrawer.vue'
 import { ciDisplayName, workflowDisplayName } from '@/views/apps/components/pipeline/naming'
+import { notifySetupChanged } from '@/utils/appEvents'
 import type {
   AppConfig,
   Application,
@@ -21,7 +25,7 @@ import type {
 } from '@/types'
 
 
-type TemplateKey = 'build_deploy' | 'external_image'
+type TemplateKey = 'build_deploy' | 'build_only' | 'external_image'
 type TriggerMode = 'manual' | 'on_ci_success'
 
 const route = useRoute()
@@ -46,101 +50,28 @@ const createError = ref('')
 
 const triggerVisible = ref(false)
 
-/* 管线编辑抽屉：前置 / 主阶段 / 后置 */
-type StageTab = 'pre' | 'main' | 'post'
+/* 管线编辑抽屉：由 PipelineEditDrawer 负责阶段与触发方式 */
 const editVisible = ref(false)
 const editItem = ref<Pipeline | null>(null)
-const stageTab = ref<StageTab>('main')
-const editBranch = ref('')
-const editManual = ref(true)
-const editPush = ref(false)
-const editTrigger = ref<'manual' | 'on_ci_success'>('manual')
-const editDeployTimeout = ref(300)
-const editError = ref('')
-const editSaving = ref(false)
 
 function openEdit(item: Pipeline): void {
   editItem.value = item
-  stageTab.value = 'main'
-  editError.value = ''
-  if (item.kind === 'ci') {
-    const definition = item.definition as CIDefinition
-    editBranch.value = definition.branch
-    editManual.value = definition.manual
-    editPush.value = definition.push
-  } else {
-    const definition = item.definition as CDDefinition
-    editTrigger.value = definition.triggerMode
-    editDeployTimeout.value = definition.deployTimeoutSeconds
-  }
   editVisible.value = true
 }
 
-async function saveEdit(): Promise<void> {
-  const item = editItem.value
-  const current = workflow.value
-  if (!item || !current) return
-  editError.value = ''
-  if (item.kind === 'ci' && !editBranch.value.trim()) {
-    editError.value = 'CI 分支不能为空'
-    return
-  }
-  if (item.kind === 'ci' && !editManual.value && !editPush.value) {
-    editError.value = 'CI 至少保留一种触发方式'
-    return
-  }
-  editSaving.value = true
-  try {
-    const items: Pipeline[] = current.items.map((row) => {
-      if (row.id !== item.id) return row
-      if (row.kind === 'ci') {
-        const definition: CIDefinition = {
-          ...(row.definition as CIDefinition),
-          branch: editBranch.value.trim(),
-          manual: editManual.value,
-          push: editPush.value,
-        }
-        return { ...row, definition }
-      }
-      const definition: CDDefinition = {
-        ...(row.definition as CDDefinition),
-        triggerMode: editTrigger.value,
-        deployTimeoutSeconds: Math.round(editDeployTimeout.value),
-      }
-      return { ...row, definition }
-    })
-    const savedWorkflow = await saveWorkflow(appId.value, { version: current.version, items })
-    workflow.value = savedWorkflow
-    MessagePlugin.success(`已更新流水线 ${item.id}（配置版本 v${savedWorkflow.version}）`)
-    editVisible.value = false
-  } catch (err) {
-    editError.value = err instanceof Error ? err.message : '保存失败'
-  } finally {
-    editSaving.value = false
-  }
-}
 const ciManual = ref(true)
 const ciPush = ref(false)
 const cdTriggers = ref<Record<string, TriggerMode>>({})
 const triggerError = ref('')
 
-const templateOptions = [
-  { label: '源码构建部署（Build & Deploy from Source Code）', value: 'build_deploy' },
-  { label: '镜像部署（Deploy from External Image）', value: 'external_image' },
-]
-
 const hasWorkflow = computed(() => (workflow.value?.items.length ?? 0) > 0)
 const ciItem = computed<Pipeline | null>(() => workflow.value?.items.find((item) => item.kind === 'ci') ?? null)
 const cdItems = computed<Pipeline[]>(() => (workflow.value?.items ?? []).filter((item) => item.kind === 'cd'))
 const templateNeedsBranch = computed(() => templateKey.value !== 'external_image')
-const templateNeedsEnv = computed(() => true)
+const templateNeedsEnv = computed(() => templateKey.value !== 'build_only')
 const envOptions = computed(() =>
   environments.value.map((env) => ({ label: env.production ? `${env.name}（生产）` : env.name, value: env.id })),
 )
-const templateHint = computed(() => {
-  if (templateKey.value === 'build_deploy') return '源码构建 + 每个选中环境一条 CD：CI 产出镜像后按需发布。'
-  return '镜像部署：不创建 CI，直接使用镜像仓库中的已有镜像发布到所选环境。'
-})
 const triggerDirty = computed(() => {
   const items = workflow.value?.items ?? []
   return items.some((item) => {
@@ -211,6 +142,17 @@ const graphRows = computed<TriggerRow[]>(() => {
   ]
 })
 
+function onPipelineSaved(saved: Workflow): void {
+  workflow.value = saved
+  editVisible.value = false
+  notifySetupChanged(appId.value)
+}
+
+async function onPipelineRemove(id: string): Promise<void> {
+  await onGraphRemove(id)
+  editVisible.value = false
+}
+
 function onGraphEdit(id: string): void {
   const pipeline = workflow.value?.items.find((item) => item.id === id)
   if (pipeline) openEdit(pipeline)
@@ -219,10 +161,20 @@ function onGraphEdit(id: string): void {
 async function onGraphRemove(id: string): Promise<void> {
   const current = workflow.value
   if (!current) return
-  const items = current.items.filter((item) => item.id !== id)
+  const item = current.items.find((row) => row.id === id)
+  if (!item) return
+  const hasDependents = current.items.some(
+    (row) => row.kind === 'cd' && (row.definition as CDDefinition).upstreamPipelineId === id,
+  )
+  if (item.kind === 'ci' && hasDependents) {
+    MessagePlugin.warning('请先删除依赖该 CI 的部署流水线')
+    return
+  }
+  const items = current.items.filter((row) => row.id !== id)
   try {
     const saved = await saveWorkflow(appId.value, { version: current.version, items })
     workflow.value = saved
+    notifySetupChanged(appId.value)
     MessagePlugin.success(`已删除流水线 ${id}（配置版本 v${saved.version}）`)
   } catch (err) {
     MessagePlugin.error(err instanceof Error ? err.message : '删除失败')
@@ -308,7 +260,7 @@ async function createWorkflow(): Promise<void> {
         definition,
       })
     }
-    if (templateEnvIds.value.length > 0) {
+    if (templateKey.value !== 'build_only' && templateEnvIds.value.length > 0) {
       templateEnvIds.value.forEach((envId, index) => {
         const binding = bindings.value.find((item) => item.environmentId === envId) ?? bindings.value[0]
         const definition: CDDefinition = {
@@ -329,11 +281,14 @@ async function createWorkflow(): Promise<void> {
     }
     const savedWorkflow = await saveWorkflow(appId.value, { version: current.version, items })
     workflow.value = savedWorkflow
+    notifySetupChanged(appId.value)
     createVisible.value = false
     const ciCount = items.filter((item) => item.kind === 'ci').length
     const cdCount = items.filter((item) => item.kind === 'cd').length
     MessagePlugin.success(
-      `已创建工作流（v${savedWorkflow.version}）：CI ${ciCount} 条、CD ${cdCount} 条，releaseName ${templateReleaseName.value || application.value?.name || '—'}`,
+      cdCount > 0
+        ? `已创建工作流（v${savedWorkflow.version}）：CI ${ciCount} 条、CD ${cdCount} 条，releaseName ${templateReleaseName.value || application.value?.name || '—'}`
+        : `已创建工作流（v${savedWorkflow.version}）：CI ${ciCount} 条，未创建部署流水线`,
     )
   } catch (err) {
     createError.value = err instanceof Error ? err.message : '创建工作流失败'
@@ -390,6 +345,7 @@ async function saveTrigger(): Promise<void> {
     })
     const savedWorkflow = await saveWorkflow(appId.value, { version: current.version, items })
     workflow.value = savedWorkflow
+    notifySetupChanged(appId.value)
     triggerVisible.value = false
     MessagePlugin.success(`已保存（工作流版本 v${savedWorkflow.version}）`)
   } catch (err) {
@@ -435,19 +391,24 @@ watch(appId, load, { immediate: true })
     </div>
     <ErrorState v-else-if="error" :message="error" @retry="load" />
 
-    <div v-else-if="!hasWorkflow" class="tk-panel">
-      <EmptyState
-        icon="info-circle"
-        title="尚未创建工作流"
-        description="工作流把 CI 构建与各环境 CD 发布串成一条链路；先从模板创建，再按需调整触发方式。"
-      >
-        <template #action>
-          <t-button theme="primary" @click="openCreate">
-            <template #icon><t-icon name="add" /></template>
-            从模板创建工作流
-          </t-button>
-        </template>
-      </EmptyState>
+    <div v-else-if="!hasWorkflow" class="wf-empty">
+      <div class="wf-empty__flow" aria-hidden="true">
+        <span class="wf-empty__node">
+          <t-icon name="code" size="20px" />
+        </span>
+        <span class="wf-empty__line" />
+        <span class="wf-empty__node">
+          <PipelineBuildIcon class="wf-empty__icon" />
+        </span>
+        <span class="wf-empty__line" />
+        <span class="wf-empty__node">
+          <PipelineCdIcon class="wf-empty__icon" />
+        </span>
+      </div>
+      <h2 class="wf-empty__title">工作流</h2>
+      <p class="wf-empty__desc">工作流把构建与部署阶段串成一条链路，从代码提交一直走到环境发布。</p>
+      <span class="wf-empty__link">了解如何创建工作流</span>
+      <t-button theme="primary" class="wf-empty__cta" @click="openCreate">新建工作流</t-button>
     </div>
 
     <template v-else>
@@ -468,8 +429,10 @@ watch(appId, load, { immediate: true })
       />
     </template>
 
-    <t-dialog v-model:visible="createVisible" header="从模板创建工作流" :footer="false" width="560px" @close="closeCreate">
-      <div class="dlg">
+    <t-dialog v-model:visible="createVisible" header="工作流模板" :footer="false" width="860px" @close="closeCreate">
+      <div class="tpl">
+        <p class="tpl__sub">选择模板创建工作流</p>
+
         <t-alert v-if="createError" theme="error" :message="createError" />
         <t-alert
           v-if="bindings.length === 0"
@@ -477,26 +440,70 @@ watch(appId, load, { immediate: true })
           title="该应用尚无环境绑定"
           message="CD 流水线将不关联 binding，创建后需先在环境绑定中补齐。"
         />
-        <div class="fld">
-          <span class="fld__label">模板</span>
-          <t-select v-model="templateKey" :options="templateOptions" />
-          <span class="u-dim">{{ templateHint }}</span>
+
+        <p class="tpl__group">构建容器镜像</p>
+        <div class="tpl__grid">
+          <button
+            type="button"
+            class="tpl-card"
+            :class="{ 'tpl-card--active': templateKey === 'build_deploy' }"
+            @click="templateKey = 'build_deploy'"
+          >
+            <span class="tpl-card__icons">
+              <PipelineBuildIcon class="tpl-card__icon" />
+              <PipelineCdIcon class="tpl-card__icon" />
+            </span>
+            <span class="tpl-card__title">源码构建并部署</span>
+            <span class="tpl-card__desc">从 Git 仓库构建镜像，并部署到所选环境。</span>
+          </button>
+          <button
+            type="button"
+            class="tpl-card"
+            :class="{ 'tpl-card--active': templateKey === 'build_only' }"
+            @click="templateKey = 'build_only'"
+          >
+            <span class="tpl-card__icons">
+              <PipelineBuildIcon class="tpl-card__icon" />
+            </span>
+            <span class="tpl-card__title">仅源码构建</span>
+            <span class="tpl-card__desc">只构建并推送镜像，不创建部署流水线。</span>
+          </button>
         </div>
-        <div v-if="templateNeedsBranch" class="fld">
-          <span class="fld__label">CI 分支</span>
-          <t-input v-model="templateBranch" placeholder="main" />
-          <span class="u-dim">CI 只从该分支触发，构建时固定为一个提交 SHA。</span>
+
+        <p class="tpl__group">接收容器镜像</p>
+        <div class="tpl__grid">
+          <button
+            type="button"
+            class="tpl-card"
+            :class="{ 'tpl-card--active': templateKey === 'external_image' }"
+            @click="templateKey = 'external_image'"
+          >
+            <span class="tpl-card__icons">
+              <PipelineCdIcon class="tpl-card__icon" />
+            </span>
+            <span class="tpl-card__title">部署外部镜像</span>
+            <span class="tpl-card__desc">不创建 CI，直接使用镜像仓库中的已有镜像发布。</span>
+          </button>
         </div>
-        <div v-if="templateNeedsEnv" class="fld">
-          <span class="fld__label">环境</span>
-          <t-select v-model="templateEnvIds" :options="envOptions" multiple placeholder="选择发布环境" />
-          <span class="u-dim">每个选中环境生成一条 CD 流水线，绑定该环境已有 binding（无则用第一个绑定）。</span>
+
+        <div class="tpl__config">
+          <div v-if="templateNeedsBranch" class="tpl__field">
+            <span class="tpl__label">CI 分支</span>
+            <t-input v-model="templateBranch" placeholder="main" />
+            <span class="tpl__hint">CI 只从该分支触发，构建时固定为一个提交 SHA。</span>
+          </div>
+          <div v-if="templateNeedsEnv" class="tpl__field">
+            <span class="tpl__label">环境</span>
+            <t-select v-model="templateEnvIds" :options="envOptions" multiple placeholder="选择发布环境" />
+            <span class="tpl__hint">每个选中环境生成一条 CD 流水线，绑定该环境已有 binding（无则用第一个绑定）。</span>
+          </div>
+          <div v-if="templateNeedsEnv" class="tpl__field">
+            <span class="tpl__label">releaseName</span>
+            <t-input v-model="templateReleaseName" placeholder="checkout-api" />
+            <span class="tpl__hint">默认取应用名；已绑定环境沿用 binding 中的 releaseName。</span>
+          </div>
         </div>
-        <div v-if="templateNeedsEnv" class="fld">
-          <span class="fld__label">releaseName</span>
-          <t-input v-model="templateReleaseName" placeholder="checkout-api" />
-          <span class="u-dim">默认取应用名；静态演示阶段仅作展示，已绑定环境沿用 binding 中的 releaseName。</span>
-        </div>
+
         <div class="dlg__footer">
           <t-button variant="outline" @click="closeCreate">取消</t-button>
           <t-button theme="primary" :loading="saving" @click="createWorkflow">创建工作流</t-button>
@@ -538,90 +545,13 @@ watch(appId, load, { immediate: true })
       </div>
     </t-dialog>
 
-    <t-drawer v-model:visible="editVisible" size="520px" placement="right" :footer="false">
-      <template #header>
-        <span>编辑流水线 · {{ editItem?.id }}</span>
-      </template>
-      <div class="dlg">
-        <div class="edit__tabs">
-          <button
-            type="button"
-            class="edit__tab"
-            :class="{ 'edit__tab--active': stageTab === 'pre' }"
-            @click="stageTab = 'pre'"
-          >
-            前置阶段
-          </button>
-          <button
-            type="button"
-            class="edit__tab"
-            :class="{ 'edit__tab--active': stageTab === 'main' }"
-            @click="stageTab = 'main'"
-          >
-            主阶段
-          </button>
-          <button
-            type="button"
-            class="edit__tab"
-            :class="{ 'edit__tab--active': stageTab === 'post' }"
-            @click="stageTab = 'post'"
-          >
-            后置阶段
-          </button>
-        </div>
-
-        <t-alert v-if="editError" theme="error" :message="editError" />
-
-        <template v-if="stageTab === 'main'">
-          <template v-if="editItem?.kind === 'ci'">
-            <div class="fld">
-              <span class="fld__label">CI 分支</span>
-              <t-input v-model="editBranch" placeholder="main" />
-              <span class="u-dim">只从该分支触发构建，构建时固定一个提交 SHA。</span>
-            </div>
-            <div class="dlg__row">
-              <span>手动触发</span>
-              <t-switch v-model="editManual" />
-            </div>
-            <div class="dlg__row">
-              <span>Push 触发</span>
-              <t-switch v-model="editPush" />
-            </div>
-            <p class="u-dim">Dockerfile / Context / 镜像仓库继承「构建配置」，此处不重复配置。</p>
-          </template>
-          <template v-else>
-            <div class="fld">
-              <span class="fld__label">触发方式</span>
-              <t-radio-group v-model="editTrigger" size="small" theme="button">
-                <t-radio value="manual">手动</t-radio>
-                <t-radio value="on_ci_success">CI 成功后自动</t-radio>
-              </t-radio-group>
-              <span class="u-dim">生产环境建议手动；镜像 digest 由发布确认固定。</span>
-            </div>
-            <div class="fld">
-              <span class="fld__label">部署超时（秒）</span>
-              <t-input-number v-model="editDeployTimeout" :min="30" :max="3600" :step="30" theme="normal" />
-            </div>
-            <p class="u-dim">目标 Namespace / Cluster 来自环境绑定，只读。</p>
-          </template>
-        </template>
-
-        <template v-else>
-          <p class="u-dim">
-            {{ stageTab === 'pre' ? '前置阶段（Pre-deployment）' : '后置阶段（Post-deployment）' }}
-            首版仅支持内置校验步骤，自定义脚本任务不在本期范围。
-          </p>
-          <p class="u-dim">保存主阶段不会触发执行；发布仍由「构建发布」页发起。</p>
-        </template>
-
-        <div class="dlg__footer">
-          <t-button variant="outline" @click="editVisible = false">取消</t-button>
-          <t-button theme="primary" :loading="editSaving" :disabled="stageTab !== 'main'" @click="saveEdit">
-            更新流水线
-          </t-button>
-        </div>
-      </div>
-    </t-drawer>
+    <PipelineEditDrawer
+      v-model:visible="editVisible"
+      :pipeline="editItem"
+      :version="workflow?.version ?? 0"
+      @saved="onPipelineSaved"
+      @remove="onPipelineRemove"
+    />
   </div>
 </template>
 
@@ -665,6 +595,145 @@ watch(appId, load, { immediate: true })
 }
 .wfcanvas {
   min-width: 0;
+}
+.wf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 560px;
+  padding: 48px 24px;
+  text-align: center;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.wf-empty__flow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+.wf-empty__node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+}
+.wf-empty__icon {
+  width: 26px;
+  height: 26px;
+}
+.wf-empty__line {
+  width: 28px;
+  height: 2px;
+  background: #c4c9d0;
+}
+.wf-empty__title {
+  margin: 0 0 8px;
+  color: #000a14;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+}
+.wf-empty__desc {
+  max-width: 440px;
+  margin: 0 0 10px;
+  color: #596168;
+  font-size: 12px;
+  line-height: 18px;
+}
+.wf-empty__link {
+  margin-bottom: 20px;
+  color: #0066cc;
+  font-size: 12px;
+  cursor: pointer;
+}
+.wf-empty__cta {
+  min-width: 150px;
+}
+.tpl__sub {
+  margin: 0 0 16px;
+  color: #596168;
+  font-size: 12px;
+}
+.tpl__group {
+  margin: 18px 0 10px;
+  color: #3b444c;
+  font-size: 13px;
+  font-weight: 600;
+}
+.tpl__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.tpl-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tpl-card--active {
+  background: #f7fbff;
+  border-color: #0066cc;
+  box-shadow: inset 0 0 0 1px #0066cc;
+}
+.tpl-card__icons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  background: #f2f4f7;
+  border-radius: 2px;
+}
+.tpl-card__icon {
+  width: 22px;
+  height: 22px;
+}
+.tpl-card__title {
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 500;
+}
+.tpl-card__desc {
+  color: #767d84;
+  font-size: 11px;
+  line-height: 16px;
+}
+.tpl__config {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e6e9ef;
+}
+.tpl__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tpl__label {
+  color: #3b444c;
+  font-size: 12px;
+}
+.tpl__hint {
+  color: #767d84;
+  font-size: 11px;
+  line-height: 16px;
 }
 .sec__state {
   display: flex;

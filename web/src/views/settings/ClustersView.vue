@@ -14,6 +14,7 @@ const rows = ref<Cluster[]>([])
 const credentials = ref<Credential[]>([])
 const loading = ref(false)
 const error = ref('')
+const keyword = ref('')
 
 const dialogVisible = ref(false)
 const clusterName = ref('')
@@ -36,6 +37,15 @@ const kubeconfigOptions = computed(() =>
     .filter((item) => item.kind === 'kubeconfig')
     .map((item) => ({ label: `${item.name} · v${item.version}`, value: item.id })),
 )
+
+const filteredRows = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return rows.value
+  return rows.value.filter((cluster) =>
+    [cluster.name, cluster.apiServer, cluster.serverVersion ?? '', cluster.connectionStatus]
+      .some((value) => value.toLowerCase().includes(kw)),
+  )
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -110,7 +120,14 @@ onMounted(() => {
     <ErrorState v-if="error" :message="error" @retry="load" />
 
     <t-loading v-else :loading="loading">
-      <t-table row-key="id" :data="rows" :columns="columns" size="small" hover>
+      <div class="settings-clusters__toolbar">
+        <t-input v-model="keyword" size="small" clearable placeholder="搜索集群名称 / API Server" class="settings-clusters__search">
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <span class="settings-clusters__count">共 {{ filteredRows.length }} 个集群</span>
+      </div>
+
+      <t-table row-key="id" :data="filteredRows" :columns="columns" size="small" hover>
         <template #name="{ row }">{{ row.name }}</template>
         <template #apiServer="{ row }">
           <span class="u-mono">{{ row.apiServer }}</span>
@@ -133,37 +150,65 @@ onMounted(() => {
           <t-button size="small" variant="text" @click="testConnection(row)">连接测试</t-button>
         </template>
         <template #empty>
-          <EmptyState title="还没有接入集群" description="点击右上角「接入集群」填写 API Server 与凭据。" icon="cloud" compact />
+          <EmptyState
+            v-if="keyword"
+            title="没有匹配的集群"
+            description="调整关键字后再试。"
+            icon="search"
+            compact
+          />
+          <EmptyState v-else title="还没有接入集群" description="点击右上角「接入集群」填写 API Server 与凭据。" icon="cloud" compact />
         </template>
       </t-table>
     </t-loading>
 
     <p class="settings-clusters__foot">连接测试为只读探测；接入后的集群先以「未检测」登记，点「连接测试」才会更新状态与版本。</p>
 
-    <t-dialog v-model:visible="dialogVisible" header="接入集群" width="480px" confirm-btn="接入" @confirm="confirmConnect">
-      <label class="settings-clusters__field">
-        <span>集群名称</span>
-        <t-input v-model="clusterName" placeholder="例如 prod-k8s" />
-      </label>
-      <label class="settings-clusters__field">
-        <span>API Server</span>
-        <t-input v-model="apiServer" placeholder="https://10.20.0.10:6443" />
-      </label>
-      <label class="settings-clusters__field">
-        <span>凭据</span>
-        <t-select v-model="credentialId" :options="kubeconfigOptions" placeholder="选择 kubeconfig 凭据" />
-      </label>
-      <p class="settings-clusters__hint">
-        Namespace 提示：接入后可在集群工作区按 Namespace 筛选资源；未指定时展示全部命名空间。
-        凭据只以加密形式保存，不会回显。
-      </p>
-    </t-dialog>
+    <t-drawer v-model:visible="dialogVisible" header="接入集群" size="560px" :footer="false" @close="dialogVisible = false">
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">集群名称</span>
+            <t-input v-model="clusterName" placeholder="例如 prod-k8s" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">API Server</span>
+            <t-input v-model="apiServer" placeholder="https://10.20.0.10:6443" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">凭据</span>
+            <t-select v-model="credentialId" :options="kubeconfigOptions" placeholder="选择 kubeconfig 凭据" />
+          </label>
+          <p class="settings-drawer__hint">
+            Namespace 提示：接入后可在集群工作区按 Namespace 筛选资源；未指定时展示全部命名空间。
+            凭据只以加密形式保存，不会回显。
+          </p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="dialogVisible = false">取消</t-button>
+          <t-button theme="primary" @click="confirmConnect">接入</t-button>
+        </div>
+      </div>
+    </t-drawer>
   </div>
 </template>
 
 <style scoped>
 .settings-clusters__foot {
   margin: 8px 0 0;
+  color: var(--tk-text-3);
+  font-size: 11px;
+}
+.settings-clusters__toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.settings-clusters__search {
+  width: 260px;
+}
+.settings-clusters__count {
+  margin-left: auto;
   color: var(--tk-text-3);
   font-size: 11px;
 }

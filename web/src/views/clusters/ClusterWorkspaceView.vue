@@ -54,6 +54,9 @@ const overview = ref<ClusterOverview | null>(null)
 /* 创建资源（P1：多文档 YAML → Dry run → Apply） */
 const createVisible = ref(false)
 const createManifest = ref('')
+const createLineNumbers = computed(() =>
+  Array.from({ length: Math.max(1, createManifest.value.split('\n').length) }, (_, index) => index + 1).join('\n'),
+)
 const createDryRun = ref<DryRunResult | null>(null)
 const createLoading = ref(false)
 const createApplying = ref(false)
@@ -721,7 +724,24 @@ watch(keyword, () => {
         v-if="!activeTabId && currentView === 'list' && !isEvents && !['nodes', 'namespaces'].includes(activeResource)"
         class="ws__tab-actions"
       >
-        <t-select v-model="namespace" class="ws__ns" size="small" :options="namespaceOptions" />
+        <t-dropdown trigger="click" placement="bottom-right">
+        <button type="button" class="ws__ns-pill">
+          <t-icon name="layers" size="13px" />
+          {{ namespace === 'all' ? '全部命名空间' : namespace }}
+          <t-icon name="chevron-down" size="12px" />
+        </button>
+        <template #dropdown>
+          <t-dropdown-menu>
+            <t-dropdown-item
+              v-for="option in namespaceOptions"
+              :key="option.value"
+              @click="namespace = option.value"
+            >
+              {{ option.label }}
+            </t-dropdown-item>
+          </t-dropdown-menu>
+        </template>
+      </t-dropdown>
         <t-input
           v-model="keyword"
           class="ws__search"
@@ -867,11 +887,17 @@ watch(keyword, () => {
       </div>
     </t-loading>
 
-    <t-drawer v-model:visible="createVisible" header="创建资源" size="760px" placement="right" :footer="false">
+    <t-drawer v-model:visible="createVisible" header="创建 Kubernetes 资源" size="1020px" placement="right">
       <div class="ws__create">
-        <p class="u-muted">支持多文档（<span class="u-mono">---</span> 分隔）。提交前先 Dry run，再应用到当前集群的本地 mock。</p>
+        <div class="ws__create-note">
+          <t-icon name="info-circle" size="15px" />
+          支持多文档 YAML：可在一次提交中创建/更新多个 K8s 资源，请用 <span class="u-mono">---</span> 分隔。
+        </div>
         <t-alert v-if="createError" theme="error" :message="createError" />
-        <t-textarea v-model="createManifest" class="ws__create-editor" :autosize="{ minRows: 20, maxRows: 34 }" />
+        <div class="ws__create-editor">
+          <pre class="ws__create-gutter" aria-hidden="true">{{ createLineNumbers }}</pre>
+          <textarea v-model="createManifest" class="ws__create-area" spellcheck="false" />
+        </div>
         <div v-if="createDryRun" class="ws__create-result">
           <t-table
             row-key="index"
@@ -892,6 +918,9 @@ watch(keyword, () => {
             </template>
           </t-table>
         </div>
+      </div>
+
+      <template #footer>
         <div class="ws__create-actions">
           <t-button variant="outline" @click="createVisible = false">取消</t-button>
           <t-button variant="outline" :loading="createLoading" @click="dryRunCreate">Dry run</t-button>
@@ -899,7 +928,7 @@ watch(keyword, () => {
             应用
           </t-button>
         </div>
-      </div>
+      </template>
     </t-drawer>
   </div>
 </template>
@@ -1004,6 +1033,23 @@ watch(keyword, () => {
 }
 .ws__ns {
   width: 170px;
+}
+.ws__ns-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  min-width: 150px;
+  padding: 0 10px;
+  color: #3b444c;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #d0d4d9;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ws__ns-pill:hover {
+  border-color: #0066cc;
 }
 .ws__search {
   width: 220px;
@@ -1111,11 +1157,54 @@ watch(keyword, () => {
 .ws__create {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  height: 100%;
+}
+.ws__create-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: #0066cc;
+  font-size: 12px;
+  line-height: 18px;
+  background: #eef5ff;
+  border-radius: 2px;
 }
 .ws__create-editor {
+  display: flex;
+  flex: 1;
+  min-height: 420px;
+  overflow: hidden;
+  background: #fbfcfe;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.ws__create-gutter {
+  flex: none;
+  margin: 0;
+  padding: 10px 8px;
+  color: #b1b7bc;
   font-family: var(--tk-mono);
   font-size: 12px;
+  line-height: 20px;
+  text-align: right;
+  background: #f2f4f7;
+  border-right: 1px solid #e6e9ef;
+  user-select: none;
+}
+.ws__create-area {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  color: #000a14;
+  font-family: var(--tk-mono);
+  font-size: 12px;
+  line-height: 20px;
+  resize: none;
+  background: #fff;
+  border: 0;
+  outline: none;
 }
 .ws__create-result {
   max-height: 220px;

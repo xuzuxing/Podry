@@ -1,19 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { MessagePlugin } from 'tdesign-vue-next'
+import { useRoute } from 'vue-router'
 
-import { MockError, createApplication, getProject, listApplications, listTeams } from '@/api'
+import { getProject, listApplications, listBindings, listClusters, listEnvironments, listTeams } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import FilterBar from '@/components/FilterBar.vue'
 import PageHeader from '@/components/PageHeader.vue'
-import StatusTag from '@/components/StatusTag.vue'
-import type { Application, Project } from '@/types'
+import type { Application, Binding, Cluster, Environment, Project } from '@/types'
 import { fmtRelative } from '@/utils/format'
+import CreateApplicationDrawer from '@/views/apps/components/onboarding/CreateApplicationDrawer.vue'
 
 const route = useRoute()
-const router = useRouter()
 const projectId = computed(() => String(route.params.projectId ?? ''))
 
 const loading = ref(true)
@@ -21,17 +19,15 @@ const error = ref('')
 const project = ref<Project | null>(null)
 const teamName = ref('')
 const apps = ref<Application[]>([])
+const bindingsByApp = ref<Record<string, Binding[]>>({})
+const environments = ref<Environment[]>([])
+const clusters = ref<Cluster[]>([])
 
 const keyword = ref('')
 const health = ref('')
 const source = ref('')
 
-const dialogVisible = ref(false)
-const submitting = ref(false)
-const formError = ref('')
-const formName = ref('')
-const formDesc = ref('')
-const formSource = ref<'git' | 'image'>('git')
+const createOpen = ref(false)
 
 const healthOptions = [
   { label: '全部健康状态', value: '' },
@@ -49,18 +45,13 @@ const sourceOptions = [
   { label: '已有镜像', value: 'image' },
 ]
 
-const formSourceOptions = [
-  { label: 'Git 源码', value: 'git' },
-  { label: '已有镜像', value: 'image' },
-]
-
 const columns = [
-  { colKey: 'name', title: '应用名称', width: 200 },
-  { colKey: 'health', title: '健康状态', width: 110 },
-  { colKey: 'source', title: '来源', width: 110 },
-  { colKey: 'envCount', title: '环境数', width: 90 },
-  { colKey: 'lastDeployedAt', title: '最近发布', width: 130 },
-  { colKey: 'actions', title: '操作', width: 80 },
+  { colKey: 'name', title: '应用名称', width: 300 },
+  { colKey: 'environment', title: '环境', width: 180 },
+  { colKey: 'cluster', title: '集群', width: 170 },
+  { colKey: 'namespace', title: '命名空间', width: 170 },
+  { colKey: 'lastDeployedAt', title: '最近发布', width: 160 },
+  { colKey: 'actions', title: '', width: 56 },
 ]
 
 const filtered = computed<Application[]>(() => {
@@ -91,6 +82,14 @@ async function load(): Promise<void> {
     project.value = projectItem
     apps.value = appPage.items
     teamName.value = teamItems.find((team) => team.id === projectItem.teamId)?.name ?? projectItem.teamId
+    const [bindingPairs, envList, clusterList] = await Promise.all([
+      Promise.all(appPage.items.map(async (app) => [app.id, await listBindings(app.id)] as const)),
+      listEnvironments(),
+      listClusters(),
+    ])
+    bindingsByApp.value = Object.fromEntries(bindingPairs)
+    environments.value = envList
+    clusters.value = clusterList
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载项目失败'
   } finally {
@@ -99,6 +98,31 @@ async function load(): Promise<void> {
 }
 
 watch(projectId, load, { immediate: true })
+
+function envNameOf(environmentId: string): string {
+  return environments.value.find((env) => env.id === environmentId)?.name ?? environmentId
+}
+
+function bindingOf(appId: string): Binding | null {
+  return bindingsByApp.value[appId]?.[0] ?? null
+}
+
+function envText(appId: string): string {
+  const list = bindingsByApp.value[appId] ?? []
+  if (!list.length) return '未配置'
+  const first = envNameOf(list[0].environmentId)
+  return list.length > 1 ? `${first} +${list.length - 1}` : first
+}
+
+function clusterText(appId: string): string {
+  const binding = bindingOf(appId)
+  if (!binding) return '—'
+  return clusters.value.find((cluster) => cluster.id === binding.target.clusterId)?.name ?? binding.target.clusterId
+}
+
+function namespaceText(appId: string): string {
+  return bindingOf(appId)?.target.namespace ?? '—'
+}
 
 function onKeywordChange(value: string): void {
   keyword.value = value
@@ -119,57 +143,7 @@ function clearFilters(): void {
 }
 
 function openCreate(): void {
-  formName.value = ''
-  formDesc.value = ''
-  formSource.value = 'git'
-  formError.value = ''
-  dialogVisible.value = true
-}
-
-function onNameChange(value: string | number): void {
-  formName.value = String(value)
-}
-
-function onDescChange(value: unknown): void {
-  formDesc.value = typeof value === 'string' ? value : ''
-}
-
-function onFormSourceChange(value: unknown): void {
-  formSource.value = value === 'image' ? 'image' : 'git'
-}
-
-async function submitCreate(): Promise<void> {
-  if (submitting.value) return
-  formError.value = ''
-  const name = formName.value.trim()
-  if (!name) {
-    formError.value = '请输入应用名称'
-    return
-  }
-  submitting.value = true
-  try {
-    const created = await createApplication({
-      projectId: projectId.value,
-      name,
-      description: formDesc.value.trim(),
-      sourceMode: formSource.value,
-    })
-    dialogVisible.value = false
-    void MessagePlugin.success(`应用 ${created.name} 已创建，请继续完成配置`)
-    await router.push({ name: 'app-overview', params: { projectId: projectId.value, appId: created.id } })
-  } catch (err) {
-    if (err instanceof MockError) {
-      if (err.status === 409 || err.status === 422) {
-        formError.value = err.message
-      } else {
-        void MessagePlugin.error(err.message)
-      }
-    } else {
-      formError.value = err instanceof Error ? err.message : '创建应用失败'
-    }
-  } finally {
-    submitting.value = false
-  }
+  createOpen.value = true
 }
 </script>
 
@@ -236,58 +210,32 @@ async function submitCreate(): Promise<void> {
 
       <t-table v-else row-key="id" :data="filtered" :columns="columns" :loading="loading" size="small" hover>
         <template #name="{ row }">
-          <router-link :to="{ name: 'app-overview', params: { projectId, appId: row.id } }">
+          <router-link class="project-detail__name" :to="{ name: 'app-overview', params: { projectId, appId: row.id } }">
             {{ row.name }}
           </router-link>
         </template>
-        <template #health="{ row }">
-          <StatusTag kind="health" :value="row.health" />
-        </template>
-        <template #source="{ row }">
-          <span class="u-muted">{{ row.sourceMode === 'image' ? '已有镜像' : 'Git 源码' }}</span>
+        <template #environment="{ row }">{{ envText(row.id) }}</template>
+        <template #cluster="{ row }">{{ clusterText(row.id) }}</template>
+        <template #namespace="{ row }">
+          <span class="u-mono">{{ namespaceText(row.id) }}</span>
         </template>
         <template #lastDeployedAt="{ row }">
           <span v-if="row.lastDeployedAt">{{ fmtRelative(row.lastDeployedAt) }}</span>
-          <span v-else class="u-dim">未发布</span>
+          <span v-else class="u-dim">—</span>
         </template>
         <template #actions="{ row }">
-          <router-link :to="{ name: 'app-overview', params: { projectId, appId: row.id } }">进入</router-link>
+          <router-link
+            class="project-detail__gear"
+            :to="{ name: 'config-git', params: { projectId, appId: row.id } }"
+            title="应用配置"
+          >
+            <t-icon name="setting" size="15px" />
+          </router-link>
         </template>
       </t-table>
     </section>
 
-    <t-dialog
-      :visible="dialogVisible"
-      header="新建应用"
-      :width="480"
-      :confirm-btn="submitting ? '正在创建…' : '创建应用'"
-      cancel-btn="取消"
-      @confirm="submitCreate"
-      @close="dialogVisible = false"
-      @cancel="dialogVisible = false"
-    >
-      <div class="project-detail__form">
-        <t-alert v-if="formError" theme="error" :message="formError" />
-
-        <label class="project-detail__field">
-          <span>应用名称</span>
-          <t-input :value="formName" placeholder="3–53 位小写字母、数字或连字符，例如 checkout-api" @change="onNameChange" />
-          <span class="project-detail__hint">同项目内名称唯一，创建后用于镜像与 release 命名。</span>
-        </label>
-
-        <div class="project-detail__field">
-          <span>来源</span>
-          <t-radio-group :value="formSource" :options="formSourceOptions" @change="onFormSourceChange" />
-        </div>
-
-        <label class="project-detail__field">
-          <span>描述</span>
-          <t-textarea :value="formDesc" placeholder="一句话说明这个应用的职责（可留空）" @change="onDescChange" />
-        </label>
-
-        <p class="project-detail__note u-dim">静态演示：应用会写入本地 mock，配置与构建按后续步骤完成。</p>
-      </div>
-    </t-dialog>
+    <CreateApplicationDrawer v-model:visible="createOpen" :project-id="projectId" />
   </div>
 </template>
 
@@ -299,25 +247,16 @@ async function submitCreate(): Promise<void> {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
-.project-detail__form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.project-detail__name {
+  color: #0066cc;
+  font-weight: 500;
 }
-.project-detail__field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  color: var(--tk-text-2);
+.project-detail__gear {
+  display: inline-flex;
+  align-items: center;
+  color: #767d84;
 }
-.project-detail__hint {
-  color: var(--tk-text-3);
-  font-size: 11px;
-  line-height: 16px;
-}
-.project-detail__note {
-  margin: 0;
-  font-size: 11px;
-  line-height: 16px;
+.project-detail__gear:hover {
+  color: #0066cc;
 }
 </style>

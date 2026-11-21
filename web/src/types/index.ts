@@ -266,6 +266,14 @@ export interface Cluster {
   lastCheckedAt: string | null
   nodeCount: number
   environmentNames: string[]
+  /** 是否生产集群（Devtron Resource Browser 的 Type 分组） */
+  production?: boolean
+  /** 节点错误数 */
+  nodeErrors?: number
+  /** 可分配 CPU 容量 */
+  cpuCapacity?: string
+  /** 可分配内存容量 */
+  memoryCapacity?: string
 }
 
 export interface ResourceType {

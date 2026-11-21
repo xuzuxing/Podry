@@ -4,10 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { getConfig, listCredentials, MockError, saveConfig } from '@/api'
-import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
-import PageHeader from '@/components/PageHeader.vue'
 import type { AppConfig, Credential, GitConfig } from '@/types'
+import { notifySetupChanged } from '@/utils/appEvents'
 
 interface GitForm {
   repositoryUrl: string
@@ -29,24 +28,27 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const conflict = ref(false)
+const editing = ref(false)
 
 function blankForm(): GitForm {
   return { repositoryUrl: '', branch: 'main', accountMode: 'public', credentialId: null }
 }
 
 const versionText = computed(() => (config.value ? `v${config.value.version}` : '—'))
-const firstSave = computed(() => config.value !== null && config.value.gitConfig === null)
-const savedReady = computed(() => config.value?.gitConfig !== null && config.value?.gitConfig !== undefined)
+const hasGit = computed(() => Boolean(config.value?.gitConfig))
 const dirty = computed(() => JSON.stringify(form.value) !== JSON.stringify(saved.value))
 const gitCredentials = computed(() => credentials.value.filter((item) => item.kind === 'git'))
-const credentialOptions = computed(() =>
-  gitCredentials.value.map((item) => ({ label: `${item.name}（v${item.version}）`, value: item.id })),
+const accountOptions = computed(() => [
+  { label: '公开仓库（匿名访问）', value: '' },
+  ...gitCredentials.value.map((item) => ({ label: `${item.name}（v${item.version}）`, value: item.id })),
+])
+const accountValue = computed(() =>
+  form.value.accountMode === 'credential' ? form.value.credentialId ?? '' : '',
 )
-const credentialHint = computed(() =>
-  form.value.accountMode === 'credential'
-    ? '凭据仅以 ID 引用，服务端不会回显凭据内容。'
-    : '公开仓库无需凭据；切换为「使用凭据」后可选择。',
-)
+const repoName = computed(() => {
+  const url = form.value.repositoryUrl.replace(/\.git$/, '').replace(/\/+$/, '')
+  return url.split('/').filter(Boolean).pop() ?? url
+})
 
 function fill(next: GitForm): void {
   form.value = { ...next }
@@ -64,6 +66,7 @@ async function load(): Promise<void> {
     config.value = cfg
     credentials.value = creds
     fill(cfg.gitConfig ? { ...cfg.gitConfig } : blankForm())
+    editing.value = !cfg.gitConfig
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Git 源加载失败'
   } finally {
@@ -71,8 +74,26 @@ async function load(): Promise<void> {
   }
 }
 
-function clearCredentialIfPublic(): void {
-  if (form.value.accountMode === 'public') form.value.credentialId = null
+function onAccountChange(value: unknown): void {
+  const id = typeof value === 'string' ? value : ''
+  if (!id) {
+    form.value.accountMode = 'public'
+    form.value.credentialId = null
+    return
+  }
+  form.value.accountMode = 'credential'
+  form.value.credentialId = id
+}
+
+function startEdit(): void {
+  errors.value = {}
+  editing.value = true
+}
+
+function cancelEdit(): void {
+  fill({ ...saved.value })
+  errors.value = {}
+  editing.value = false
 }
 
 function validate(): boolean {
@@ -87,8 +108,13 @@ function validate(): boolean {
 }
 
 async function goNext(): Promise<void> {
-  const ok = await save()
-  if (!ok) return
+  if (editing.value) {
+    const ok = await save()
+    if (!ok) return
+  } else if (dirty.value) {
+    const ok = await save()
+    if (!ok) return
+  }
   await router.push({ name: 'config-build', params: { projectId: route.params.projectId, appId: appId.value } })
 }
 
@@ -115,7 +141,9 @@ async function save(): Promise<boolean> {
       accountMode: updated.gitConfig?.accountMode ?? payload.accountMode,
       credentialId: updated.gitConfig?.credentialId ?? null,
     })
+    editing.value = false
     MessagePlugin.success(`已保存（配置版本 v${updated.version}）`)
+    notifySetupChanged(appId.value)
     return true
   } catch (err) {
     if (err instanceof MockError && err.code === 'revision_conflict') conflict.value = true
@@ -130,30 +158,18 @@ watch(appId, load, { immediate: true })
 </script>
 
 <template>
-  <div class="sec">
-    <PageHeader title="Git Repository" description="声明源码仓库与访问账号；本分区保存后生成新的配置版本。">
-      <template #actions>
-        <span v-if="dirty" class="hint-dirty">有未保存修改</span>
-        <t-button
-          variant="outline"
-          :loading="saving"
-          :disabled="loading || config === null || !savedReady"
-          @click="goNext"
-        >
-          保存并下一步
-        </t-button>
-        <t-button theme="primary" :loading="saving" :disabled="loading || config === null" @click="save">
-          <template #icon><t-icon name="save" /></template>
-          保存
-        </t-button>
-      </template>
-    </PageHeader>
+  <div class="git-page">
+    <header class="git-page__head">
+      <h1>Git 仓库</h1>
+      <p>管理该应用的源码仓库。<span class="git-page__link">了解更多</span></p>
+    </header>
 
     <t-alert
       v-if="conflict"
       theme="warning"
       title="配置已被他人更新"
       message="当前表单仍保留你的输入；重新读取会以服务端版本覆盖本地改动。"
+      class="git-page__alert"
     >
       <template #operation>
         <t-button size="small" variant="outline" @click="load">
@@ -163,191 +179,267 @@ watch(appId, load, { immediate: true })
       </template>
     </t-alert>
 
-    <div v-if="loading" class="sec__state">
+    <div v-if="loading" class="git-page__state">
       <t-loading size="small" text="加载中…" />
     </div>
     <ErrorState v-else-if="error" :message="error" @retry="load" />
 
-    <div v-else class="git">
-      <div class="git__main">
-        <t-alert
-          v-if="firstSave"
-          theme="info"
-          title="首次保存后解锁构建配置"
-          message="该应用还没有 Git 源；保存后「构建配置」分区自动解锁。"
-        />
+    <template v-else>
+      <button v-if="hasGit && !editing" type="button" class="git-add" @click="startEdit">
+        <span class="git-add__plus">+</span>
+        添加 Git 仓库
+      </button>
 
-        <section class="tk-panel">
-          <div class="tk-panel__head">
-            <span>源码仓库</span>
-            <span class="u-dim">配置版本 {{ versionText }}</span>
-          </div>
-          <div class="tk-panel__body">
-            <div class="fld-grid">
-              <div class="fld fld--wide">
-                <span class="fld__label">仓库地址 <em>*</em></span>
-                <t-input v-model="form.repositoryUrl" placeholder="https://github.com/acme/checkout-api.git" />
-                <span v-if="errors.repositoryUrl" class="fld__err">{{ errors.repositoryUrl }}</span>
-                <span class="u-dim">仅接受 HTTPS 克隆地址，例如 https://github.com/acme/checkout-api.git。</span>
-              </div>
-              <div class="fld">
-                <span class="fld__label">默认分支 <em>*</em></span>
-                <t-input v-model="form.branch" placeholder="main" />
-                <span v-if="errors.branch" class="fld__err">{{ errors.branch }}</span>
-                <span class="u-dim">构建默认读取该分支的最新提交，再固定为一个提交 SHA。</span>
-              </div>
-            </div>
-          </div>
-        </section>
+      <section v-if="editing" class="git-card">
+        <h2 class="git-card__title">添加 Git 仓库</h2>
 
-        <section class="tk-panel">
-          <div class="tk-panel__head">
-            <span>访问账号</span>
-            <span class="u-dim">{{ form.accountMode === 'credential' ? '凭据引用' : '匿名访问' }}</span>
-          </div>
-          <div class="tk-panel__body">
-            <div class="fld-grid">
-              <div class="fld">
-                <span class="fld__label">账号模式</span>
-                <t-radio-group v-model="form.accountMode" @change="clearCredentialIfPublic">
-                  <t-radio value="public">公开仓库</t-radio>
-                  <t-radio value="credential">使用凭据</t-radio>
-                </t-radio-group>
-                <span class="u-dim">公开仓库匿名克隆；私有仓库需引用 Git 类型凭据。</span>
-              </div>
-              <div class="fld">
-                <span class="fld__label">凭据</span>
-                <t-select
-                  v-model="form.credentialId"
-                  :options="credentialOptions"
-                  :disabled="form.accountMode !== 'credential'"
-                  placeholder="选择 Git 凭据"
-                  clearable
-                />
-                <span v-if="errors.credentialId" class="fld__err">{{ errors.credentialId }}</span>
-                <span class="u-dim">{{ credentialHint }}</span>
-              </div>
-              <div v-if="form.accountMode === 'credential' && gitCredentials.length === 0" class="fld fld--wide">
-                <EmptyState
-                  compact
-                  icon="info-circle"
-                  title="暂无 Git 凭据"
-                  description="请先在「平台设置 → 凭据」中创建 Git 类型凭据，再回到此处引用。"
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
+        <div class="git-card__grid">
+          <label class="git-field">
+            <span class="git-field__label">Git 账号 <em>*</em></span>
+            <t-select
+              :value="accountValue"
+              :options="accountOptions"
+              placeholder="选择 Git 账号"
+              @change="onAccountChange"
+            />
+            <span v-if="errors.credentialId" class="git-field__error">{{ errors.credentialId }}</span>
+          </label>
 
-      <aside class="git__aside">
-        <section class="tk-panel">
-          <div class="tk-panel__head"><span>说明</span></div>
-          <div class="tk-panel__body">
-            <ul class="tips">
-              <li>
-                <t-icon name="info-circle" />
-                <span>凭据只引用不回显：只保存凭据 ID，凭据内容由凭据服务持有。</span>
-              </li>
-              <li>
-                <t-icon name="info-circle" />
-                <span>保存 URL 不代表仓库可达：可达性在构建时以固定提交验证。</span>
-              </li>
-              <li>
-                <t-icon name="lock-on" />
-                <span>本分区保存后配置版本 +1，并解锁构建配置。</span>
-              </li>
-            </ul>
+          <label class="git-field">
+            <span class="git-field__label">仓库地址 <em>*</em></span>
+            <t-input v-model="form.repositoryUrl" placeholder="https://github.com/acme/repo.git" />
+            <span v-if="errors.repositoryUrl" class="git-field__error">{{ errors.repositoryUrl }}</span>
+            <span v-else class="git-field__hint">仅支持 HTTPS 克隆地址，不支持内嵌账号口令。</span>
+          </label>
+        </div>
+
+        <div class="git-card__grid">
+          <label class="git-field">
+            <span class="git-field__label">默认分支 <em>*</em></span>
+            <t-input v-model="form.branch" placeholder="main" />
+            <span v-if="errors.branch" class="git-field__error">{{ errors.branch }}</span>
+          </label>
+        </div>
+
+        <div class="git-card__foot">
+          <t-button v-if="hasGit" variant="text" @click="cancelEdit">取消</t-button>
+          <t-button theme="primary" :loading="saving" @click="save">保存</t-button>
+        </div>
+      </section>
+
+      <section v-if="hasGit && !editing" class="git-repo">
+        <div class="git-repo__main">
+          <span class="git-repo__icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 2.8 21.2 12 12 21.2 2.8 12 12 2.8Z"
+                stroke="#596168"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+              <circle cx="12" cy="12" r="2.4" stroke="#596168" stroke-width="1.3" />
+            </svg>
+          </span>
+          <div class="git-repo__text">
+            <p class="git-repo__name">{{ repoName }}</p>
+            <p class="git-repo__url">{{ form.repositoryUrl }}</p>
           </div>
-        </section>
-      </aside>
-    </div>
+        </div>
+        <div class="git-repo__side">
+          <span class="git-repo__branch">{{ form.branch }}</span>
+          <span class="git-repo__account">{{ form.accountMode === 'public' ? '公开仓库' : '凭据访问' }}</span>
+          <t-button variant="text" size="small" @click="startEdit">编辑</t-button>
+        </div>
+      </section>
+    </template>
+
+    <footer v-if="!loading && !error" class="git-page__foot">
+      <span class="git-page__version">配置版本 {{ versionText }}</span>
+      <t-button theme="primary" :disabled="editing || !hasGit" @click="goNext">下一步</t-button>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.sec {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.sec__state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 16px;
-}
-.hint-dirty {
-  color: var(--tk-warning);
-}
-.git {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-.git__main {
+.git-page {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 12px;
-  min-width: 0;
+  min-height: 0;
+  padding: 20px 24px;
+  background: #fff;
 }
-.git__aside {
-  width: 252px;
-  flex: none;
+.git-page__head {
+  margin-bottom: 16px;
 }
-.tips {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  color: var(--tk-text-2);
+.git-page__head h1 {
+  margin: 0 0 6px;
+  color: #000a14;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
 }
-.tips li {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
+.git-page__head p {
+  margin: 0;
+  color: #596168;
+  font-size: 12px;
   line-height: 18px;
 }
-.tips .t-icon {
-  flex: none;
-  margin-top: 2px;
-  color: var(--tk-text-3);
+.git-page__link {
+  margin-left: 6px;
+  color: #0066cc;
+  cursor: pointer;
 }
-.fld-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.git-page__alert {
+  margin-bottom: 12px;
 }
-.fld {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.fld--wide {
-  grid-column: 1 / -1;
-}
-.fld__label {
+.git-page__state {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--tk-text-2);
+  justify-content: center;
+  padding: 80px 0;
 }
-.fld__label em {
-  color: var(--tk-danger);
+.git-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 52px;
+  margin-bottom: 16px;
+  color: #0066cc;
+  font-size: 13px;
+  background: #fff;
+  border: 1px dashed #b1b7bc;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.git-add:hover {
+  border-color: #0066cc;
+  background: #f7fafc;
+}
+.git-add__plus {
+  font-size: 16px;
+  line-height: 1;
+}
+.git-card {
+  padding: 20px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.git-card__title {
+  margin: 0 0 18px;
+  color: #000a14;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+}
+.git-card__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  margin-bottom: 4px;
+}
+.git-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.git-field__label {
+  color: #3b444c;
+  font-size: 12px;
+  line-height: 18px;
+}
+.git-field__label em {
+  color: #f33e3e;
   font-style: normal;
 }
-.fld__err {
-  color: var(--tk-danger);
+.git-field__hint {
+  color: #767d84;
   font-size: 11px;
   line-height: 16px;
 }
-@media (max-width: 1180px) {
-  .git {
-    flex-direction: column;
-  }
-  .git__aside {
-    width: auto;
-  }
+.git-field__error {
+  color: #f33e3e;
+  font-size: 11px;
+  line-height: 16px;
+}
+.git-card__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.git-repo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 4px;
+}
+.git-repo__main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.git-repo__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #f2f4f7;
+  border-radius: 4px;
+}
+.git-repo__text {
+  min-width: 0;
+}
+.git-repo__name {
+  margin: 0 0 2px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.git-repo__url {
+  margin: 0;
+  overflow: hidden;
+  color: #767d84;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-repo__side {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+.git-repo__branch,
+.git-repo__account {
+  color: #596168;
+  font-size: 11px;
+  background: #f2f4f7;
+  border-radius: 2px;
+  padding: 2px 6px;
+}
+.git-page__foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 24px;
+}
+.git-page__version {
+  color: #767d84;
+  font-size: 11px;
 }
 </style>

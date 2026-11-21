@@ -5,12 +5,13 @@
  * Base 保存写 appConfig.deployValues；环境覆盖保存写 binding.overrideValues。
  */
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { getApplication, getConfig, listBindings, listEnvironments, MockError, saveConfig, updateAppBinding } from '@/api'
 import ErrorState from '@/components/ErrorState.vue'
 import type { AppConfig, Binding, ChartConfig, DeployValues, Environment, WorkloadKind } from '@/types'
+import { notifySetupChanged } from '@/utils/appEvents'
 
 type EditorTab = 'configuration' | 'inherited' | 'override' | 'dry'
 
@@ -20,11 +21,13 @@ interface TemplateForm {
   replicaCount: number
   containerPort: number
   host: string
+  envRows: Array<{ key: string; value: string }>
   backoffLimit: number
   activeDeadlineSeconds: number
 }
 
 const route = useRoute()
+const router = useRouter()
 const appId = computed(() => String(route.params.appId ?? ''))
 const envId = computed(() => String(route.params.envId ?? ''))
 const isOverride = computed(() => String(route.name ?? '').startsWith('config-override'))
@@ -61,7 +64,7 @@ const environment = computed<Environment | null>(
 const envName = computed(() => environment.value?.name ?? (envId.value || '环境'))
 const chartText = computed(() => {
   const chart = config.value?.chartConfig
-  return chart ? `${chart.workloadKind} · 版本 ${chart.chartVersion}` : '尚未保存 Chart'
+  return chart ? `${chart.workloadKind} · 版本 ${chart.chartVersion}` : '未配置'
 })
 const versionText = computed(() => (config.value ? `v${config.value.version}` : '—'))
 const chartLocked = computed(() => Boolean(config.value?.chartConfig))
@@ -74,6 +77,7 @@ function blankForm(): TemplateForm {
     replicaCount: 1,
     containerPort: 8080,
     host: '',
+    envRows: [],
     backoffLimit: 1,
     activeDeadlineSeconds: 1800,
   }
@@ -86,6 +90,7 @@ function fromValues(base: DeployValues, chart?: ChartConfig | null): TemplateFor
     replicaCount: base.replicaCount ?? 1,
     containerPort: base.containerPort ?? 8080,
     host: base.host ?? '',
+    envRows: Object.entries(base.env ?? {}).map(([key, value]) => ({ key, value })),
     backoffLimit: base.job?.backoffLimit ?? 1,
     activeDeadlineSeconds: base.job?.activeDeadlineSeconds ?? 1800,
   }
@@ -93,8 +98,12 @@ function fromValues(base: DeployValues, chart?: ChartConfig | null): TemplateFor
 
 function valuesOf(source: TemplateForm): DeployValues {
   const values: DeployValues = {}
-  const baseEnv = config.value?.deployValues.env
-  if (baseEnv) values.env = { ...baseEnv }
+  const env: Record<string, string> = {}
+  source.envRows.forEach((row) => {
+    const key = row.key.trim()
+    if (key) env[key] = row.value
+  })
+  if (Object.keys(env).length) values.env = env
   if (source.workloadKind === 'Deployment') {
     values.replicaCount = Math.round(source.replicaCount)
     values.containerPort = Math.round(source.containerPort)
@@ -118,6 +127,11 @@ function toYaml(source: TemplateForm): string {
     lines.push('job:')
     lines.push(`  backoffLimit: ${source.backoffLimit}`)
     lines.push(`  activeDeadlineSeconds: ${source.activeDeadlineSeconds}`)
+  }
+  const env = source.envRows.filter((row) => row.key.trim())
+  if (env.length) {
+    lines.push('env:')
+    env.forEach((row) => lines.push(`  ${row.key.trim()}: ${JSON.stringify(row.value)}`))
   }
   return `${lines.join('\n')}\n`
 }
@@ -159,6 +173,22 @@ function parseYaml(source: string): TemplateForm | null {
     next.backoffLimit = backoff
     next.activeDeadlineSeconds = deadline
   }
+  const envBlock = /^env:\s*\n((?:[ \t]+.*\n?)*)/m.exec(source)?.[1] ?? ''
+  next.envRows = envBlock
+    .split('\n')
+    .map((line) => /^\s+([^:\s]+):\s*(.*)$/.exec(line))
+    .filter((matched): matched is RegExpExecArray => matched !== null)
+    .map((matched) => {
+      let value = matched[2].trim()
+      if (value.startsWith('"') && value.endsWith('"')) {
+        try {
+          value = JSON.parse(value) as string
+        } catch {
+          value = value.slice(1, -1)
+        }
+      }
+      return { key: matched[1], value }
+    })
   yamlError.value = ''
   return next
 }
@@ -292,6 +322,7 @@ async function saveBase(): Promise<void> {
   yamlDraft.value = toYaml(form.value)
   yamlSaved.value = yamlDraft.value
   MessagePlugin.success(`已保存基础配置（配置版本 v${updated.version}）`)
+  notifySetupChanged(appId.value)
 }
 
 async function saveOverride(): Promise<void> {
@@ -335,6 +366,24 @@ async function save(): Promise<void> {
   } finally {
     saving.value = false
   }
+}
+
+function addEnvRow(): void {
+  form.value.envRows.push({ key: '', value: '' })
+}
+
+function removeEnvRow(index: number): void {
+  form.value.envRows.splice(index, 1)
+}
+
+async function saveAndNext(): Promise<void> {
+  if (isOverride.value || saving.value) return
+  if (dirty.value) await save()
+  if (dirty.value) return
+  await router.push({
+    name: 'config-workflow',
+    params: { projectId: String(route.params.projectId ?? ''), appId: appId.value },
+  })
 }
 
 watch([appId, envId], () => void load(), { immediate: true })
@@ -476,44 +525,82 @@ watch([appId, envId], () => void load(), { immediate: true })
           </template>
 
           <div v-else class="dt__form">
-            <label class="dt__field">
-              <span class="dt__label">工作负载类型</span>
-              <t-radio-group v-model="form.workloadKind" :disabled="chartLocked && !isOverride">
-                <t-radio value="Deployment" :disabled="chartLocked && form.workloadKind !== 'Deployment'">Deployment</t-radio>
-                <t-radio value="Job" :disabled="chartLocked && form.workloadKind !== 'Job'">Job</t-radio>
-              </t-radio-group>
-            </label>
-            <template v-if="!isJob">
-              <label class="dt__field">
-                <span class="dt__label">replicaCount</span>
-                <t-input-number v-model="form.replicaCount" :min="1" :max="50" theme="normal" />
-              </label>
-              <label class="dt__field">
-                <span class="dt__label">containerPort</span>
-                <t-input-number v-model="form.containerPort" :min="1" :max="65535" theme="normal" />
-              </label>
-              <label class="dt__field">
-                <span class="dt__label">host</span>
-                <t-input v-model="form.host" placeholder="checkout.acme.dev" />
-              </label>
-            </template>
-            <template v-else>
-              <label class="dt__field">
-                <span class="dt__label">job.backoffLimit</span>
-                <t-input-number v-model="form.backoffLimit" :min="0" :max="10" theme="normal" />
-              </label>
-              <label class="dt__field">
-                <span class="dt__label">job.activeDeadlineSeconds</span>
-                <t-input-number v-model="form.activeDeadlineSeconds" :min="30" :max="86400" :step="30" theme="normal" />
-              </label>
-            </template>
+            <section class="dt__group">
+              <h3 class="dt__group-title">工作负载</h3>
+              <div class="dt__grid">
+                <label class="dt__field">
+                  <span class="dt__label">工作负载类型</span>
+                  <t-radio-group v-model="form.workloadKind" :disabled="chartLocked && !isOverride">
+                    <t-radio value="Deployment" :disabled="chartLocked && form.workloadKind !== 'Deployment'">Deployment</t-radio>
+                    <t-radio value="Job" :disabled="chartLocked && form.workloadKind !== 'Job'">Job</t-radio>
+                  </t-radio-group>
+                </label>
+                <label v-if="!isJob" class="dt__field">
+                  <span class="dt__label">replicaCount</span>
+                  <t-input-number v-model="form.replicaCount" :min="1" :max="50" theme="normal" />
+                </label>
+                <template v-else>
+                  <label class="dt__field">
+                    <span class="dt__label">job.backoffLimit</span>
+                    <t-input-number v-model="form.backoffLimit" :min="0" :max="10" theme="normal" />
+                  </label>
+                  <label class="dt__field">
+                    <span class="dt__label">job.activeDeadlineSeconds</span>
+                    <t-input-number v-model="form.activeDeadlineSeconds" :min="30" :max="86400" :step="30" theme="normal" />
+                  </label>
+                </template>
+              </div>
+            </section>
+
+            <section class="dt__group">
+              <h3 class="dt__group-title">容器</h3>
+              <div class="dt__grid">
+                <label v-if="!isJob" class="dt__field">
+                  <span class="dt__label">containerPort</span>
+                  <t-input-number v-model="form.containerPort" :min="1" :max="65535" theme="normal" />
+                </label>
+                <label v-if="!isJob" class="dt__field">
+                  <span class="dt__label">host</span>
+                  <t-input v-model="form.host" placeholder="checkout.acme.dev" />
+                </label>
+              </div>
+
+              <div class="dt__env">
+                <div class="dt__env-head">
+                  <span class="dt__label">环境变量</span>
+                  <t-button size="small" variant="text" @click="addEnvRow">+ 添加变量</t-button>
+                </div>
+                <div v-for="(row, index) in form.envRows" :key="index" class="dt__env-row">
+                  <t-input v-model="row.key" size="small" placeholder="KEY" />
+                  <t-input v-model="row.value" size="small" placeholder="value" />
+                  <button type="button" class="dt__env-remove" title="删除变量" @click="removeEnvRow(index)">
+                    <t-icon name="close" size="13px" />
+                  </button>
+                </div>
+                <p v-if="!form.envRows.length" class="dt__hint">没有环境变量；敏感值请使用 Secret 引用。</p>
+              </div>
+            </section>
           </div>
         </div>
 
+        <div v-if="isOverride" class="dt__metrics-note">
+          <t-icon name="info-circle" size="14px" />
+          应用指标未在基础配置中启用
+        </div>
+
         <div class="dt__footer">
-          <span v-if="dirty" class="dt__dirty">有未保存修改</span>
-          <span v-else class="dt__saved">已保存</span>
-          <t-button theme="primary" :loading="saving" :disabled="!dirty" @click="save">保存修改</t-button>
+          <span class="dt__meta">
+            配置版本 {{ versionText }}
+            <em v-if="dirty" class="dt__meta-dirty">· 有未保存修改</em>
+            <em v-else>· 已保存</em>
+          </span>
+          <template v-if="!isOverride">
+            <t-button variant="outline" :loading="saving" :disabled="!dirty" @click="save">保存</t-button>
+            <t-button theme="primary" :loading="saving" :disabled="saving" @click="saveAndNext">
+              保存并下一步
+            </t-button>
+          </template>
+          <t-button v-else theme="primary" :loading="saving" :disabled="!dirty" @click="save">保存修改</t-button>
         </div>
       </template>
     </template>
@@ -708,10 +795,62 @@ watch([appId, envId], () => void load(), { immediate: true })
   font-size: 12px;
 }
 .dt__form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 820px;
+}
+.dt__group {
+  padding-bottom: 16px;
+  border-bottom: 1px solid #edf1f5;
+}
+.dt__group:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.dt__group-title {
+  margin: 0 0 12px;
+  color: #000a14;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.dt__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  max-width: 720px;
+}
+.dt__env {
+  margin-top: 14px;
+}
+.dt__env-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.dt__env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.dt__env-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #767d84;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.dt__env-remove:hover {
+  color: #f33e3e;
+  background: #fef0f0;
 }
 .dt__field {
   display: flex;
@@ -722,6 +861,16 @@ watch([appId, envId], () => void load(), { immediate: true })
   color: #596168;
   font-size: 12px;
 }
+.dt__metrics-note {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  color: #767d84;
+  font-size: 11px;
+  border-top: 1px solid #e6e9ef;
+}
 .dt__footer {
   display: flex;
   flex: none;
@@ -731,6 +880,17 @@ watch([appId, envId], () => void load(), { immediate: true })
   height: 64px;
   padding: 0 16px;
   border-top: 1px solid #e6e9ef;
+}
+.dt__meta {
+  margin-right: auto;
+  color: #767d84;
+  font-size: 11px;
+}
+.dt__meta em {
+  font-style: normal;
+}
+.dt__meta-dirty {
+  color: #e37318;
 }
 .dt__dirty {
   color: #e37318;

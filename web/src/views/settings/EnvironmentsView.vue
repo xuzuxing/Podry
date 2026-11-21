@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { createEnvironment, listApplications, listBindings, listEnvironments } from '@/api'
+import { createEnvironment, listApplications, listBindings, listEnvironments, updateEnvironment } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -12,6 +12,7 @@ const environments = ref<Environment[]>([])
 const counts = ref<Record<string, number>>({})
 const loading = ref(false)
 const error = ref('')
+const keyword = ref('')
 
 const dialogVisible = ref(false)
 const editingId = ref('')
@@ -36,6 +37,15 @@ const rows = computed(() =>
     appCount: counts.value[env.id] ?? 0,
   })),
 )
+
+const filteredRows = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return rows.value
+  return rows.value.filter((row) =>
+    [row.name, row.production ? '生产' : '非生产', row.autoDeployAllowed ? '允许' : '不允许']
+      .some((value) => value.toLowerCase().includes(kw)),
+  )
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -81,7 +91,18 @@ async function confirmEnv(): Promise<void> {
     return
   }
   if (editingId.value) {
-    MessagePlugin.info('编辑环境：暂未接入接口（新建已可用）')
+    try {
+      await updateEnvironment(editingId.value, {
+        name,
+        production: production.value,
+        autoDeployAllowed: autoDeploy.value,
+      })
+      MessagePlugin.success(`环境 ${name} 已更新`)
+      dialogVisible.value = false
+      await load()
+    } catch (err) {
+      MessagePlugin.error(err instanceof Error ? err.message : '更新环境失败')
+    }
     return
   }
   try {
@@ -119,7 +140,14 @@ onMounted(() => {
     <ErrorState v-if="error" :message="error" @retry="load" />
 
     <t-loading v-else :loading="loading">
-      <t-table row-key="id" :data="rows" :columns="columns" size="small" hover>
+      <div class="environments__toolbar">
+        <t-input v-model="keyword" size="small" clearable placeholder="搜索环境名称 / 类型" class="environments__search">
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <span class="environments__count">共 {{ filteredRows.length }} 个环境</span>
+      </div>
+
+      <t-table row-key="id" :data="filteredRows" :columns="columns" size="small" hover>
         <template #name="{ row }">{{ row.name }}</template>
         <template #production="{ row }">
           <t-tag :theme="row.production ? 'danger' : 'default'" variant="light" size="small">
@@ -136,46 +164,74 @@ onMounted(() => {
           <t-button size="small" variant="text" @click="openEdit(row)">编辑</t-button>
         </template>
         <template #empty>
-          <EmptyState title="还没有环境" description="创建开发、预发布或生产环境后，应用才能绑定发布目标。" icon="layers" compact />
+          <EmptyState
+            v-if="keyword"
+            title="没有匹配的环境"
+            description="调整关键字后再试。"
+            icon="search"
+            compact
+          />
+          <EmptyState v-else title="还没有环境" description="创建开发、预发布或生产环境后，应用才能绑定发布目标。" icon="layers" compact />
         </template>
       </t-table>
     </t-loading>
 
     <p class="environments__foot">绑定应用数按环境汇总各应用的发布绑定；生产环境发布必须人工确认。</p>
 
-    <t-dialog
+    <t-drawer
       v-model:visible="dialogVisible"
       :header="editingId ? '编辑环境' : '创建环境'"
-      width="440px"
-      :confirm-btn="editingId ? '保存' : '创建'"
-      @confirm="confirmEnv"
+      size="560px"
+      :footer="false"
+      @close="dialogVisible = false"
     >
-      <label class="environments__field">
-        <span>环境名称</span>
-        <t-input v-model="envName" placeholder="例如 预发布环境" />
-      </label>
-      <div class="environments__switch">
-        <div>
-          <p class="environments__switch-title">是否生产</p>
-          <p class="environments__switch-desc">生产环境强制手动发布，且发布前需二次确认。</p>
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">环境名称</span>
+            <t-input v-model="envName" placeholder="例如 预发布环境" />
+          </label>
+          <div class="environments__switch">
+            <div>
+              <p class="environments__switch-title">是否生产</p>
+              <p class="environments__switch-desc">生产环境强制手动发布，且发布前需二次确认。</p>
+            </div>
+            <t-switch v-model="production" />
+          </div>
+          <div class="environments__switch">
+            <div>
+              <p class="environments__switch-title">允许自动发布</p>
+              <p class="environments__switch-desc">仅非生产环境可开启；生产环境固定为手动。</p>
+            </div>
+            <t-switch v-model="autoDeploy" :disabled="production" />
+          </div>
+          <p class="settings-drawer__hint">生产环境保存后仍会强制手动发布，自动发布开关不会生效。</p>
         </div>
-        <t-switch v-model="production" />
-      </div>
-      <div class="environments__switch">
-        <div>
-          <p class="environments__switch-title">允许自动发布</p>
-          <p class="environments__switch-desc">仅非生产环境可开启；生产环境固定为手动。</p>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="dialogVisible = false">取消</t-button>
+          <t-button theme="primary" @click="confirmEnv">{{ editingId ? '保存' : '创建' }}</t-button>
         </div>
-        <t-switch v-model="autoDeploy" :disabled="production" />
       </div>
-      <p class="environments__hint">生产环境保存后仍会强制手动发布，自动发布开关不会生效。</p>
-    </t-dialog>
+    </t-drawer>
   </div>
 </template>
 
 <style scoped>
 .environments__foot {
   margin: 8px 0 0;
+  color: var(--tk-text-3);
+  font-size: 11px;
+}
+.environments__toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.environments__search {
+  width: 260px;
+}
+.environments__count {
+  margin-left: auto;
   color: var(--tk-text-3);
   font-size: 11px;
 }

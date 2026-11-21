@@ -73,6 +73,10 @@ export const clusters: Cluster[] = [
     lastCheckedAt: ago(6),
     nodeCount: 6,
     environmentNames: ['生产环境'],
+    production: true,
+    nodeErrors: 0,
+    cpuCapacity: '12',
+    memoryCapacity: '21.82Gi',
   },
   {
     id: 'c-dev',
@@ -83,6 +87,10 @@ export const clusters: Cluster[] = [
     lastCheckedAt: ago(2),
     nodeCount: 3,
     environmentNames: ['开发环境', '预发布环境'],
+    production: false,
+    nodeErrors: 0,
+    cpuCapacity: '6',
+    memoryCapacity: '8Gi',
   },
 ]
 

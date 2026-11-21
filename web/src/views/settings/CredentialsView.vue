@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { createCredential, listCredentials, rotateCredential } from '@/api'
@@ -12,6 +12,7 @@ import { fmtTime } from '@/utils/format'
 const rows = ref<Credential[]>([])
 const loading = ref(false)
 const error = ref('')
+const keyword = ref('')
 
 const dialogVisible = ref(false)
 const credentialName = ref('')
@@ -43,6 +44,15 @@ const columns = [
   { colKey: 'updatedAt', title: '更新时间', width: 150 },
   { colKey: 'actions', title: '操作', width: 90 },
 ]
+
+const filteredRows = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return rows.value
+  return rows.value.filter((credential) =>
+    [credential.name, kindLabel(credential.kind), `v${credential.version}`]
+      .some((value) => value.toLowerCase().includes(kw)),
+  )
+})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -125,7 +135,14 @@ onMounted(() => {
     <ErrorState v-if="error" :message="error" @retry="load" />
 
     <t-loading v-else :loading="loading">
-      <t-table row-key="id" :data="rows" :columns="columns" size="small" hover>
+      <div class="credentials__toolbar">
+        <t-input v-model="keyword" size="small" clearable placeholder="搜索凭据名称 / 类型" class="credentials__search">
+          <template #prefix-icon><t-icon name="search" /></template>
+        </t-input>
+        <span class="credentials__count">共 {{ filteredRows.length }} 个凭据</span>
+      </div>
+
+      <t-table row-key="id" :data="filteredRows" :columns="columns" size="small" hover>
         <template #name="{ row }">{{ row.name }}</template>
         <template #kind="{ row }">
           <t-tag size="small" variant="light">{{ kindLabel(row.kind) }}</t-tag>
@@ -140,7 +157,14 @@ onMounted(() => {
           <t-button size="small" variant="text" @click="askRotate(row)">轮换</t-button>
         </template>
         <template #empty>
-          <EmptyState title="还没有凭据" description="新建 Git、镜像仓库或 kubeconfig 凭据后即可在配置中引用。" icon="key" compact />
+          <EmptyState
+            v-if="keyword"
+            title="没有匹配的凭据"
+            description="调整关键字后再试。"
+            icon="search"
+            compact
+          />
+          <EmptyState v-else title="还没有凭据" description="新建 Git、镜像仓库或 kubeconfig 凭据后即可在配置中引用。" icon="key" compact />
         </template>
       </t-table>
     </t-loading>
@@ -149,33 +173,67 @@ onMounted(() => {
       <span class="u-dim">轮换会生成新版本，引用旧版本的配置需要重新选择凭据。</span>
     </div>
 
-    <t-dialog v-model:visible="dialogVisible" header="新建凭据" width="480px" confirm-btn="保存" @confirm="confirmCreate">
-      <label class="credentials__field">
-        <span>名称</span>
-        <t-input v-model="credentialName" placeholder="例如 acme-git-token" />
-      </label>
-      <label class="credentials__field">
-        <span>类型</span>
-        <t-select v-model="kind" :options="kindOptions" />
-      </label>
-      <label class="credentials__field">
-        <span>值</span>
-        <t-input v-model="secretValue" type="textarea" :autosize="{ minRows: 3, maxRows: 6 }" placeholder="粘贴 token 或 kubeconfig 内容" />
-      </label>
-      <p class="credentials__hint">值只写入不回显；保存后列表仅展示名称、类型、版本与更新时间。</p>
-    </t-dialog>
+    <t-drawer v-model:visible="dialogVisible" header="新建凭据" size="560px" :footer="false" @close="dialogVisible = false">
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">名称</span>
+            <t-input v-model="credentialName" placeholder="例如 acme-git-token" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">类型</span>
+            <t-select v-model="kind" :options="kindOptions" />
+          </label>
+          <label class="settings-drawer__field">
+            <span class="settings-drawer__label">值</span>
+            <t-textarea v-model="secretValue" :autosize="{ minRows: 4, maxRows: 8 }" placeholder="粘贴 token 或 kubeconfig 内容" />
+          </label>
+          <p class="settings-drawer__hint">值只写入不回显；保存后列表仅展示名称、类型、版本与更新时间。</p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="dialogVisible = false">取消</t-button>
+          <t-button theme="primary" @click="confirmCreate">保存</t-button>
+        </div>
+      </div>
+    </t-drawer>
 
-    <t-dialog v-model:visible="rotateVisible" header="轮换凭据" theme="warning" width="440px" confirm-btn="确认轮换" @confirm="confirmRotate">
-      <p class="credentials__hint credentials__hint--plain">
-        轮换 {{ rotateTarget?.name }}（当前 v{{ rotateTarget?.version }}）后旧版本立即失效，引用它的配置需要重新选择。
-      </p>
-    </t-dialog>
+    <t-drawer v-model:visible="rotateVisible" header="轮换凭据" size="480px" :footer="false" @close="rotateVisible = false">
+      <div class="settings-drawer">
+        <div class="settings-drawer__scroll">
+          <t-alert
+            theme="warning"
+            title="旧版本立即失效"
+            message="引用旧版本凭据的配置需要重新选择，已保存的构建与发布记录不受影响。"
+          />
+          <p class="settings-drawer__hint">
+            轮换 {{ rotateTarget?.name }}（当前 v{{ rotateTarget?.version }}）会生成新版本。
+          </p>
+        </div>
+        <div class="settings-drawer__footer">
+          <t-button variant="outline" @click="rotateVisible = false">取消</t-button>
+          <t-button theme="danger" @click="confirmRotate">确认轮换</t-button>
+        </div>
+      </div>
+    </t-drawer>
   </div>
 </template>
 
 <style scoped>
 .credentials__alert {
   margin-bottom: 12px;
+}
+.credentials__toolbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.credentials__search {
+  width: 260px;
+}
+.credentials__count {
+  margin-left: auto;
+  color: var(--tk-text-3);
+  font-size: 11px;
 }
 .credentials__actions {
   display: flex;
