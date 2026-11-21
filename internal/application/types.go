@@ -103,6 +103,11 @@ type BindingInput struct {
 	OverrideValues map[string]any `json:"overrideValues"`
 	AutoDeploy     bool           `json:"autoDeploy"`
 }
+type BindingUpdate struct {
+	ExpectedVersion *int32         `json:"expectedVersion"`
+	OverrideValues  map[string]any `json:"overrideValues"`
+	AutoDeploy      bool           `json:"autoDeploy"`
+}
 type CI struct {
 	Manual              bool    `json:"manual"`
 	Push                bool    `json:"push"`

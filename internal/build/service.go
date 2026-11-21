@@ -75,6 +75,9 @@ func (s *Service) processOne(claimCtx, ctx context.Context) (bool, error) {
 	}
 	stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	if row.CancelRequestedAt != nil {
+		return true, s.finish(ctx, row, s.cancelStep(stepCtx, spec, row))
+	}
 	// After submission, revocation must not hide an existing external outcome.
 	if row.Stage == "planned" {
 		if e = s.authorize(stepCtx, spec); e != nil {
@@ -84,7 +87,11 @@ func (s *Service) processOne(claimCtx, ctx context.Context) (bool, error) {
 	}
 	create := row.Stage == "planned"
 	if create {
-		row, e = s.q.MarkBuildCreateIntent(ctx, sqlcdb.MarkBuildCreateIntentParams{ID: row.ID, Revision: row.Revision, LeaseOwner: &owner})
+		marked, err := s.q.MarkBuildCreateIntent(ctx, sqlcdb.MarkBuildCreateIntentParams{ID: row.ID, Revision: row.Revision, LeaseOwner: &owner})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, s.finish(ctx, row, stepResult{stage: row.Stage, status: row.Status, availability: row.LogAvailability})
+		}
+		row, e = marked, err
 		if e != nil {
 			return true, e
 		}
@@ -126,6 +133,22 @@ func (s *Service) authorize(ctx context.Context, spec ExecutionSpec) error {
 }
 func (s *Service) finish(ctx context.Context, row sqlcdb.BuildAttempt, r stepResult) error {
 	_, e := database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (bool, error) {
+		b, e := q.LockBuild(ctx, row.BuildID)
+		if e != nil {
+			return false, e
+		}
+		if b.AttemptNo != row.AttemptNo {
+			return false, pgx.ErrNoRows
+		}
+		current, e := q.LockBuildAttempt(ctx, sqlcdb.LockBuildAttemptParams{BuildID: row.BuildID, AttemptNo: row.AttemptNo})
+		if e != nil {
+			return false, e
+		}
+		// Preserve intent recorded during an in-flight external step without
+		// discarding its discovered UID or verified terminal outcome.
+		if current.CancelRequestedAt != nil && r.stage != "finished" && r.status != "unknown" {
+			r.status = "canceling"
+		}
 		updated, e := q.TransitionBuildAttempt(ctx, sqlcdb.TransitionBuildAttemptParams{ID: row.ID, Revision: row.Revision, LeaseOwner: row.LeaseOwner, Stage: r.stage, Status: r.status, JobUid: ptr(r.uid), ErrorCode: ptr(r.code), LogAvailability: r.availability})
 		if e != nil {
 			return false, e
@@ -138,17 +161,13 @@ func (s *Service) finish(ctx context.Context, row sqlcdb.BuildAttempt, r stepRes
 			}
 			var spec ExecutionSpec
 			_ = json.Unmarshal(row.ExecutionSpec, &spec)
-			a, e := q.CreateArtifact(ctx, sqlcdb.CreateArtifactParams{ID: uuid.NewString(), AppID: b.AppID, BuildID: b.ID, AttemptID: row.ID, ImageRepository: registryRepository(spec), Digest: r.digest})
+			a, e := q.CreateArtifact(ctx, sqlcdb.CreateArtifactParams{ID: uuid.NewString(), AppID: b.AppID, BuildID: &b.ID, AttemptID: &row.ID, ImageRepository: registryRepository(spec), Digest: r.digest})
 			if e != nil {
 				return false, e
 			}
 			artifactID = &a.ID
 		}
 		if e = q.SetBuildState(ctx, sqlcdb.SetBuildStateParams{ID: row.BuildID, Status: r.status, ArtifactID: artifactID}); e != nil {
-			return false, e
-		}
-		b, e := q.GetBuild(ctx, row.BuildID)
-		if e != nil {
 			return false, e
 		}
 		app, e := q.GetApplication(ctx, b.AppID)
@@ -160,7 +179,13 @@ func (s *Service) finish(ctx context.Context, row sqlcdb.BuildAttempt, r stepRes
 			return false, e
 		}
 		if updated.Stage == "finished" || row.Status != updated.Status {
-			e = project.Record(ctx, q, auth.Actor{User: auth.User{ID: b.RequestedBy}}, &p.TeamID, &p.ID, "build."+r.status, "worker", map[string]any{"buildId": b.ID, "attemptId": row.ID, "errorCode": r.code})
+			var spec ExecutionSpec
+			_ = json.Unmarshal(row.ExecutionSpec, &spec)
+			actorID := spec.RequestedBy
+			if actorID == "" {
+				actorID = b.RequestedBy
+			}
+			e = project.Record(ctx, q, auth.Actor{User: auth.User{ID: actorID}}, &p.TeamID, &p.ID, "build."+r.status, "worker", map[string]any{"buildId": b.ID, "attemptId": row.ID, "errorCode": r.code})
 		}
 		return true, e
 	})

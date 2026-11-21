@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/xuzuxing/podry/internal/auth"
+	"github.com/xuzuxing/podry/internal/database/sqlcdb"
 	"github.com/xuzuxing/podry/internal/httpx"
 	"github.com/xuzuxing/podry/internal/kubernetes"
 )
@@ -241,8 +242,42 @@ func controllerChild(raw map[string]any, parents map[string]Root, kind string) b
 	return false
 }
 
+// AuthorizeOwned checks cached comparison visibility without decrypting a credential
+// or issuing network requests. The returned stamp must be rechecked before use.
+func (s *Service) AuthorizeOwned(ctx context.Context, a auth.Actor, cluster string, roots []Root) (Owned, error) {
+	out := Owned{}
+	x, err := s.snapshot(ctx, a, cluster, false)
+	if err != nil {
+		return out, err
+	}
+	if !x.any("", "resource.view") {
+		return out, httpx.NotFound()
+	}
+	for _, r := range roots {
+		t, e := rootType(r)
+		if e != nil {
+			return out, e
+		}
+		if !x.allows(t.key(), r.Namespace, "resource.view", true) {
+			return out, httpx.NotFound()
+		}
+	}
+	out.stamp = x
+	return out, s.recheck(ctx, a, x)
+}
+
 func (s *Service) RecheckOwned(ctx context.Context, a auth.Actor, out Owned) error {
 	return s.recheck(ctx, a, out.stamp)
+}
+
+// RecheckOwnedQuery closes the final authorization window inside the caller's
+// transaction. Cluster/grant mutation stays blocked until its observation commits.
+func (s *Service) RecheckOwnedQuery(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, out Owned) error {
+	now, err := s.snapshotQuery(ctx, q, a, out.stamp.cluster.ID, false)
+	if err != nil {
+		return err
+	}
+	return recheckSnapshot(out.stamp, now)
 }
 
 func objectKey(o Object) string {

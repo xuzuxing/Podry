@@ -53,6 +53,12 @@ func New(webFS fs.FS, dependencies ...Dependencies) http.Handler {
 		if len(dependencies) > 0 && dependencies[0].Auth != nil {
 			d := dependencies[0]
 			d.Auth.Register(r)
+			if d.Resource != nil {
+				d.Resource.RegisterExecConnect(r, d.Auth)
+			}
+			if d.Application != nil {
+				d.Application.RegisterWebhooks(r)
+			}
 			r.Group(func(r chi.Router) {
 				r.Use(d.Auth.RequireUser)
 				if d.Audit != nil {
@@ -70,6 +76,10 @@ func New(webFS fs.FS, dependencies ...Dependencies) http.Handler {
 				}
 				if d.Application != nil {
 					d.Application.Register(r)
+				}
+				if d.Resource != nil {
+					d.Resource.RegisterOperations(r)
+					d.Resource.RegisterExecClose(r)
 				}
 				if d.Audit != nil {
 					d.Audit.Register(r)

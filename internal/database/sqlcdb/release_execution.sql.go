@@ -78,6 +78,55 @@ func (q *Queries) ListDeploymentResources(ctx context.Context, deploymentID stri
 	return items, nil
 }
 
+const lockReleaseReconciliation = `-- name: LockReleaseReconciliation :one
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,clock_timestamp()::timestamptz AS checked_at,
+ COALESCE(d.lease_until>clock_timestamp(),false)::boolean AS worker_active
+FROM deployments d WHERE d.id=$1 FOR UPDATE OF d SKIP LOCKED
+`
+
+type LockReleaseReconciliationRow struct {
+	ID           string
+	RequestID    string
+	TargetID     string
+	Status       string
+	HelmRevision *int32
+	CreatedAt    time.Time
+	Revision     int64
+	FencingToken int64
+	LeaseOwner   *string
+	LeaseUntil   *time.Time
+	NextPollAt   time.Time
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
+	ErrorCode    *string
+	CheckedAt    time.Time
+	WorkerActive bool
+}
+
+func (q *Queries) LockReleaseReconciliation(ctx context.Context, id string) (LockReleaseReconciliationRow, error) {
+	row := q.db.QueryRow(ctx, lockReleaseReconciliation, id)
+	var i LockReleaseReconciliationRow
+	err := row.Scan(
+		&i.ID,
+		&i.RequestID,
+		&i.TargetID,
+		&i.Status,
+		&i.HelmRevision,
+		&i.CreatedAt,
+		&i.Revision,
+		&i.FencingToken,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.CheckedAt,
+		&i.WorkerActive,
+	)
+	return i, err
+}
+
 const markReleaseIntent = `-- name: MarkReleaseIntent :one
 UPDATE deployments SET status='submitting'
 WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_until>clock_timestamp() AND status='queued' RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
@@ -186,6 +235,73 @@ func (q *Queries) OccupyReleaseTarget(ctx context.Context, arg OccupyReleaseTarg
 	var fencing_token int64
 	err := row.Scan(&fencing_token)
 	return fencing_token, err
+}
+
+const reconcileRelease = `-- name: ReconcileRelease :one
+UPDATE deployments SET status=$1,revision=revision+1,
+ helm_revision=COALESCE(helm_revision,$2),error_code=$3,
+ lease_owner=NULL,lease_until=NULL,next_poll_at=clock_timestamp()+interval '3 seconds',
+ finished_at=CASE WHEN $1::text IN ('succeeded','failed') THEN clock_timestamp() ELSE NULL END
+WHERE deployments.id=$4 AND deployments.revision=$5
+ AND deployments.status IN ('submitting','observing','unknown')
+ AND (deployments.lease_until IS NULL OR deployments.lease_until<=clock_timestamp())
+ AND EXISTS(SELECT 1 FROM deployment_targets t WHERE t.id=deployments.target_id
+  AND t.active_deployment_id=deployments.id AND t.fencing_token=deployments.fencing_token)
+RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+`
+
+type ReconcileReleaseParams struct {
+	Status           string
+	HelmRevision     *int32
+	ErrorCode        *string
+	ID               string
+	ExpectedRevision int64
+}
+
+func (q *Queries) ReconcileRelease(ctx context.Context, arg ReconcileReleaseParams) (Deployment, error) {
+	row := q.db.QueryRow(ctx, reconcileRelease,
+		arg.Status,
+		arg.HelmRevision,
+		arg.ErrorCode,
+		arg.ID,
+		arg.ExpectedRevision,
+	)
+	var i Deployment
+	err := row.Scan(
+		&i.ID,
+		&i.RequestID,
+		&i.TargetID,
+		&i.Status,
+		&i.HelmRevision,
+		&i.CreatedAt,
+		&i.Revision,
+		&i.FencingToken,
+		&i.LeaseOwner,
+		&i.LeaseUntil,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+	)
+	return i, err
+}
+
+const releaseReconciliationOwnsTarget = `-- name: ReleaseReconciliationOwnsTarget :one
+SELECT EXISTS(SELECT 1 FROM deployment_targets
+ WHERE id=$1 AND active_deployment_id=$2 AND fencing_token=$3)::boolean
+`
+
+type ReleaseReconciliationOwnsTargetParams struct {
+	ID                 string
+	ActiveDeploymentID *string
+	FencingToken       int64
+}
+
+func (q *Queries) ReleaseReconciliationOwnsTarget(ctx context.Context, arg ReleaseReconciliationOwnsTargetParams) (bool, error) {
+	row := q.db.QueryRow(ctx, releaseReconciliationOwnsTarget, arg.ID, arg.ActiveDeploymentID, arg.FencingToken)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const releaseTarget = `-- name: ReleaseTarget :execrows

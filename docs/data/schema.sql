@@ -137,6 +137,8 @@ CREATE TABLE build_attempts (
     log_availability text NOT NULL DEFAULT 'unavailable' CHECK(log_availability IN ('runtime','archived','unavailable','expired')),
     lease_owner text, lease_expires_at timestamptz, revision bigint NOT NULL DEFAULT 1,
     started_at timestamptz, finished_at timestamptz, error_code text,
+    cancel_requested_at timestamptz, cancel_requested_by uuid REFERENCES users(id),
+    CHECK((cancel_requested_at IS NULL)=(cancel_requested_by IS NULL)),
     UNIQUE(build_id,attempt_no), UNIQUE(build_cluster_id,namespace,job_name), UNIQUE(id,build_id)
 );
 CREATE TABLE artifacts (
@@ -144,11 +146,15 @@ CREATE TABLE artifacts (
     build_id uuid, attempt_id uuid,
     image_repository text NOT NULL, digest text NOT NULL CHECK(digest ~ '^sha256:[0-9a-f]{64}$'),
     source text NOT NULL CHECK(source IN ('build','external')),
+    registry_id uuid REFERENCES registries(id), registry_credential_id uuid, registry_credential_version integer,
+    imported_by uuid REFERENCES users(id),
+    FOREIGN KEY(registry_credential_id,registry_credential_version) REFERENCES secret_versions(credential_id,version),
+    CHECK((registry_credential_id IS NULL)=(registry_credential_version IS NULL)),
     created_at timestamptz NOT NULL DEFAULT now(),
     FOREIGN KEY(build_id,app_id) REFERENCES builds(id,app_id),
     FOREIGN KEY(attempt_id,build_id) REFERENCES build_attempts(id,build_id),
-    CHECK((source='build' AND build_id IS NOT NULL AND attempt_id IS NOT NULL) OR
-          (source='external' AND build_id IS NULL AND attempt_id IS NULL)), UNIQUE(id,app_id)
+    CHECK((source='build' AND build_id IS NOT NULL AND attempt_id IS NOT NULL AND registry_id IS NULL AND imported_by IS NULL AND registry_credential_id IS NULL AND registry_credential_version IS NULL) OR
+          (source='external' AND build_id IS NULL AND attempt_id IS NULL AND registry_id IS NOT NULL AND imported_by IS NOT NULL)), UNIQUE(id,app_id)
 );
 CREATE TABLE deployment_previews (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), app_id uuid NOT NULL REFERENCES applications(id),
@@ -177,9 +183,11 @@ CREATE TABLE release_requests (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), snapshot_id uuid NOT NULL REFERENCES release_snapshots(id),
     kind text NOT NULL CHECK(kind IN ('deploy','promote','rollback')),
     source_deployment_id uuid,
+    reason text NOT NULL DEFAULT '',
     status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','executing','succeeded','failed','unknown')),
     requested_by uuid NOT NULL REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(),
-    CHECK(kind='deploy' OR source_deployment_id IS NOT NULL)
+    CHECK((kind='deploy')=(source_deployment_id IS NULL)),
+    CHECK((kind='rollback' AND char_length(btrim(reason)) BETWEEN 1 AND 1000) OR (kind<>'rollback' AND reason=''))
 );
 CREATE TABLE deployments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL UNIQUE REFERENCES release_requests(id),
@@ -202,26 +210,69 @@ CREATE TABLE deployment_resources (
 CREATE TABLE resource_previews (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), cluster_id uuid NOT NULL REFERENCES clusters(id),
     requested_by uuid NOT NULL REFERENCES users(id),
-    encrypted_documents bytea NOT NULL, key_id text NOT NULL, items_redacted jsonb NOT NULL,
-    expires_at timestamptz NOT NULL, consumed_at timestamptz
+    encrypted_documents bytea NOT NULL, key_id text NOT NULL,
+    items_redacted jsonb NOT NULL CHECK(jsonb_typeof(items_redacted)='array'),
+    expires_at timestamptz NOT NULL, consumed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(id,cluster_id,requested_by)
 );
 CREATE TABLE resource_operations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), cluster_id uuid NOT NULL REFERENCES clusters(id),
     requested_by uuid NOT NULL REFERENCES users(id),
-    kind text NOT NULL CHECK(kind IN ('apply','delete','restart','scale')),
+    -- v13: only apply consumes a preview; actions freeze a direct resource reference.
+    preview_id uuid UNIQUE REFERENCES resource_previews(id), kind text NOT NULL CHECK(kind IN ('apply','delete','restart','scale')),
+    CHECK((kind='apply')=(preview_id IS NOT NULL)),
     status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','succeeded','failed','partial','unknown')),
     encrypted_payload bytea NOT NULL, key_id text NOT NULL,
-    payload_redacted jsonb NOT NULL, result_redacted jsonb NOT NULL DEFAULT '[]',
-    lease_owner text, lease_expires_at timestamptz, revision bigint NOT NULL DEFAULT 1,
-    created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz
+    payload_redacted jsonb NOT NULL CHECK(jsonb_typeof(payload_redacted)='array'),
+    result_redacted jsonb NOT NULL DEFAULT '[]' CHECK(jsonb_typeof(result_redacted)='array'),
+    stop_on_error boolean NOT NULL DEFAULT false,
+    lease_owner text, lease_expires_at timestamptz, revision bigint NOT NULL DEFAULT 1, retry_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now(), finished_at timestamptz,
+    CHECK((lease_owner IS NULL)=(lease_expires_at IS NULL)),
+    FOREIGN KEY(preview_id,cluster_id,requested_by) REFERENCES resource_previews(id,cluster_id,requested_by)
+);
+-- Persist only comparison results and version identities, never manifests or values.
+CREATE TABLE application_drift_observations (
+ id uuid PRIMARY KEY,
+ binding_id uuid NOT NULL REFERENCES app_environment_bindings(id) ON DELETE CASCADE,
+ deployment_id uuid NOT NULL REFERENCES deployments(id),
+ snapshot_key text NOT NULL CHECK(snapshot_key ~ '^[0-9a-f]{64}$'),
+ status text NOT NULL CHECK(status IN ('aligned','drifted','unknown')),
+ reason text NOT NULL CHECK(reason IN ('compared','read_failed','identity_changed','identity_unconfirmed','release_unsettled','resource_operation_pending')),
+ resource_count integer NOT NULL CHECK(resource_count BETWEEN 0 AND 64),
+ changed_count integer NOT NULL CHECK(changed_count BETWEEN 0 AND resource_count),
+ missing_count integer NOT NULL CHECK(missing_count BETWEEN 0 AND resource_count),
+ observed_at timestamptz NOT NULL,
+ CHECK(changed_count+missing_count<=resource_count),
+ CHECK((status='unknown' AND reason<>'compared' AND changed_count=0 AND missing_count=0)
+    OR (status='aligned' AND reason='compared' AND changed_count=0 AND missing_count=0)
+    OR (status='drifted' AND reason='compared' AND changed_count+missing_count>0))
+);
+CREATE INDEX application_drift_binding_time_idx ON application_drift_observations(binding_id,observed_at DESC,id DESC);
+
+-- The last explicit workflow save delegates Push admission to a real user.
+-- No bearer token, payload or signing secret is stored here.
+CREATE TABLE pipeline_push_authorizations (
+ pipeline_id uuid PRIMARY KEY REFERENCES pipelines(id) ON DELETE CASCADE,
+ authorized_by uuid NOT NULL REFERENCES users(id),
+ pipeline_version integer NOT NULL CHECK(pipeline_version>0),
+ repository_url text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE webhook_deliveries (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), provider text NOT NULL CHECK(provider IN ('github','gitlab')),
-    pipeline_id uuid NOT NULL REFERENCES pipelines(id), delivery_id text NOT NULL,
-    request_hash text NOT NULL, build_id uuid REFERENCES builds(id),
-    status text NOT NULL CHECK(status IN ('received','ignored','accepted','failed')),
-    created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(provider,pipeline_id,delivery_id)
+ id uuid PRIMARY KEY,
+ provider text NOT NULL CHECK(provider='github'),
+ pipeline_id uuid NOT NULL REFERENCES pipelines(id),
+ delivery_id text NOT NULL CHECK(length(delivery_id) BETWEEN 1 AND 100),
+ request_hash text NOT NULL CHECK(request_hash ~ '^[0-9a-f]{64}$'),
+ build_id uuid REFERENCES builds(id),
+ status text NOT NULL CHECK(status IN ('ignored','accepted')),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(provider,pipeline_id,delivery_id),
+ CHECK((status='accepted')=(build_id IS NOT NULL))
 );
+CREATE TRIGGER webhook_deliveries_immutable BEFORE UPDATE OR DELETE ON webhook_deliveries
+FOR EACH ROW EXECUTE FUNCTION podry_immutable_row();
 CREATE TABLE idempotency_records (
     user_id uuid NOT NULL REFERENCES users(id), operation_id text NOT NULL, key text NOT NULL,
     request_hash text NOT NULL, response_status integer, response_body jsonb,
@@ -242,6 +293,44 @@ CREATE TABLE audit_events (
     result text NOT NULL CHECK(result IN ('accepted','succeeded','failed','denied','unknown')),
     diff_redacted jsonb, created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE pipeline_deploy_authorizations (
+ pipeline_id uuid PRIMARY KEY REFERENCES pipelines(id) ON DELETE CASCADE,
+ authorized_by uuid NOT NULL REFERENCES users(id),
+ pipeline_version integer NOT NULL CHECK(pipeline_version>0),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE auto_deploy_intents (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ build_id uuid NOT NULL REFERENCES builds(id),
+ pipeline_id uuid NOT NULL,
+ binding_id uuid NOT NULL REFERENCES app_environment_bindings(id),
+ authorized_by uuid NOT NULL REFERENCES users(id),
+ config_version integer NOT NULL CHECK(config_version>0),
+ workflow_version integer NOT NULL CHECK(workflow_version>0),
+ pipeline_version integer NOT NULL CHECK(pipeline_version>0),
+ ci_version integer NOT NULL CHECK(ci_version>0),
+ binding_version integer NOT NULL CHECK(binding_version>0),
+ status text NOT NULL DEFAULT 'waiting' CHECK(status IN ('waiting','blocked','dispatched','skipped')),
+ error_code text,
+ request_id uuid UNIQUE REFERENCES release_requests(id),
+ next_poll_at timestamptz NOT NULL DEFAULT now(),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ updated_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(build_id,pipeline_id),
+ CHECK((status='dispatched')=(request_id IS NOT NULL))
+);
+CREATE INDEX auto_deploy_intents_pending ON auto_deploy_intents(next_poll_at,id) WHERE status IN ('waiting','blocked');
+
+-- v17 persistent scheduling; observations remain a separate short-lived cache.
+CREATE TABLE binding_health_polls (
+ binding_id uuid PRIMARY KEY REFERENCES app_environment_bindings(id) ON DELETE CASCADE,
+ next_poll_at timestamptz NOT NULL DEFAULT now(),
+ lease_token uuid, lease_until timestamptz, started_at timestamptz,
+ last_error_code text,
+ CHECK((lease_token IS NULL)=(lease_until IS NULL))
+);
+CREATE INDEX binding_health_polls_due ON binding_health_polls(next_poll_at,binding_id);
+
 CREATE TABLE log_archives (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), build_attempt_id uuid REFERENCES build_attempts(id),
     deployment_id uuid REFERENCES deployments(id), storage_key text NOT NULL UNIQUE,

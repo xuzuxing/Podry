@@ -120,8 +120,45 @@ func (q *Queries) CreateDeploymentPreview(ctx context.Context, arg CreateDeploym
 	return i, err
 }
 
+const createDerivedReleaseRequest = `-- name: CreateDerivedReleaseRequest :one
+INSERT INTO release_requests(id,snapshot_id,requested_by,kind,source_deployment_id,reason)
+VALUES($1,$2,$3,$4,$5,$6) RETURNING id, snapshot_id, kind, status, requested_by, created_at, source_deployment_id, reason
+`
+
+type CreateDerivedReleaseRequestParams struct {
+	ID                 string
+	SnapshotID         string
+	RequestedBy        string
+	Kind               string
+	SourceDeploymentID *string
+	Reason             string
+}
+
+func (q *Queries) CreateDerivedReleaseRequest(ctx context.Context, arg CreateDerivedReleaseRequestParams) (ReleaseRequest, error) {
+	row := q.db.QueryRow(ctx, createDerivedReleaseRequest,
+		arg.ID,
+		arg.SnapshotID,
+		arg.RequestedBy,
+		arg.Kind,
+		arg.SourceDeploymentID,
+		arg.Reason,
+	)
+	var i ReleaseRequest
+	err := row.Scan(
+		&i.ID,
+		&i.SnapshotID,
+		&i.Kind,
+		&i.Status,
+		&i.RequestedBy,
+		&i.CreatedAt,
+		&i.SourceDeploymentID,
+		&i.Reason,
+	)
+	return i, err
+}
+
 const createReleaseRequest = `-- name: CreateReleaseRequest :one
-INSERT INTO release_requests(id,snapshot_id,requested_by) VALUES($1,$2,$3) RETURNING id, snapshot_id, kind, status, requested_by, created_at
+INSERT INTO release_requests(id,snapshot_id,requested_by) VALUES($1,$2,$3) RETURNING id, snapshot_id, kind, status, requested_by, created_at, source_deployment_id, reason
 `
 
 type CreateReleaseRequestParams struct {
@@ -140,6 +177,8 @@ func (q *Queries) CreateReleaseRequest(ctx context.Context, arg CreateReleaseReq
 		&i.Status,
 		&i.RequestedBy,
 		&i.CreatedAt,
+		&i.SourceDeploymentID,
+		&i.Reason,
 	)
 	return i, err
 }
@@ -190,7 +229,7 @@ func (q *Queries) CreateReleaseSnapshot(ctx context.Context, arg CreateReleaseSn
 }
 
 const getArtifact = `-- name: GetArtifact :one
-SELECT id, app_id, build_id, attempt_id, image_repository, digest, source, created_at FROM artifacts WHERE id=$1
+SELECT id, app_id, build_id, attempt_id, image_repository, digest, source, created_at, registry_id, registry_credential_id, registry_credential_version, imported_by FROM artifacts WHERE id=$1
 `
 
 func (q *Queries) GetArtifact(ctx context.Context, id string) (Artifact, error) {
@@ -205,37 +244,42 @@ func (q *Queries) GetArtifact(ctx context.Context, id string) (Artifact, error) 
 		&i.Digest,
 		&i.Source,
 		&i.CreatedAt,
+		&i.RegistryID,
+		&i.RegistryCredentialID,
+		&i.RegistryCredentialVersion,
+		&i.ImportedBy,
 	)
 	return i, err
 }
 
 const getDeployment = `-- name: GetDeployment :one
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
 JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id WHERE d.id=$1
 `
 
 type GetDeploymentRow struct {
-	ID            string
-	RequestID     string
-	TargetID      string
-	Status        string
-	HelmRevision  *int32
-	CreatedAt     time.Time
-	Revision      int64
-	FencingToken  int64
-	LeaseOwner    *string
-	LeaseUntil    *time.Time
-	NextPollAt    time.Time
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
-	ErrorCode     *string
-	SnapshotID    string
-	Kind          string
-	AppID         string
-	BindingID     string
-	ArtifactID    string
-	ConfigVersion int32
-	Snapshot      []byte
+	ID                 string
+	RequestID          string
+	TargetID           string
+	Status             string
+	HelmRevision       *int32
+	CreatedAt          time.Time
+	Revision           int64
+	FencingToken       int64
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	SnapshotID         string
+	Kind               string
+	SourceDeploymentID *string
+	AppID              string
+	BindingID          string
+	ArtifactID         string
+	ConfigVersion      int32
+	Snapshot           []byte
 }
 
 func (q *Queries) GetDeployment(ctx context.Context, id string) (GetDeploymentRow, error) {
@@ -258,6 +302,7 @@ func (q *Queries) GetDeployment(ctx context.Context, id string) (GetDeploymentRo
 		&i.ErrorCode,
 		&i.SnapshotID,
 		&i.Kind,
+		&i.SourceDeploymentID,
 		&i.AppID,
 		&i.BindingID,
 		&i.ArtifactID,
@@ -311,20 +356,22 @@ func (q *Queries) GetReleaseBinding(ctx context.Context, arg GetReleaseBindingPa
 }
 
 const getReleaseRequest = `-- name: GetReleaseRequest :one
-SELECT r.id, r.snapshot_id, r.kind, r.status, r.requested_by, r.created_at,s.app_id,s.binding_id,d.id AS deployment_id FROM release_requests r
+SELECT r.id, r.snapshot_id, r.kind, r.status, r.requested_by, r.created_at, r.source_deployment_id, r.reason,s.app_id,s.binding_id,d.id AS deployment_id FROM release_requests r
 JOIN release_snapshots s ON s.id=r.snapshot_id JOIN deployments d ON d.request_id=r.id WHERE r.id=$1
 `
 
 type GetReleaseRequestRow struct {
-	ID           string
-	SnapshotID   string
-	Kind         string
-	Status       string
-	RequestedBy  string
-	CreatedAt    time.Time
-	AppID        string
-	BindingID    string
-	DeploymentID string
+	ID                 string
+	SnapshotID         string
+	Kind               string
+	Status             string
+	RequestedBy        string
+	CreatedAt          time.Time
+	SourceDeploymentID *string
+	Reason             string
+	AppID              string
+	BindingID          string
+	DeploymentID       string
 }
 
 func (q *Queries) GetReleaseRequest(ctx context.Context, id string) (GetReleaseRequestRow, error) {
@@ -337,6 +384,8 @@ func (q *Queries) GetReleaseRequest(ctx context.Context, id string) (GetReleaseR
 		&i.Status,
 		&i.RequestedBy,
 		&i.CreatedAt,
+		&i.SourceDeploymentID,
+		&i.Reason,
 		&i.AppID,
 		&i.BindingID,
 		&i.DeploymentID,
@@ -379,7 +428,7 @@ func (q *Queries) HasActiveDeployments(ctx context.Context, appID string) (bool,
 }
 
 const listDeployments = `-- name: ListDeployments :many
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
 JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id
 WHERE s.app_id=$1 AND ($2::uuid IS NULL OR s.binding_id=$2)
 ORDER BY d.created_at DESC,d.id LIMIT $4 OFFSET $3
@@ -393,27 +442,28 @@ type ListDeploymentsParams struct {
 }
 
 type ListDeploymentsRow struct {
-	ID            string
-	RequestID     string
-	TargetID      string
-	Status        string
-	HelmRevision  *int32
-	CreatedAt     time.Time
-	Revision      int64
-	FencingToken  int64
-	LeaseOwner    *string
-	LeaseUntil    *time.Time
-	NextPollAt    time.Time
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
-	ErrorCode     *string
-	SnapshotID    string
-	Kind          string
-	AppID         string
-	BindingID     string
-	ArtifactID    string
-	ConfigVersion int32
-	Snapshot      []byte
+	ID                 string
+	RequestID          string
+	TargetID           string
+	Status             string
+	HelmRevision       *int32
+	CreatedAt          time.Time
+	Revision           int64
+	FencingToken       int64
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	SnapshotID         string
+	Kind               string
+	SourceDeploymentID *string
+	AppID              string
+	BindingID          string
+	ArtifactID         string
+	ConfigVersion      int32
+	Snapshot           []byte
 }
 
 func (q *Queries) ListDeployments(ctx context.Context, arg ListDeploymentsParams) ([]ListDeploymentsRow, error) {
@@ -447,6 +497,7 @@ func (q *Queries) ListDeployments(ctx context.Context, arg ListDeploymentsParams
 			&i.ErrorCode,
 			&i.SnapshotID,
 			&i.Kind,
+			&i.SourceDeploymentID,
 			&i.AppID,
 			&i.BindingID,
 			&i.ArtifactID,

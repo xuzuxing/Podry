@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+const bindingTargetBusy = `-- name: BindingTargetBusy :one
+SELECT EXISTS(
+ SELECT 1 FROM deployment_targets t WHERE t.id=$1::uuid AND t.active_deployment_id IS NOT NULL
+ UNION ALL
+ SELECT 1 FROM deployments d WHERE d.target_id=$1::uuid AND d.status IN ('queued','submitting','observing','unknown')
+) AS busy
+`
+
+func (q *Queries) BindingTargetBusy(ctx context.Context, targetID string) (bool, error) {
+	row := q.db.QueryRow(ctx, bindingTargetBusy, targetID)
+	var busy bool
+	err := row.Scan(&busy)
+	return busy, err
+}
+
 const countApplications = `-- name: CountApplications :one
 SELECT count(*) FROM applications a JOIN projects p ON p.id=a.project_id JOIN application_health h ON h.app_id=a.id
 WHERE ($1::uuid IS NULL OR a.project_id=$1)
@@ -77,17 +92,26 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 }
 
 const createBinding = `-- name: CreateBinding :one
-INSERT INTO app_environment_bindings(app_id,environment_id,target_id) VALUES($1,$2,$3) RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id
+INSERT INTO app_environment_bindings(app_id,environment_id,target_id,override_values,auto_deploy)
+VALUES($1,$2,$3,COALESCE($5::jsonb,'{}'::jsonb),$4) RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id
 `
 
 type CreateBindingParams struct {
-	AppID         string
-	EnvironmentID string
-	TargetID      string
+	AppID          string
+	EnvironmentID  string
+	TargetID       string
+	AutoDeploy     bool
+	OverrideValues []byte
 }
 
 func (q *Queries) CreateBinding(ctx context.Context, arg CreateBindingParams) (AppEnvironmentBinding, error) {
-	row := q.db.QueryRow(ctx, createBinding, arg.AppID, arg.EnvironmentID, arg.TargetID)
+	row := q.db.QueryRow(ctx, createBinding,
+		arg.AppID,
+		arg.EnvironmentID,
+		arg.TargetID,
+		arg.AutoDeploy,
+		arg.OverrideValues,
+	)
 	var i AppEnvironmentBinding
 	err := row.Scan(
 		&i.ID,
@@ -495,6 +519,41 @@ func (q *Queries) UpdateApplication(ctx context.Context, arg UpdateApplicationPa
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateBinding = `-- name: UpdateBinding :one
+UPDATE app_environment_bindings SET override_values=$3,auto_deploy=$4,version=version+1
+WHERE id=$1 AND app_id=$2 AND version=$5 RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id
+`
+
+type UpdateBindingParams struct {
+	ID              string
+	AppID           string
+	OverrideValues  []byte
+	AutoDeploy      bool
+	ExpectedVersion int32
+}
+
+func (q *Queries) UpdateBinding(ctx context.Context, arg UpdateBindingParams) (AppEnvironmentBinding, error) {
+	row := q.db.QueryRow(ctx, updateBinding,
+		arg.ID,
+		arg.AppID,
+		arg.OverrideValues,
+		arg.AutoDeploy,
+		arg.ExpectedVersion,
+	)
+	var i AppEnvironmentBinding
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.EnvironmentID,
+		&i.TargetID,
+		&i.OverrideValues,
+		&i.Version,
+		&i.AutoDeploy,
+		&i.CurrentDeploymentID,
 	)
 	return i, err
 }

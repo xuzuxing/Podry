@@ -169,7 +169,7 @@ func (s *Service) buildLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		checkCtx, stop := context.WithTimeout(ctx, 3*time.Second)
-		b, e = s.authorizeBuildLog(checkCtx, a, id)
+		_, e = s.authorizeBuildLog(checkCtx, a, id)
 		stop()
 		if e != nil {
 			fail(e)
@@ -215,9 +215,9 @@ func (s *Service) buildLogs(w http.ResponseWriter, r *http.Request) {
 		cursor.Scope = scope
 		cursor.Snapshot = prefix
 		cursor.Expires = time.Now().Add(10 * time.Minute).Unix()
-		terminal := b.Status == "succeeded" || b.Status == "failed" || b.Status == "canceled"
+		terminal := row.Status == "succeeded" || row.Status == "failed" || row.Status == "canceled"
 		if !follow || terminal {
-			_ = send(map[string]any{"type": "end", "status": b.Status, "cursor": s.signBuildCursor(cursor)})
+			_ = send(map[string]any{"type": "end", "status": row.Status, "cursor": s.signBuildCursor(cursor)})
 			return
 		}
 		select {

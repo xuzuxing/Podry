@@ -31,6 +31,7 @@ type Runtime struct {
 	Dependencies server.Dependencies
 	Builds       *build.Service
 	Releases     *release.Service
+	Resources    *resource.Service
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -53,7 +54,12 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	builds := build.New(pool, vault, cfg.Build)
 	releases := release.New(pool, vault, cfg.Release, release.NewHelm())
 	reader := gitremote.New(nil).WithURLPolicy(cfg.URLPolicy)
-	return &Runtime{Pool: pool, Builds: builds, Releases: releases, Dependencies: server.Dependencies{Auth: auth.New(pool, cfg.JWTSecret, ttl), Project: project.New(pool), Audit: audit.New(pool), Platform: platform.New(pool, vault).WithURLPolicy(cfg.URLPolicy), Application: application.New(pool, vault, reader, cfg.JWTSecret).UseBuilds(builds).UseReleases(releases).WithURLPolicy(cfg.URLPolicy), Resource: resource.New(pool, vault, cfg.JWTSecret)}}, nil
+	resources := resource.New(pool, vault, cfg.JWTSecret)
+	resources.WritesEnabled = cfg.ResourceWritesEnabled
+	resources.PublicOrigin = cfg.PublicOrigin
+	apps := application.New(pool, vault, reader, cfg.JWTSecret).UseBuilds(builds).UseReleases(releases).WithURLPolicy(cfg.URLPolicy)
+	apps.HealthPollingEnabled = cfg.HealthPollingEnabled
+	return &Runtime{Pool: pool, Builds: builds, Releases: releases, Resources: resources, Dependencies: server.Dependencies{Auth: auth.New(pool, cfg.JWTSecret, ttl), Project: project.New(pool), Audit: audit.New(pool), Platform: platform.New(pool, vault).WithURLPolicy(cfg.URLPolicy), Application: apps, Resource: resources}}, nil
 }
 
 const Usage = `Usage:

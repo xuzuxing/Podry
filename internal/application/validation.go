@@ -29,6 +29,9 @@ func repoPath(s string, dir bool) bool {
 	return dir || path.Clean(s) != "."
 }
 func (s *Service) validateConfig(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, app sqlcdb.Application, c Config) error {
+	if app.SourceMode == "image" && (c.GitConfig != nil || c.BuildConfig != nil) {
+		return httpx.Invalid("镜像应用不接受 Git 或构建配置")
+	}
 	p, err := q.GetProject(ctx, app.ProjectID)
 	if err != nil {
 		return err

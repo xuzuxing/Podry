@@ -38,3 +38,24 @@ SET owner_references=EXCLUDED.owner_references,observed_generation=EXCLUDED.obse
 WHERE deployment_resources.uid=EXCLUDED.uid;
 -- name: ListDeploymentResources :many
 SELECT * FROM deployment_resources WHERE deployment_id=$1 ORDER BY api_version,kind,namespace,name;
+
+-- name: LockReleaseReconciliation :one
+SELECT d.*,clock_timestamp()::timestamptz AS checked_at,
+ COALESCE(d.lease_until>clock_timestamp(),false)::boolean AS worker_active
+FROM deployments d WHERE d.id=$1 FOR UPDATE OF d SKIP LOCKED;
+
+-- name: ReleaseReconciliationOwnsTarget :one
+SELECT EXISTS(SELECT 1 FROM deployment_targets
+ WHERE id=$1 AND active_deployment_id=$2 AND fencing_token=$3)::boolean;
+
+-- name: ReconcileRelease :one
+UPDATE deployments SET status=sqlc.arg(status),revision=revision+1,
+ helm_revision=COALESCE(helm_revision,sqlc.narg(helm_revision)),error_code=sqlc.narg(error_code),
+ lease_owner=NULL,lease_until=NULL,next_poll_at=clock_timestamp()+interval '3 seconds',
+ finished_at=CASE WHEN sqlc.arg(status)::text IN ('succeeded','failed') THEN clock_timestamp() ELSE NULL END
+WHERE deployments.id=sqlc.arg(id) AND deployments.revision=sqlc.arg(expected_revision)
+ AND deployments.status IN ('submitting','observing','unknown')
+ AND (deployments.lease_until IS NULL OR deployments.lease_until<=clock_timestamp())
+ AND EXISTS(SELECT 1 FROM deployment_targets t WHERE t.id=deployments.target_id
+  AND t.active_deployment_id=deployments.id AND t.fencing_token=deployments.fencing_token)
+RETURNING *;

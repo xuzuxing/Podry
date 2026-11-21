@@ -22,7 +22,7 @@ SELECT * FROM registries WHERE id=$1;
 -- name: ListRegistries :many
 SELECT * FROM registries ORDER BY name,id;
 -- name: CreateEnvironment :one
-INSERT INTO environments(name,production) VALUES($1,$2) RETURNING *;
+INSERT INTO environments(name,production,auto_deploy_allowed) VALUES($1,$2,$3) RETURNING *;
 -- name: GetEnvironment :one
 SELECT * FROM environments WHERE id=$1;
 -- name: ListEnvironments :many

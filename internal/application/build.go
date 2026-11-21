@@ -25,7 +25,7 @@ func buildDTO(b sqlcdb.Build) build.Build {
 	return build.Build{ID: b.ID, AppID: b.AppID, Status: b.Status, CommitSHA: b.CommitSha, ConfigVersion: b.ConfigVersion, AttemptNo: b.AttemptNo, ArtifactID: b.ArtifactID, CreatedAt: b.CreatedAt}
 }
 func artifactDTO(b sqlcdb.Artifact) build.Artifact {
-	return build.Artifact{ID: b.ID, AppID: b.AppID, BuildID: &b.BuildID, Source: b.Source, ImageRepository: b.ImageRepository, Digest: b.Digest, ImageRef: b.ImageRepository + "@" + b.Digest, CreatedAt: b.CreatedAt}
+	return build.Artifact{ID: b.ID, AppID: b.AppID, BuildID: b.BuildID, Source: b.Source, ImageRepository: b.ImageRepository, Digest: b.Digest, ImageRef: b.ImageRepository + "@" + b.Digest, CreatedAt: b.CreatedAt}
 }
 func buildAccess(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string) (sqlcdb.Application, error) {
 	app, e := q.GetApplication(ctx, id)
@@ -251,7 +251,15 @@ func (s *Service) GetBuild(ctx context.Context, a auth.Actor, id string) (build.
 	if _, e = access(ctx, s.q, a, b.AppID, false); e != nil {
 		return build.Build{}, e
 	}
-	return buildDTO(b), nil
+	out := buildDTO(b)
+	intents, e := s.q.ListBuildAutoDeployIntents(ctx, id)
+	if e != nil {
+		return out, e
+	}
+	for _, i := range intents {
+		out.AutoDeployments = append(out.AutoDeployments, build.AutoDeployment{ID: i.ID, PipelineID: i.PipelineID, BindingID: i.BindingID, Status: i.Status, ErrorCode: i.ErrorCode, RequestID: i.RequestID, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt})
+	}
+	return out, nil
 }
 func (s *Service) BuildAttempts(ctx context.Context, a auth.Actor, id string) ([]build.Attempt, error) {
 	b, e := s.GetBuild(ctx, a, id)

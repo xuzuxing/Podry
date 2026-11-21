@@ -24,6 +24,8 @@ func query(r *http.Request, allowed string) (url.Values, error) {
 	return q, nil
 }
 func (s *Service) Register(r chi.Router) {
+	s.registerWriteRoutes(r)
+	s.registerSensitiveRoutes(r)
 	routes := map[string]struct {
 		keys string
 		call func(*http.Request, url.Values) (any, error)

@@ -6,6 +6,7 @@ import (
 	"github.com/xuzuxing/podry/internal/credential"
 	"github.com/xuzuxing/podry/internal/release"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -32,6 +33,12 @@ type Config struct {
 	Build build.Settings
 	// Release is opt-in; disabled workers perform no cluster I/O.
 	Release release.Settings
+	// ResourceWritesEnabled opts into the durable manifest-write worker.
+	ResourceWritesEnabled bool
+	// HealthPollingEnabled opts into background read-only Kubernetes observations.
+	HealthPollingEnabled bool
+	// PublicOrigin pins browser terminal origin when TLS terminates at a proxy.
+	PublicOrigin string
 	// URLPolicy scopes local HTTP Git/Registry access to explicit host:port pairs.
 	URLPolicy credential.URLPolicy
 
@@ -58,16 +65,19 @@ func Load() Config {
 		}
 	}
 	return Config{
-		Env:                  getenv("ENVIRONMENT", "development"),
-		Addr:                 getenv("PODRY_SERVER_ADDR", ":5000"),
-		ShutdownTimeout:      getenv("PODRY_SHUTDOWN_TIMEOUT", "30s"),
-		DataDir:              getenv("PODRY_DATA_DIR", ".podry"),
-		DatabaseURL:          getenv("DATABASE_URL", ""),
-		MigrationDatabaseURL: getenv("DATABASE_MIGRATION_URL", ""),
-		CredentialKey:        getenv("PODRY_CREDENTIAL_KEY", ""),
-		URLPolicy:            credential.URLPolicy{AllowedHTTPHosts: httpHosts},
-		Release:              release.Settings{Enabled: getenv("PODRY_RELEASE_ENABLED", "false") == "true", Concurrency: releaseConcurrency},
-		Build:                build.Settings{Enabled: getenv("PODRY_BUILD_ENABLED", "false") == "true", ClusterID: getenv("PODRY_BUILD_CLUSTER_ID", ""), Namespace: getenv("PODRY_BUILD_NAMESPACE", ""), BuilderEndpoint: getenv("PODRY_BUILDKIT_ADDR", ""), RunnerImage: getenv("PODRY_BUILD_RUNNER_IMAGE", ""), Platform: getenv("PODRY_BUILD_PLATFORM", "linux/amd64"), Concurrency: concurrency, DataDir: getenv("PODRY_DATA_DIR", ".podry")},
+		Env:                   getenv("ENVIRONMENT", "development"),
+		Addr:                  getenv("PODRY_SERVER_ADDR", ":5000"),
+		ShutdownTimeout:       getenv("PODRY_SHUTDOWN_TIMEOUT", "30s"),
+		DataDir:               getenv("PODRY_DATA_DIR", ".podry"),
+		DatabaseURL:           getenv("DATABASE_URL", ""),
+		MigrationDatabaseURL:  getenv("DATABASE_MIGRATION_URL", ""),
+		CredentialKey:         getenv("PODRY_CREDENTIAL_KEY", ""),
+		URLPolicy:             credential.URLPolicy{AllowedHTTPHosts: httpHosts},
+		Release:               release.Settings{Enabled: getenv("PODRY_RELEASE_ENABLED", "false") == "true", Concurrency: releaseConcurrency},
+		ResourceWritesEnabled: getenv("PODRY_RESOURCE_WRITES_ENABLED", "false") == "true",
+		HealthPollingEnabled:  getenv("PODRY_HEALTH_POLLING_ENABLED", "false") == "true",
+		PublicOrigin:          getenv("PODRY_PUBLIC_ORIGIN", ""),
+		Build:                 build.Settings{Enabled: getenv("PODRY_BUILD_ENABLED", "false") == "true", ClusterID: getenv("PODRY_BUILD_CLUSTER_ID", ""), Namespace: getenv("PODRY_BUILD_NAMESPACE", ""), BuilderEndpoint: getenv("PODRY_BUILDKIT_ADDR", ""), RunnerImage: getenv("PODRY_BUILD_RUNNER_IMAGE", ""), Platform: getenv("PODRY_BUILD_PLATFORM", "linux/amd64"), Concurrency: concurrency, DataDir: getenv("PODRY_DATA_DIR", ".podry")},
 
 		JWTSecret:             getenv("JWT_SECRET", "CHANGE_ME_IN_PRODUCTION"),
 		JWTRefreshSecret:      getenv("JWT_REFRESH_SECRET", "CHANGE_ME_IN_PRODUCTION"),
@@ -85,6 +95,12 @@ func (c Config) AccessTTL() (time.Duration, error) {
 }
 
 func (c Config) ValidateServer() error {
+	if c.PublicOrigin != "" {
+		u, err := url.Parse(c.PublicOrigin)
+		if err != nil || credential.WebURL(c.PublicOrigin, true, true) != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(c.PublicOrigin, "#") {
+			return errors.New("PODRY_PUBLIC_ORIGIN must be an exact http(s) origin without path, query or fragment")
+		}
+	}
 	if _, err := c.ShutdownGrace(); err != nil {
 		return err
 	}
@@ -104,8 +120,14 @@ func (c Config) ValidateServer() error {
 	if c.Release.Enabled && c.CredentialKey == "" {
 		return errors.New("PODRY_CREDENTIAL_KEY is required when releases are enabled")
 	}
+	if c.ResourceWritesEnabled && c.CredentialKey == "" {
+		return errors.New("PODRY_CREDENTIAL_KEY is required when resource writes are enabled")
+	}
 	if c.Build.Enabled && c.CredentialKey == "" {
 		return errors.New("PODRY_CREDENTIAL_KEY is required when builds are enabled")
+	}
+	if c.HealthPollingEnabled && c.CredentialKey == "" {
+		return errors.New("PODRY_CREDENTIAL_KEY is required when health polling is enabled")
 	}
 	if c.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")

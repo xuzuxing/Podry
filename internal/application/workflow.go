@@ -40,7 +40,11 @@ func readBindings(ctx context.Context, q *sqlcdb.Queries, id string) ([]Binding,
 	rows, err := q.ListBindings(ctx, id)
 	out := make([]Binding, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Binding{ID: r.ID, AppID: r.AppID, EnvironmentID: r.EnvironmentID, Target: Target{ClusterID: r.ClusterID, Namespace: r.Namespace, ReleaseName: r.ReleaseName}, OverrideValues: map[string]any{}, Version: r.Version, AutoDeploy: r.AutoDeploy, CurrentDeploymentID: r.CurrentDeploymentID})
+		b := Binding{ID: r.ID, AppID: r.AppID, EnvironmentID: r.EnvironmentID, Target: Target{ClusterID: r.ClusterID, Namespace: r.Namespace, ReleaseName: r.ReleaseName}, Version: r.Version, AutoDeploy: r.AutoDeploy, CurrentDeploymentID: r.CurrentDeploymentID}
+		if err := json.Unmarshal(r.OverrideValues, &b.OverrideValues); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
 	}
 	return out, err
 }
@@ -62,8 +66,8 @@ func (s *Service) GetBindings(ctx context.Context, a auth.Actor, id string) ([]B
 	})
 }
 func validateCI(ci CI, c Config) error {
-	if !ci.Manual || ci.Push || ci.WebhookCredentialID != nil {
-		return httpx.Fail(422, "feature_not_available", "当前阶段 CI 只支持手动触发")
+	if !ci.Manual && !ci.Push || ci.Push != (ci.WebhookCredentialID != nil) {
+		return httpx.Invalid("CI 至少启用 manual/push 之一；push 必须且只能携带 webhookCredentialId")
 	}
 	if !validBranch(ci.Branch) || c.GitConfig == nil || ci.Branch != c.GitConfig.Branch {
 		return httpx.Invalid("CI branch 必须与应用 Git 配置一致")
@@ -71,8 +75,11 @@ func validateCI(ci CI, c Config) error {
 	return nil
 }
 func validateCD(cd CD, ciID *string) error {
-	if cd.TriggerMode != "manual" {
-		return httpx.Fail(422, "feature_not_available", "当前阶段 CD 只支持手动触发")
+	if cd.TriggerMode != "manual" && cd.TriggerMode != "on_ci_success" {
+		return httpx.Invalid("CD triggerMode 必须为 manual/on_ci_success")
+	}
+	if cd.TriggerMode == "on_ci_success" && cd.UpstreamPipelineID == nil {
+		return httpx.Invalid("自动部署必须明确指定上游 CI")
 	}
 	if cd.DeployTimeoutSeconds < 60 || cd.DeployTimeoutSeconds > 7200 {
 		return httpx.Invalid("部署超时必须为 60–7200 秒")
@@ -123,28 +130,37 @@ func lockTargets(ctx context.Context, q *sqlcdb.Queries, targets []Target) error
 			return err
 		}
 	}
+	for _, t := range targets {
+		busy, err := q.ResourceActionBusy(ctx, sqlcdb.ResourceActionBusyParams{ClusterID: t.ClusterID, Namespace: t.Namespace})
+		if err != nil {
+			return err
+		}
+		if busy {
+			return httpx.Fail(409, "resource_action_busy", "目标命名空间存在未完成的资源动作")
+		}
+	}
 	return nil
 }
 func validateBinding(ctx context.Context, q *sqlcdb.Queries, in BindingInput) error {
 	if err := httpx.UUID(in.EnvironmentID); err != nil {
 		return err
 	}
-	if _, err := q.GetEnvironment(ctx, in.EnvironmentID); err != nil {
+	if err := validateAutoEnvironment(ctx, q, in.EnvironmentID, in.AutoDeploy); err != nil {
 		return err
 	}
 	if !platform.DNSName(in.Target.Namespace, 63) || !platform.DNSName(in.Target.ReleaseName, 53) || len(in.Target.ReleaseName) < 3 || in.Target.ReleaseName[0] < 'a' || in.Target.ReleaseName[0] > 'z' {
 		return httpx.Invalid("目标 namespace/releaseName 无效")
 	}
-	if in.AutoDeploy || in.OverrideValues == nil || len(in.OverrideValues) != 0 {
-		return httpx.Fail(422, "feature_not_available", "当前阶段需要空 overrideValues 且 autoDeploy=false")
+	if in.OverrideValues == nil {
+		return httpx.Invalid("overrideValues 必须为对象")
 	}
 	return nil
 }
 func (s *Service) CreateTemplate(ctx context.Context, a auth.Actor, id string, in TemplateInput, key, req string) (idempotency.Result, error) {
-	if in.Template != "build_deploy" && in.Template != "build_only" {
-		return idempotency.Result{}, httpx.Fail(422, "feature_not_available", "当前阶段支持 build_deploy/build_only 模板")
+	if in.Template != "build_deploy" && in.Template != "build_only" && in.Template != "add_deploy" && in.Template != "external_image" {
+		return idempotency.Result{}, httpx.Fail(422, "feature_not_available", "当前阶段支持 build_deploy/build_only/add_deploy/external_image 模板")
 	}
-	if in.CI == nil || in.ExpectedWorkflowVersion == nil || *in.ExpectedWorkflowVersion < 0 || in.ExpectedConfigVersion < 1 || (in.Template == "build_deploy") != (in.Deployment != nil) {
+	if (in.CI == nil) != (in.Template == "add_deploy" || in.Template == "external_image") || in.ExpectedWorkflowVersion == nil || *in.ExpectedWorkflowVersion < 0 || in.ExpectedConfigVersion < 1 || (in.Template != "build_only") != (in.Deployment != nil) {
 		return idempotency.Result{}, httpx.Invalid("模板参数不完整或不匹配")
 	}
 	return database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (idempotency.Result, error) {
@@ -166,7 +182,11 @@ func (s *Service) CreateTemplate(ctx context.Context, a auth.Actor, id string, i
 			if err = lockTargets(ctx, q, []Target{in.Deployment.Binding.Target}); err != nil {
 				return idempotency.Result{}, err
 			}
-			if err = targetPermission(ctx, q, a, app, c, in.Deployment.Binding.Target); err != nil {
+			effective, err := effectiveConfig(c, in.Deployment.Binding.OverrideValues)
+			if err != nil {
+				return idempotency.Result{}, err
+			}
+			if err = targetPermission(ctx, q, a, app, effective, in.Deployment.Binding.Target); err != nil {
 				return idempotency.Result{}, err
 			}
 		}
@@ -178,36 +198,61 @@ func (s *Service) CreateTemplate(ctx context.Context, a auth.Actor, id string, i
 			if err != nil {
 				return idempotency.Result{}, err
 			}
-			if len(old.Items) > 0 {
+			if in.Template != "add_deploy" && len(old.Items) > 0 {
 				return idempotency.Result{}, httpx.Fail(409, "workflow_exists", "应用已有工作流")
 			}
-			if c.GitConfig == nil || c.BuildConfig == nil || (in.Deployment != nil && c.ChartConfig == nil) {
+			if (app.SourceMode == "git" && (c.GitConfig == nil || c.BuildConfig == nil)) || (in.Deployment != nil && c.ChartConfig == nil) {
 				return idempotency.Result{}, httpx.Fail(422, "prerequisite_missing", "请先保存 Git、构建和所需的基础配置")
 			}
 			if err = s.validateConfig(ctx, q, a, app, c); err != nil {
 				return idempotency.Result{}, err
 			}
-			if err = validateCI(*in.CI, c); err != nil {
-				return idempotency.Result{}, err
+			if (in.Template == "external_image" && app.SourceMode != "image") || (app.SourceMode == "image" && in.Template != "external_image" && in.Template != "add_deploy") {
+				return idempotency.Result{}, httpx.Invalid("工作流模板与应用 sourceMode 不匹配")
 			}
-			ciID := uuid.NewString()
-			if _, err = q.CreatePipeline(ctx, sqlcdb.CreatePipelineParams{ID: ciID, AppID: id, Kind: "ci", Definition: nullableJSON(in.CI), Enabled: true}); err != nil {
-				return idempotency.Result{}, err
-			}
-			if d := in.Deployment; d != nil {
-				if err = validateCD(d.Definition, &ciID); err != nil {
+			var ciID *string
+			if in.Template == "add_deploy" {
+				for _, p := range old.Items {
+					if p.Kind == "ci" {
+						v := p.ID
+						ciID = &v
+					}
+				}
+				if app.SourceMode == "git" && ciID == nil {
+					return idempotency.Result{}, httpx.Fail(422, "prerequisite_missing", "add_deploy 需要已有 CI")
+				}
+				if app.SourceMode == "image" && len(old.Items) == 0 {
+					return idempotency.Result{}, httpx.Fail(422, "prerequisite_missing", "add_deploy 需要已有镜像工作流")
+				}
+			} else if in.Template != "external_image" {
+				if err = s.validatePushCI(ctx, q, a, app, *in.CI, c); err != nil {
 					return idempotency.Result{}, err
 				}
-				d.Definition.UpstreamPipelineID = &ciID
-				target, err := q.CreateTarget(ctx, sqlcdb.CreateTargetParams{ClusterID: d.Binding.Target.ClusterID, Namespace: d.Binding.Target.Namespace, ReleaseName: d.Binding.Target.ReleaseName})
+				v := uuid.NewString()
+				ciID = &v
+				if _, err = q.CreatePipeline(ctx, sqlcdb.CreatePipelineParams{ID: *ciID, AppID: id, Kind: "ci", Definition: nullableJSON(in.CI), Enabled: true}); err != nil {
+					return idempotency.Result{}, err
+				}
+				if err = savePushAuthorization(ctx, q, a, *ciID, 1, *in.CI, c); err != nil {
+					return idempotency.Result{}, err
+				}
+			}
+			if d := in.Deployment; d != nil {
+				if d.Definition.UpstreamPipelineID == nil {
+					d.Definition.UpstreamPipelineID = ciID
+				}
+				if err = validateCD(d.Definition, ciID); err != nil {
+					return idempotency.Result{}, err
+				}
+				binding, err := createBinding(ctx, q, id, d.Binding)
 				if err != nil {
 					return idempotency.Result{}, targetConflict(err)
 				}
-				binding, err := q.CreateBinding(ctx, sqlcdb.CreateBindingParams{AppID: id, EnvironmentID: d.Binding.EnvironmentID, TargetID: target.ID})
+				cd, err := q.CreatePipeline(ctx, sqlcdb.CreatePipelineParams{ID: uuid.NewString(), AppID: id, BindingID: &binding.ID, Kind: "cd", Definition: nullableJSON(d.Definition), Enabled: true})
 				if err != nil {
-					return idempotency.Result{}, targetConflict(err)
+					return idempotency.Result{}, err
 				}
-				if _, err = q.CreatePipeline(ctx, sqlcdb.CreatePipelineParams{ID: uuid.NewString(), AppID: id, BindingID: &binding.ID, Kind: "cd", Definition: nullableJSON(d.Definition), Enabled: true}); err != nil {
+				if err = saveDeployAuthorization(ctx, q, a, app, c, cd, d.Definition); err != nil {
 					return idempotency.Result{}, err
 				}
 			}
@@ -291,7 +336,11 @@ func (s *Service) SaveWorkflow(ctx context.Context, a auth.Actor, id string, in 
 		}
 		// Revalidate targets for additions, edits and removals alike.
 		for _, b := range bindings {
-			if err = targetPermission(ctx, q, a, app, c, b.Target); err != nil {
+			effective, err := effectiveConfig(c, b.OverrideValues)
+			if err != nil {
+				return Workflow{}, err
+			}
+			if err = targetPermission(ctx, q, a, app, effective, b.Target); err != nil {
 				return Workflow{}, err
 			}
 		}
@@ -338,7 +387,7 @@ func (s *Service) SaveWorkflow(ctx context.Context, a auth.Actor, id string, in 
 				if err != nil {
 					return Workflow{}, err
 				}
-				if err = validateCI(def, c); err != nil {
+				if err = s.validatePushCI(ctx, q, a, app, def, c); err != nil {
 					return Workflow{}, err
 				}
 			case "cd":
@@ -391,6 +440,27 @@ func (s *Service) SaveWorkflow(ctx context.Context, a auth.Actor, id string, in 
 			}
 			if err != nil {
 				return Workflow{}, err
+			}
+			if p.Kind == "ci" {
+				var ci CI
+				_ = json.Unmarshal(nullableJSON(p.Definition), &ci)
+				row, err := q.GetPipeline(ctx, *p.ID)
+				if err != nil {
+					return Workflow{}, err
+				}
+				if err = savePushAuthorization(ctx, q, a, row.ID, row.Version, ci, c); err != nil {
+					return Workflow{}, err
+				}
+			} else {
+				var cd CD
+				_ = json.Unmarshal(nullableJSON(p.Definition), &cd)
+				row, err := q.GetPipeline(ctx, *p.ID)
+				if err != nil {
+					return Workflow{}, err
+				}
+				if err = saveDeployAuthorization(ctx, q, a, app, c, row, cd); err != nil {
+					return Workflow{}, err
+				}
 			}
 		}
 		app.WorkflowVersion, err = q.NextWorkflowVersion(ctx, id)

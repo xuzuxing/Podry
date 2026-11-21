@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+const bindingObservationClock = `-- name: BindingObservationClock :one
+SELECT clock_timestamp()::timestamptz AS observed_at
+`
+
+func (q *Queries) BindingObservationClock(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, bindingObservationClock)
+	var observed_at time.Time
+	err := row.Scan(&observed_at)
+	return observed_at, err
+}
+
 const bindingResourceRoots = `-- name: BindingResourceRoots :many
 SELECT DISTINCT ON (dr.api_version,dr.kind,dr.namespace,dr.name) dr.deployment_id, dr.api_version, dr.kind, dr.namespace, dr.name, dr.uid, dr.owner_references, dr.observed_generation, dr.observed_at
 FROM deployment_resources dr JOIN deployments d ON d.id=dr.deployment_id
@@ -92,9 +103,10 @@ func (q *Queries) LatestBindingDeployment(ctx context.Context, bindingID string)
 }
 
 const latestVerifiedArtifact = `-- name: LatestVerifiedArtifact :one
-SELECT a.id, a.app_id, a.build_id, a.attempt_id, a.image_repository, a.digest, a.source, a.created_at FROM artifacts a JOIN builds b ON b.id=a.build_id JOIN build_attempts t ON t.id=a.attempt_id
-WHERE a.app_id=$1 AND b.app_id=a.app_id AND t.build_id=b.id AND a.source='build'
-AND b.status='succeeded' AND t.status='succeeded' AND b.artifact_id=a.id
+SELECT a.id, a.app_id, a.build_id, a.attempt_id, a.image_repository, a.digest, a.source, a.created_at, a.registry_id, a.registry_credential_id, a.registry_credential_version, a.imported_by FROM artifacts a LEFT JOIN builds b ON b.id=a.build_id LEFT JOIN build_attempts t ON t.id=a.attempt_id
+WHERE a.app_id=$1 AND ((a.source='external' AND a.build_id IS NULL AND a.attempt_id IS NULL AND a.registry_id IS NOT NULL AND a.imported_by IS NOT NULL)
+OR (b.app_id=a.app_id AND t.build_id=b.id AND a.source='build'
+AND b.status='succeeded' AND t.status='succeeded' AND b.artifact_id=a.id))
 ORDER BY a.created_at DESC,a.id DESC LIMIT 1
 `
 
@@ -110,6 +122,10 @@ func (q *Queries) LatestVerifiedArtifact(ctx context.Context, appID string) (Art
 		&i.Digest,
 		&i.Source,
 		&i.CreatedAt,
+		&i.RegistryID,
+		&i.RegistryCredentialID,
+		&i.RegistryCredentialVersion,
+		&i.ImportedBy,
 	)
 	return i, err
 }

@@ -1,8 +1,16 @@
 # HTTP 接口与流协议
 
-版本 V1.8，设计合同；身份、管理、应用配置、工作流、Git 查询、Kubernetes 资源/日志、构建/产物/日志、发布预览/确认与历史、应用资源和实时 Diff 共 61 个操作已实现，其余 15 个仍为设计。当前增量见 [应用资源与健康观察](../backend/13-application-observation.md)，前批见 [发布执行与恢复](../backend/12-release-execution.md)、[发布规划](../backend/11-release-planning.md)、[构建执行](../backend/09-build-execution.md) 与 [Kubernetes 读取](../backend/08-kubernetes-resources.md)。机器合同：[OpenAPI 3.1](openapi.json)，设计源：[build-openapi.mjs](../tools/build-openapi.mjs)。隔离数据库及模拟执行测试不等于真实 CI/CD 验收，构建/发布 Worker 默认关闭。数据字段以 OpenAPI Schema 与 [数据模型](../data/01-data-model.md) 为准。新增合同来自[新应用实际操作](../references/devtron-onboarding/README.md)，不能当作 Devtron 原生接口抓包结果。
+版本 V1.22，设计合同；身份、管理、应用配置、工作流、Git 查询、Kubernetes 资源/日志、构建/产物/日志、发布预览/确认与历史、应用资源和实时 Diff、独立环境绑定与覆盖、晋级/回滚、构建取消/重试、镜像导入及资源预览/提交/操作查询及删除/Deployment 重启/扩缩容及应用漂移及 GitHub Webhook 及发布和资源操作人工核对及 Secret 明文与 Pod 终端共 79 个 HTTP 操作已实现。当前增量见 [Secret 与终端](../backend/28-sensitive-resource-access.md)、[资源操作人工核对](../backend/27-resource-reconciliation.md)、[发布人工核对](../backend/26-release-reconciliation.md)、[非生产自动部署](../backend/24-ci-auto-deploy.md)、[GitHub Webhook](../backend/23-git-webhooks.md)、[资源动作](../backend/21-resource-actions.md)、[资源写入](../backend/20-resource-writes.md)、[应用克隆](../backend/19-application-cloning.md)、[镜像导入](../backend/18-image-artifacts.md)、[构建取消与重试](../backend/17-build-actions.md)、[晋级与回滚](../backend/16-release-actions.md)，前批见 [多环境绑定与覆盖](../backend/15-environment-bindings.md)、[应用资源与健康观察](../backend/13-application-observation.md)、[发布执行与恢复](../backend/12-release-execution.md)、[发布规划](../backend/11-release-planning.md)、[构建执行](../backend/09-build-execution.md) 与 [Kubernetes 读取](../backend/08-kubernetes-resources.md)。机器合同：[OpenAPI 3.1](openapi.json)，设计源：[build-openapi.mjs](../tools/build-openapi.mjs)。隔离数据库及模拟执行测试不等于真实 CI/CD 验收，构建/发布/资源写入 Worker 默认关闭。数据字段以 OpenAPI Schema 与 [数据模型](../data/01-data-model.md) 为准。新增合同来自[新应用实际操作](../references/devtron-onboarding/README.md)，不能当作 Devtron 原生接口抓包结果。
 
 ## 1. 通用约定
+
+V1.21 新增 `POST /resource-operations/{operationId}/reconcile` 与操作 DTO 的 `revision`，原拥有者以当前完整动作权限只读核对 running/unknown；跳过 pending，不重发写入，读取期间版本/凭据/授权变化拒绝迟到结果。详见 [资源核对合同](../backend/27-resource-reconciliation.md)。
+
+V1.20 新增 `POST /deployments/{deploymentId}/reconcile` 与部署详情/列表的 `revision`。以 expectedRevision、理由和幂等键同步只读核对 submitting/observing/unknown，全部后台开关关闭时仍可用；有有效租约或身份变化拒绝，只有证据明确才收敛状态和目标占用。200 不保证发布成功；同键重放重验权限，无需执行器/密钥/网络。详见 [调用与恢复合同](../backend/26-release-reconciliation.md)。
+
+V1.17 新增 GitHub Push 验签/Delivery 去重和持久构建准入，见 [调用及恢复合同](../backend/23-git-webhooks.md)。仅 provider=github；GitLab/Gitea 尚未开放。V1.18 增加显式非生产 on_ci_success 与 autoDeploy=true，见 [自动部署合同](../backend/24-ci-auto-deploy.md)。Push 的有效授权用户来自最后一次保存该 CI 的用户，不来自供应商 sender。
+
+V1.16 新增 `GET /apps/{appId}/drift?bindingId=<uuid>`：默认本地缓存/历史，显式 `refresh=true` 只读刷新并记录脱敏数量；以当前成功发布为基线，Secret 值不参与比较，60 秒过期、身份失效及未完成平台操作投影 unknown。返回当前基线最近 20 条，每绑定保留 100 条，不回写基础配置、不自动纠正。详见 [应用漂移](../backend/22-application-drift.md)。
 
 Git/Registry 默认要求 HTTPS；开发环境 HTTP 服务需通过 `PODRY_HTTP_ALLOWED_HOSTS` 配置精确 host:port。URL 不能内嵌凭据，禁止重定向；Kubernetes 继续要求 HTTPS。详见 [本地 CI 示例](../backend/10-ci-local-demo.md)。
 
@@ -19,6 +27,8 @@ Git/Registry 默认要求 HTTPS；开发环境 HTTP 服务需通过 `PODRY_HTTP_
 构建触发/重试/取消、发布/晋级/回滚、资源操作、资源 Apply 均要求 `Idempotency-Key`。唯一作用域为 `(userId, operationId, key)`，绑定 method/path 与规范化 requestHash。相同键相同请求返回原状态码与结果；相同键不同内容返回 `idempotency_conflict`。结果至少保留 24 小时，运行中或 unknown 记录不得过期。
 
 配置 PUT 使用 `expectedVersion`；资源更新使用读取时的 UID/resourceVersion，删除必须携带 UID。预览不可代替提交时再次授权和校验。
+
+环境绑定 PUT 的 expectedVersion 独立于配置和工作流版本；overrideValues 为整体替换，`{}` 恢复基础配置继承。对象递归合并、标量替换，不接受 null 删除、平台镜像/身份或 Secret 明文。创建绑定不会自动创建 CD；add_deploy 模板可原子追加绑定与 CD。目标及环境在创建后固定，排队/执行中/unknown 或占用中的目标禁止修改覆盖。权限、示例及迁移说明见 [多环境绑定与覆盖](../backend/15-environment-bindings.md)。
 
 ## 2. 端点清单
 
@@ -49,7 +59,7 @@ Git/Registry 默认要求 HTTPS；开发环境 HTTP 服务需通过 `PODRY_HTTP_
 | 资源 | `GET /clusters/{clusterId}/discovery`、`GET .../namespaces` | 可访问资源类型及 Namespace |
 | 资源 | `GET /clusters/{clusterId}/resources`、`GET .../resource`、`GET .../events` | 资源列表、详情和事件 |
 | 资源写入 | `POST .../resources/dry-run`、`POST .../resources/apply` | 多文档预览和逐对象提交 |
-| 资源操作 | `POST .../resource-actions`、`GET /resource-operations/{operationId}` | 删除、重启、扩缩容及任务结果 |
+| 资源操作 | `POST .../resource-actions`、`GET /resource-operations/{operationId}`、`POST /resource-operations/{operationId}/reconcile` | 删除、重启、扩缩容、任务结果及人工只读核对 |
 | Secret | `POST .../secrets/reveal` | 单独授权获取指定 key 明文，审计且禁止缓存 |
 | 流 | `GET /builds/{buildId}/logs`、`GET .../pod-logs` | 认证 Fetch 流 |
 | 终端 | `POST .../exec-sessions`、`DELETE /exec-sessions/{sessionId}` | 创建短期会话及关闭 |
@@ -62,7 +72,7 @@ Git/Registry 默认要求 HTTPS；开发环境 HTTP 服务需通过 `PODRY_HTTP_
 
 ### 首次配置与完整工作流合同
 
-`POST /apps` 可选 cloneFromAppId。克隆要求读取源应用和配置所引用凭据的权限，以及目标项目配置权限；sourceMode 必须匹配源应用。只复制获准的配置快照，镜像 Repository 生成新应用自己的值，不复制凭据明文、流水线、目标绑定、构建、产物或运行资源；整个应用创建/快照复制为一个事务。若引用在目标作用域无权使用则拒绝创建，不静默扩大授权。Tags 本期只保留原型展示入口，尚无标签读写合同。
+`POST /apps` 已支持 sourceMode=git/image；镜像应用只配置 base，不接收 Git/Build。cloneFromAppId 已实现原子克隆：克隆要求读取源应用和配置所引用凭据的权限，以及目标项目配置权限；sourceMode 必须匹配源应用。只复制获准的配置快照，镜像 Repository 生成新应用自己的值，不复制凭据明文、流水线、目标绑定、构建、产物或运行资源；最新已保存配置成为目标版本 1，未保存配置保持虚拟版本 0；允许可读的已归档源应用，新应用未归档。整个应用创建/快照复制为一个事务，并记录源应用与配置版本。创建接口没有幂等重放合同，目标项目名称重复返回 409。若引用在目标作用域无权使用则拒绝创建，不静默扩大授权。Tags 本期只保留原型展示入口，尚无标签读写合同。
 
 `GET /apps/{appId}/config` 在尚无配置时返回虚拟 version=0：gitConfig/buildConfig/chartConfig 为 null，deployValues={}，secretRefs=[]；数据库不写 version=0 行。第一次 Save 使用 expectedVersion=0。`PUT .../config` 增加 section=git/build/base，仅接受该节字段：git 接受 gitConfig；build 接受 buildConfig；base 接受 chartConfig、deployValues、secretRefs。其他节字段返回 422 validation_failed。服务端按 expectedVersion 读取完整快照，合并所保存节，追加新版本；不能用空表单覆盖其他节。
 
@@ -70,9 +80,9 @@ GitConfig.accountMode=public 时 credentialId=null；credential 模式必须引�
 
 Base 的 chartConfig 指定 workloadKind（Deployment/Job）和平台内置 chartVersion。配置未显式保存前为 null，不能因为部署参数有默认值就算完成。第一次保存后 workloadKind 固定，改变返回 409 chart_type_locked；服务端验证版本来自内置允许列表。Job 参数只允许单次任务约定，禁止偷偷注入 CronJob、Service、Ingress 或 HTTP 就绪探针。它们不是用户可写的任意 Helm Chart 合同。
 
-`GET .../setup` 按当前快照和启用的流水线派生：Git 模式 total=4，镜像模式 total=2（Git/Build 为 not_required）；workflow 仅在所需 CI 和至少一条可用 Binding/CD 均存在时完成。steps 标为 complete/pending/blocked/not_required，blockers 提供下一配置节。canBuild 只描述保存后的配置资格，不承诺 Git 当前可达；当前 deployableBindingIds 检查执行器开关、已启用 CD、已验证 Build/Attempt 产物、渲染配置、deploy 角色、目标写权限和准确版本凭据/Secret，不访问外部服务。预览、确认和 Worker 继续检查选定输入及目标占用。前端无需维护另一个 configured 真值。
+`GET .../setup` 按当前快照和启用的流水线派生：Git 模式 total=4，镜像模式 total=2（仅返回 base/workflow）；workflow 仅在所需 CI 和至少一条可用 Binding/CD 均存在时完成。steps 标为 complete/pending/blocked/not_required，blockers 提供下一配置节。canBuild 只描述保存后的配置资格，不承诺 Git 当前可达；当前 deployableBindingIds 检查执行器开关、已启用 CD、已验证 Build/Attempt 或 external 镜像产物、渲染配置、deploy 角色、目标写权限和准确版本凭据/Secret，不访问外部服务。预览、确认和 Worker 继续检查选定输入及目标占用。前端无需维护另一个 configured 真值。
 
-当前 B4 已接入构建执行器：执行环境启用且配置有效、Git/Build/手动 CI 完整、平台匹配、应用未归档并具有 build 权限时 canBuild=true；它只表示配置资格，不主动探测网络。缺少上述条件时保留 execution_unavailable blocker。deployableBindingIds=[] 仍等待 B5；completed 只表示配置完整度，保存模板不代表构建/发布已经成功。
+当前 B4 已接入构建执行器：执行环境启用且配置有效、Git/Build/手动 CI 完整、平台匹配、应用未归档并具有 build 权限时 canBuild=true；它只表示配置资格，不主动探测网络。缺少上述条件时保留 execution_unavailable blocker。B5 已接入发布候选派生；completed 只表示配置完整度，保存模板不代表构建/发布已经成功。
 
 主要创建请求示例（均为 Podry UUID 样例）：
 
@@ -99,7 +109,7 @@ Content-Type: application/json
 }
 ```
 
-201 响应为 `{workflow,bindings,setup}`。build_deploy 的 null upstreamPipelineId 是请求占位，服务端改成新 CI UUID 后保存，响应中必须为实际 ID。expectedConfigVersion/expectedWorkflowVersion 同时检查；保存不会执行构建或部署。Namespace 是所选目标的值，服务端不盲信前端只读输入，必须检查授权。Binding.autoDeploy 与 CD.triggerMode 必须一致；测试和生产只能 manual。Environment.autoDeployAllowed 默认 false，由管理员仅对开发环境显式开启；production=true 强制 false，服务端不通过字符串名称猜环境权限。
+201 响应为 `{workflow,bindings,setup}`。build_deploy 的 null upstreamPipelineId 是请求占位，服务端改成新 CI UUID 后保存，响应中必须为实际 ID。expectedConfigVersion/expectedWorkflowVersion 同时检查；保存不会执行构建或部署。Namespace 是所选目标的值，服务端不盲信前端只读输入，必须检查授权。启用 on_ci_success 必须有绑定 autoDeploy=true、显式上游 CI 和有效保存者 deploy 委托；绑定开关单独启用不自动授权。生产只能 manual。Environment.autoDeployAllowed 默认 false，由管理员仅对非生产环境显式开启；production=true 强制 false，服务端不通过字符串名称猜环境权限。
 
 模板分为 build_deploy（CI+Binding+CD）、build_only（只有 CI，允许 3/4）、external_image（Binding+CD，无 CI）、add_deploy（引用已有 CI 原子追加 Binding+CD；镜像模式上游为 null）。创建新流程遇到既有 CI 返回 409 workflow_exists；首版不能创建第二条 CI。目标冲突返回 409 target_conflict，缺少前置配置返回 422 prerequisite_missing，版本冲突返回 409 revision_conflict。任何失败均回滚 CI、Binding、CD 和工作流版本；相同幂等键重试返回原结果。现有 Binding/Workflow 独立接口保留给分步管理，但单独的 Binding 草稿不算完整部署管线，不自动解锁 Environment Overrides。
 
@@ -153,7 +163,7 @@ Content-Type: application/json
 
 `GET /deployments/{deploymentId}/diff` 比较不可变快照期望与当前根 UID 的实时读取，要求 app.view 与所有根类型的 resource.view。两边统一清理服务端状态/版本字段并脱敏；Secret 仅比较类型、键名和元信息。缺失对象从 after 省略，未记录 UID 或同名替换返回 409，上游失败返回错误。
 
-`GET /apps/{appId}/resources?bindingId=...` 从记录的根 UID 与控制器 OwnerReference 读取根资源及 ReplicaSet/Pod 后代，逐类型过滤授权并脱敏。资源读取刷新 60 秒健康观察，详情/列表/health 筛选使用该投影；过期、新执行/revision、绑定修改或集群凭据轮换后为 unknown。Deployment 就绪为 healthy，Job 还需匹配的成功 Pod 才为 completed；没有后台健康轮询。应用摘要 health 需要 app.view，对象内容仍需要 resource.view。
+`GET /apps/{appId}/resources?bindingId=...` 从记录的根 UID 与控制器 OwnerReference 读取根资源及 ReplicaSet/Pod 后代，逐类型过滤授权并脱敏。资源读取刷新 60 秒健康观察，详情/列表/health 筛选使用该投影；过期、新执行/revision、绑定修改或集群凭据轮换后为 unknown。Deployment 就绪为 healthy，Job 还需匹配的成功 Pod 才为 completed；已增加默认关闭的后台巡检，按最近发布请求者当前权限和持久租约刷新同一缓存，见 [后台健康](../backend/25-background-health.md)。应用摘要 health 需要 app.view，对象内容仍需要 resource.view。
 
 确认 `POST /apps/{appId}/deployments`：
 
@@ -163,7 +173,7 @@ Content-Type: application/json
 
 202 返回 `ReleaseRequest`，包含 requestId、status、kind、bindingId、snapshotId、deploymentId（尚未创建时为 null）。前端先查询 `/release-requests/{requestId}`，拿到 deploymentId 后显示部署详情。不得把请求 ID 当作部署 ID。
 
-`promote` 携带目标 bindingId 和 expectedConfigVersion，服务端复用源 artifact；`rollback` 以路径中的成功 Deployment 为源，在同绑定生成新请求。两种操作均返回 ReleaseRequest。
+`promote` 携带同一应用另一环境的 bindingId 和 expectedConfigVersion，复用成功源 Deployment 的准确 Artifact/imageRef，采用目标最新配置与覆盖。`rollback` 携带 reason（去空白后 1–1000 字），以路径中的成功 Deployment 为源，在同绑定复用历史完整业务 Values、归档 Chart、digest 与准确 Secret 版本生成新请求；集群连接使用当前凭据，准入要求当前已启用 CD 和授权。Job 与 Secret 生成新身份，Job 会重新执行。两种操作返回 202 ReleaseRequest，历史 Deployment.sourceDeploymentId 记录来源。两者默认关闭执行器时返回 503 且不留下任务或幂等占位；忙碌/unknown 目标返回 409 target_busy。相同键重放仍检查冻结资源权限，支持配置变化或执行器关闭后的原结果重放。详情见 [实施记录](../backend/16-release-actions.md)。
 
 ### 3.3 资源定位
 
@@ -181,11 +191,13 @@ Content-Type: application/json
 
 URL 的 clusterId 与此引用共同形成目标。core API group 使用空字符串。集群级资源省略 namespace。使用 GVR 解析 REST 路径，不假定 Kind 加 s 就是 resource 名称。
 
-`POST .../resources/dry-run` 请求为 `{documents:[{manifest,expectedUid?,expectedResourceVersion?}]}`。响应 `previewId`、`expiresAt`、`items[{index,ref,action,diff,valid,error}]`。执行时提交 previewId，服务端复用固定文档并再次校验；支持 `stopOnError`，默认 false。
+`POST .../resources/dry-run` 请求为 `{documents:[{manifest,expectedUid?,expectedResourceVersion?}]}`。响应 `previewId`、`expiresAt`、`items[{index,ref,action,diff,valid,error}]`。每个数组元素只允许单个严格 YAML/JSON 对象，拒绝重复键、List/generateName；命名空间对象必须明确 namespace。更新必须同时提供 UID/resourceVersion（显式字段或 metadata）。预览有效期 10 分钟，绑定用户/tokenVersion、集群、凭据版本和授权指纹，原始文档加密保存；Diff 只含字段路径，不含值。底层使用 Kubernetes dryRun=All、fieldValidation=Strict；创建 POST，更新为带冻结 UID/resourceVersion 的 PUT 全量替换，未包含字段可能被删除。两者均要求目标的 resource.view + resource.write。
 
-Apply 返回 `ResourceOperation` 的 202 任务引用；查询结果包含逐对象 `succeeded / failed / skipped`、ref、错误。整个 operation 可以 `partial`，不把部分成功转换为通用“全部失败”。
+执行时提交 previewId，服务端重验所有目标后原子消费；支持 `stopOnError`，默认 false。`PODRY_RESOURCE_WRITES_ENABLED=false` 时返回 503 resource_execution_unavailable，保留预览，不创建任务。
 
-`POST .../resource-actions` 使用 `action=delete|restart|scale`、完整 ref 和 `replicas?`、`propagationPolicy?`。修改副本与重启先检查 Kind、HPA 和引用版本；不在浏览器执行 kubectl shell 字符串。
+Apply 返回 `ResourceOperation` 的 202 任务引用；查询仅限请求拥有者，且须仍有所有目标的读取及对应动作权限（delete 需要 resource.delete，其余需要 resource.write）。结果包含 revision 和逐对象 `pending / running / unknown / succeeded / failed / skipped`、ref 和安全 code/message 错误。整个 operation 可以 `partial`。每次远端写入前持久记录意图；响应不确定则 unknown、跳过尚未提交的对象，仅按签名标记和规范化内容读取核对，不再次提交。成功不代表工作负载已健康。Idempotency-Key 重放返回原始接收结果且不访问远端；进度用 GET 查询。完整限制见 [资源写入](../backend/20-resource-writes.md)。
+
+`POST .../resource-actions` 已实现 `action=delete|restart|scale`、完整 ref（必含 UID/resourceVersion）及按动作限定的 `replicas?`、`propagationPolicy?`，要求 Idempotency-Key，返回 202 ResourceOperation。删除需要 view+delete；重启/扩缩容需要 view+write 且仅 apps/v1 Deployment。scale 拒绝 HPA 管理，restart 不改变副本；与平台发布按 namespace 保守互斥。响应不确定只读核对，删除要确认原 UID 消失，不能以 202 当作完成。完整语义见 [资源动作](../backend/21-resource-actions.md)。
 
 ## 4. 流式日志
 
@@ -201,6 +213,8 @@ Pod 日志：`GET /clusters/{clusterId}/pod-logs?namespace=...&name=...&uid=...&
 
 浏览器使用带 Authorization 的 Fetch ReadableStream；不将长期 Bearer Token 放查询串，不使用无法附加认证头的裸 EventSource。流开始前的错误走 HTTP 状态，开始后的错误走 `type=error` 事件。客户端离开上下文时 Abort；连接中断显示断线，可重新请求，不推导执行失败。
 
+V1.22 补齐 Secret reveal、终端创建/关闭三个 HTTP 操作，以及实际 WebSocket/SPDY 终端。数据库仍为 v17；四个后台开关仍默认关闭。Secret/终端是独立授权的显式请求。详见 [敏感资源实施合同](../backend/28-sensitive-resource-access.md)。
+
 ## 5. Pod 终端协议
 
 1. POST exec-sessions，提交 Pod ref、container、command 数组、tty；服务端验证 `pod.exec` 和 Pod UID。
@@ -209,22 +223,31 @@ Pod 日志：`GET /clusters/{clusterId}/pod-logs?namespace=...&name=...&uid=...&
 4. JSON 帧：客户端 `{"type":"stdin","data":"ls\n"}`、`{"type":"resize","cols":120,"rows":36}`、`{"type":"close"}`；服务端 `stdout/stderr` 的 data，`exit` 的 code，或 `error` 的 code/message。
 5. 会话空闲默认 10 分钟关闭；Pod 替换、权限撤销或页面离开时关闭。DELETE 会话也必须检查用户归属。
 
-此 WebSocket 协议通过本文定义；OpenAPI 仅覆盖会话 HTTP 创建/关闭。
+此 WebSocket 协议已实现；OpenAPI 仅覆盖会话 HTTP 创建/关闭。票据传递创建者的短期连接能力，握手从会话恢复用户并重验当前账号/授权；可选 Bearer 头必须匹配创建者。创建和升级必须同源，禁止 query 票据。最大帧 64 KiB、输入/输出各 20 MiB，全局 16/每用户 2 个会话；登录到期或最长 1 小时关闭。会话仅在当前进程存在，重启失效；服务 drain 主动取消并等待 WebSocket 和上游退出。精确限制与 Kubernetes UID 竞态边界见 [实施合同](../backend/28-sensitive-resource-access.md)。
 
 ## 6. 错误码与前端动作
 
 | HTTP | code | 前端动作 |
 | --- | --- | --- |
-| 400 / 422 | validation_error | 保留输入，定位错误字段或文档序号 |
+| 400 / 422 | validation_failed | 保留输入，定位错误字段或文档序号 |
 | 401 | unauthorized | 结束流与终端，提示重新登录 |
-| 403 | forbidden | 显示无权限，不显示敏感数据 |
+| 403 | permission_denied | 显示无权限，不显示敏感数据 |
 | 404 | not_found | 清理旧对象上下文，提示删除或无访问权 |
 | 409 | revision_conflict | 保留草稿，重新读取和 Diff |
+| 409 | resource_identity_changed / resource_version_changed | 资源被替换或版本变化，重新读取并重新预览 |
+| 409 | deployment_reconciliation_busy | 等待当前执行租约结束后重新读取部署 revision |
+| 409 | deployment_not_reconcilable | 仅已持久提交且未确定结果的发布可核对 |
+| 503 | deployment_observation_unavailable | 核对器未接入，不改变原执行状态 |
 | 409 | target_busy | 展示占用的任务入口，禁止重复发布 |
 | 409 | outcome_unknown | 显示核对中，不自动重试 |
 | 409 | idempotency_conflict | 更正客户端重复使用不同请求的键 |
 | 409 | secret_version_unavailable | 重新选择可用配置，禁止虚假完整回滚 |
-| 410 | preview_expired | 重新预览并确认 |
+| 409 | source_deployment_unavailable | 选择成功的来源发布记录 |
+| 409 | chart_unavailable | 补齐受支持的准确历史 Chart；禁止替换为当前版本继续回滚 |
+| 503 | deployment_execution_unavailable | 执行器未开放，未接收新任务；保留输入 |
+| 503 | resource_execution_unavailable | 资源执行器未开放，预览未消费；保留输入 |
+| 503 | release_snapshot_invalid | 停止提交并检查快照完整性，不自动替换历史配置 |
+| 409 / 410 | preview_expired | 资源预览为 409，发布预览为 410；重新预览并确认 |
 | 429 | rate_limited | 根据 Retry-After 提示限流 |
 | 502 / 503 | cluster_unavailable | 展示集群连接错误和重试入口 |
 
@@ -239,7 +262,7 @@ Pod 日志：`GET /clusters/{clusterId}/pod-logs?namespace=...&name=...&uid=...&
 | 页面动作 | 调用顺序 | 注意事项 |
 | --- | --- | --- |
 | Create Application | `POST /apps` → 配置页 `GET /apps/{appId}/config` | 应用先创建，不在创建表单中提交全部 CI/CD 配置 |
-| Clone application | 读取有权限源应用配置 → `POST /apps` → 用户审阅后 `PUT /config` | 不克隆执行记录；凭据、目标与 Secret 逐项重新授权；部分失败进入新应用继续配置，不宣称跨请求原子操作 |
+| Clone application | `POST /apps` 携带 cloneFromAppId 原子复制最新配置 → 读取 config/setup 审阅 → 创建工作流 | 源读取/目标配置/凭据引用重验；新仓库路径；失败全回滚；不复制流水线、绑定、产物和执行记录，见 [实施记录](../backend/19-application-cloning.md) |
 | Git / Build Configuration | GET 完整配置 → 本地修改对应片段 → PUT + expectedVersion | 分页签保存不能清空其它配置片段；冲突保留表单 |
 | Workflow Editor / Update Pipeline | GET/PUT `/apps/{appId}/pipelines` | 更新定义，不触发构建或发布 |
 | Select Material | GET `/git/branches` → GET `/git/commits?ref=…` | 服务端只访问应用已配置仓库，凭据不传回浏览器 |
@@ -259,3 +282,13 @@ Pod 日志：`GET /clusters/{clusterId}/pod-logs?namespace=...&name=...&uid=...&
 当前查询实现使用 HTTPS smart Git（SHA-1 仓库），不依赖 Kubernetes 或外部 git 可执行文件。`ref` 是分支名；`resolvedRef` 为该分支 tip 的完整 SHA，空仓库为空字符串。分支按名字升序，keyword 不区分大小写；提交按 committer 时间降序，同时间按 SHA 升序，shaPrefix 只匹配所选分支可达历史。游标有效 5 分钟，绑定操作者、配置/凭据版本、查询与分支快照；篡改、过期或跨查询为 422 `validation_failed`，远端分支快照变化为 409 `git_ref_changed`，读取期间配置/凭据变化为 409 `revision_conflict`。超出读取预算返回 503 `git_query_limit`，不截断为假空列表。预算与已验证范围见 [实现说明](../backend/07-git-material.md)。
 
 这两个只读端点已经加入 OpenAPI **设计稿**；没有实现对应后端。原型使用本地提交卡片，不调用 Git API。其内部 UI 状态不是正式 DTO。
+
+## 构建取消与重试（V1.11）
+
+`POST /builds/{buildId}/cancel` 和 `POST /builds/{buildId}/retry` 均要求 Idempotency-Key，返回 202 Build，无需请求体。取消持久记录意图，已提交任务须确认 Job 暂停和 Pod 退出；完成竞态保留核验后的结果。重试仅允许已确认退出的 failed/canceled，固定原 SHA、配置和准确凭据版本，同一 Build 新增 Attempt/Job/tag。unknown 返回 409 outcome_unknown。执行器关闭时，新重试返回 503，不保留任务或幂等占位；未提交的排队构建仍可直接取消。详情见 [实施记录](../backend/17-build-actions.md)。
+
+## 镜像导入与镜像应用（V1.12）
+
+`POST /apps/{appId}/artifacts` 已实现，要求 app.configure 与 Idempotency-Key，返回 201 Artifact。请求包含 registryId 和完整 imageRef（主机[:端口]/仓库:tag 或 @sha256）；主机必须匹配所选 Registry，省略 tag 为 latest。服务端在事务外校验 OCI/Docker schema 2 manifest/index 原始内容与准确 digest，tag 另按计算得到的 digest 复核，再重验权限、应用状态和凭据版本。响应 source=external、buildId=null，不创建构建或发布任务；相同幂等键离线返回原结果并重验授权。
+
+sourceMode=image 只配置 base；external_image 原子创建无 CI、null upstream 的手动 Binding/CD；add_deploy 可向已有镜像工作流追加另一环境。setup 仅含 base/workflow，total=2、canBuild=false。导入产物可进入现有预览/确认及晋级/回滚链路，默认关闭执行器的边界保持不变。应用克隆已在 V1.13 补齐，见 [克隆实施记录](../backend/19-application-cloning.md)。协议限制、准确凭据引用、错误分类和验证边界见 [实施记录](../backend/18-image-artifacts.md)。

@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Podry V1 API Design",
-    "version": "1.8.0",
-    "description": "61 operations implemented; 15 remain planned and unregistered. Adds UID-owned application resources and descendants, normalized live diff, 60-second read-through health observations, and local setup deployment candidates. Includes offline Helm previews and opt-in durable Helm execution/reconciliation. Build and release workers remain disabled by default; real CI/CD acceptance is deferred until infrastructure is available. Git and Registry use HTTPS by default; development HTTP requires explicit host:port allowlisting. General Kubernetes writes and background health polling remain deferred. See docs/backend/13-application-observation.md."
+    "version": "1.22.0",
+    "description": "All 79 HTTP operations implemented. Adds independently authorized Secret reveal and real Pod terminal WebSocket bridging with one-use same-origin tickets, current authorization/Pod UID checks, ownership close and shutdown reclamation. Sessions are process-local; database remains v17. Build, release, resource write and health polling workers default disabled. Isolated fixtures are not real cluster, CI/CD or B6 acceptance. See docs/backend/28-sensitive-resource-access.md."
   },
   "servers": [
     {
@@ -1396,11 +1396,11 @@
       },
       "post": {
         "operationId": "createApplication",
-        "summary": "创建应用",
+        "summary": "创建或克隆应用",
         "tags": [
           "apps"
         ],
-        "description": "创建应用。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Creates a fresh git/image application. Optional cloneFromAppId atomically copies the latest source configuration after source read, destination configure and credential-reference scope checks; sourceMode must match. Saved config becomes version 1; an unsaved source stays virtual version 0. Build imageRepository becomes podry/<new app UUID>. Archived sources are allowed; destination is unarchived with unknown health. No pipelines, bindings, artifacts, runtime state, credential plaintext or network execution are copied. Returns 409 for duplicate project/name; this operation has no idempotency replay contract. See docs/backend/19-application-cloning.md.",
         "x-permission": "app.configure",
         "parameters": [],
         "responses": {
@@ -2020,7 +2020,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/apps/{appId}/environments/{bindingId}": {
@@ -2084,7 +2084,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/apps/{appId}/pipelines": {
@@ -2422,7 +2422,7 @@
         "tags": [
           "builds"
         ],
-        "description": "申请取消构建。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Persists cancellation intent without revoking an in-flight lease. Unsubmitted tasks cancel immediately; submitted jobs require controller suspension and owned Pod exit confirmation. Verified completion may win. Unknown outcomes stay unknown. No request body required; an empty object is accepted.",
         "x-permission": "build.trigger",
         "parameters": [
           {
@@ -2467,7 +2467,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/builds/{buildId}/retry": {
@@ -2477,7 +2477,7 @@
         "tags": [
           "builds"
         ],
-        "description": "创建新的构建尝试。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Retries only failed/canceled builds after confirming the old execution has stopped. Keeps the same Build, SHA, config version and exact execution/credential versions, creating a new Attempt, Job and image tag with the current retry actor. Unknown, active and successful builds are rejected. Disabled executor returns 503 without reservations. Same-key replay reauthorizes scope and returns the original 202. No request body required; an empty object is accepted.",
         "x-permission": "build.trigger",
         "parameters": [
           {
@@ -2522,7 +2522,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/builds/{buildId}/logs": {
@@ -2675,7 +2675,7 @@
         "tags": [
           "apps"
         ],
-        "description": "解析并导入已有镜像产物。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Explicit Registry read outside database transactions. Resolves and verifies OCI/Docker schema 2 manifest or index sha256 bytes, pins tags by fetching the computed digest, and creates source=external with buildId=null. Requires a full reference matching the selected Registry authority; omitted tag means latest. Same-key replay is offline with current app and frozen credential scope authorization. Rotation or permission changes during network access fail without artifacts or reservations. Does not create a Build or deployment. See docs/backend/18-image-artifacts.md.",
         "x-permission": "app.configure",
         "parameters": [
           {
@@ -2685,6 +2685,16 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
             }
           }
         ],
@@ -2720,7 +2730,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/apps/{appId}/deployment-previews": {
@@ -3066,7 +3076,7 @@
         "tags": [
           "deployments"
         ],
-        "description": "同产物晋级目标环境。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Creates a new durable request using the successful source artifact and current destination configuration. Requires another binding in the same app. Default-disabled executor returns 503 without tasks or idempotency reservation. Busy or unknown destination returns 409 target_busy. Same-key replay reauthorizes frozen resource permissions even after config/executor changes. See docs/backend/16-release-actions.md.",
         "x-permission": "deploy.trigger",
         "parameters": [
           {
@@ -3121,7 +3131,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/deployments/{deploymentId}/rollback": {
@@ -3131,7 +3141,7 @@
         "tags": [
           "deployments"
         ],
-        "description": "基于历史快照创建回滚请求。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Creates a new durable request from a successful deployment in the same binding. Preserves historical business values, approved Chart archive, digest and exact Secret versions; generates new identities so Job runs again. Uses current CD authorization and transport credentials. Missing dependencies fail closed. Default-disabled executor returns 503 without tasks; busy/unknown target returns 409. See docs/backend/16-release-actions.md.",
         "x-permission": "deploy.trigger",
         "parameters": [
           {
@@ -3186,7 +3196,80 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
+      }
+    },
+    "/deployments/{deploymentId}/reconcile": {
+      "post": {
+        "operationId": "reconcileDeployment",
+        "summary": "只读核对已提交发布的实际结果",
+        "tags": [
+          "deployments"
+        ],
+        "description": "Explicit read-only Helm Observe works independently of background switches. Never submits again or forcibly unlocks unknown. Requires submitting/observing/unknown, matching expectedRevision and no live worker lease. Rechecks actor, membership, target grants, binding, current cluster credentials, root identities and fencing after bounded network reads. Commits outcome, resource identities, success pointer, target release, audit and replay atomically. Ambiguous/missing/conflicting evidence retains unknown and occupancy. Same-key replay reauthorizes but needs no executor, keys or network. See docs/backend/26-release-reconciliation.md.",
+        "x-permission": "deploy.trigger + resource.view/write on frozen roots and Helm Secrets; Job also needs pods view",
+        "parameters": [
+          {
+            "name": "deploymentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentReconciliation"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store."
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Includes validation/auth/permission/conflict/unavailable responses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileDeploymentInput"
+              }
+            }
+          }
+        },
+        "x-implementation": "implemented"
       }
     },
     "/apps/{appId}/resources": {
@@ -3196,7 +3279,7 @@
         "tags": [
           "apps"
         ],
-        "description": "Requires a binding belonging to the application. Reads recorded root UIDs on its current physical target, including known resources from failed/inflight executions. Traverses controller OwnerReferences through Deployment -> ReplicaSet -> Pod and Job -> Pod; labels alone never establish ownership. Intersects each type with current resource grants and filters unreadable objects. Missing objects are omitted; UID replacement returns 409. Secret data and annotations are redacted. Successful reads refresh a 60-second binding health observation; read failures invalidate the observation when its source is unchanged. This is read-through observation, without background polling or cluster writes.",
+        "description": "Requires a binding belonging to the application. Reads recorded root UIDs on its current physical target, including known resources from failed/inflight executions. Traverses controller OwnerReferences through Deployment -> ReplicaSet -> Pod and Job -> Pod; labels alone never establish ownership. Intersects each type with current resource grants and filters unreadable objects. Missing objects are omitted; UID replacement returns 409. Secret data and annotations are redacted. Successful reads refresh a 60-second binding health observation; read failures invalidate the observation when its source is unchanged. This read-through endpoint remains available independently of opt-in read-only background polling. The poller refreshes the same cache using the latest release requester with current permissions; no cluster writes occur. See docs/backend/25-background-health.md.",
         "x-permission": "app.view + resource.view",
         "parameters": [
           {
@@ -3229,6 +3312,77 @@
                     "$ref": "#/components/schemas/ResourceObject"
                   }
                 }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Includes validation/auth/permission/conflict/unavailable responses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-implementation": "implemented"
+      }
+    },
+    "/apps/{appId}/drift": {
+      "get": {
+        "operationId": "getApplicationDrift",
+        "summary": "Read application drift observations",
+        "tags": [
+          "apps"
+        ],
+        "description": "Defaults to local cache/history without decryption or network. Explicit refresh performs read-only UID-bound cluster GETs against the current successful deployment snapshot. Persists counts and status only, never manifests, paths, values or hashes of values. Secret values are excluded. Returns up to 20 observations of the current baseline; retains 100 per binding. Cache expires after 60 seconds or binding/deployment/credential/root/platform resource-operation identity changes. Pending/unknown platform resource operations anywhere in the cluster and a newer unsettled release force unknown. Stable upstream failure or UID replacement records unknown; revoked permissions or concurrent identity changes return 404/409 without recording. Aligned describes projected fields only and does not prove Secret equality, health or convergence. Historical deployment Diff does not update this cache.",
+        "x-permission": "app.view + resource.view for every baseline root",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "bindingId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriftReport"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store."
               }
             }
           },
@@ -3662,12 +3816,12 @@
     "/clusters/{clusterId}/resources/dry-run": {
       "post": {
         "operationId": "dryRunResources",
-        "summary": "校验并预览多文档 YAML",
+        "summary": "校验并预览资源文档",
         "tags": [
           "clusters"
         ],
-        "description": "校验并预览多文档 YAML。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
-        "x-permission": "resource.write",
+        "description": "Kubernetes dryRun=All and fieldValidation=Strict. Preview is encrypted, owner-bound and expires after 10 minutes. Invalid entries carry safe local errors; no values are returned in the diff.",
+        "x-permission": "resource.view + resource.write for every target",
         "parameters": [
           {
             "name": "clusterId",
@@ -3680,7 +3834,7 @@
           }
         ],
         "responses": {
-          "201": {
+          "200": {
             "description": "Success.",
             "content": {
               "application/json": {
@@ -3711,7 +3865,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/clusters/{clusterId}/resources/apply": {
@@ -3721,8 +3875,8 @@
         "tags": [
           "clusters"
         ],
-        "description": "按预览执行资源写入。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
-        "x-permission": "resource.write",
+        "description": "Consumes one valid, unexpired preview after rechecking actor, grants, cluster credentials and physical UID/resourceVersion. PODRY_RESOURCE_WRITES_ENABLED defaults false; disabled admission returns 503 without consuming the preview. A durable worker sends each POST/PUT once; unknown results are observed without resubmission. Idempotent replay returns the original accepted snapshot after current owner/target authorization.",
+        "x-permission": "resource.view + resource.write for every target",
         "parameters": [
           {
             "name": "clusterId",
@@ -3776,7 +3930,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/clusters/{clusterId}/resource-actions": {
@@ -3787,7 +3941,7 @@
           "clusters"
         ],
         "description": "提交资源动作。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
-        "x-permission": "action-dependent resource permission",
+        "x-permission": "resource.view + resource.delete for delete; resource.view + resource.write for restart/scale",
         "parameters": [
           {
             "name": "clusterId",
@@ -3841,7 +3995,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/resource-operations/{operationId}": {
@@ -3852,7 +4006,7 @@
           "resource-operations"
         ],
         "description": "读取逐对象操作结果。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
-        "x-permission": "request owner + resource permission",
+        "x-permission": "request owner + current resource.view and action permission for every target (delete needs resource.delete; others resource.write)",
         "parameters": [
           {
             "name": "operationId",
@@ -3886,7 +4040,80 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
+      }
+    },
+    "/resource-operations/{operationId}/reconcile": {
+      "post": {
+        "operationId": "reconcileResourceOperation",
+        "summary": "只读核对资源 Apply 或动作结果",
+        "tags": [
+          "resource-operations"
+        ],
+        "description": "Explicit read-only recovery works with all background execution disabled. Requires running/unknown with a durable unresolved item, matching expectedRevision and no live worker lease. Uses current credentials on the frozen physical cluster; rechecks actor, membership, grants, transport credentials and revision after bounded reads. Never resubmits writes; pending items are skipped. Signed markers and normalized content confirm writes; disappearance of the original UID confirms delete. Incomplete evidence retains unknown. Result, revision, completion, audit and idempotency commit atomically. First and replay bytes match; replay reauthorizes without keys or network. New reads require the encrypted original plan and signing key. See docs/backend/27-resource-reconciliation.md.",
+        "x-permission": "request owner + current resource.view and action permission for every frozen target (delete needs resource.delete; others resource.write)",
+        "parameters": [
+          {
+            "name": "operationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceOperationReconciliation"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Always no-store."
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Includes validation/auth/permission/conflict/unavailable responses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileResourceOperationInput"
+              }
+            }
+          }
+        },
+        "x-implementation": "implemented"
       }
     },
     "/clusters/{clusterId}/secrets/reveal": {
@@ -3896,7 +4123,7 @@
         "tags": [
           "clusters"
         ],
-        "description": "读取指定 Secret key。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Exact core/v1 Secret namespace/name/UID/resourceVersion required. Only requested Base64 values are returned; missing keys reject the whole request. Rechecks current account, membership, grants and credentials after the read, then audits atomically before releasing values. No secret values, key names or free-text reason in audit or idempotency storage. See docs/backend/28-sensitive-resource-access.md.",
         "x-permission": "secret.reveal",
         "parameters": [
           {
@@ -3949,7 +4176,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/clusters/{clusterId}/pod-logs": {
@@ -4076,7 +4303,7 @@
         "tags": [
           "clusters"
         ],
-        "description": "创建短期 Pod 终端会话。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Exact core/v1 Pod UID and container required; optional initial resourceVersion is checked. Creates a 30-second single-use, same-origin ticket; no command runs until WebSocket connection. Connect via returned path and subprotocols podry.exec.v1, ticket.<ticket>; only podry.exec.v1 is echoed. Current user/grants/credentials/Pod are rechecked on connect and every 5 seconds. Global 16/per-user 2 independent terminal quota; pending sessions count. Login expiry, 10-minute input idle, one-hour maximum, disconnect, DELETE and server drain close and reclaim streams. Process-local sessions do not survive restart. See docs/backend/28-sensitive-resource-access.md.",
         "x-permission": "pod.exec",
         "parameters": [
           {
@@ -4129,7 +4356,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/exec-sessions/{sessionId}": {
@@ -4139,7 +4366,7 @@
         "tags": [
           "exec-sessions"
         ],
-        "description": "关闭当前用户的终端会话。服务端校验目标归属和权限；完整业务规则见 01-api-spec.md。",
+        "description": "Only the authenticated owner can close a pending or active terminal. Audit before cancellation, then reclaim upstream connection. Resource grants are not required for closing; absent/expired/completed/foreign sessions return 404. No command retry.",
         "x-permission": "session owner",
         "parameters": [
           {
@@ -4167,7 +4394,7 @@
             }
           }
         },
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/webhooks/git/{provider}/{pipelineId}": {
@@ -4177,7 +4404,7 @@
         "tags": [
           "webhooks"
         ],
-        "description": "Requires provider-specific delivery identity and signature/token verification. GitHub HMAC uses the original request bytes; GitLab token is compared in constant time. Never log raw payload secrets.",
+        "description": "GitHub only; application/json, maximum 1 MiB. Verify raw-body HMAC-SHA256 before parsing. Current delegated user/project/credential authorization is required. Match configured repository and branch; deleted/tag/other-repository/non-push events are durably ignored. Event plus raw body hash is unique per provider/pipeline/Delivery: same hash replays the original 202; different hash returns 409. New accepted builds require enabled build execution; 503 leaves Delivery reusable. No remote Git query; signed full SHA is frozen for runner checkout. No automatic deployment. Never persist/log raw payload or signing secret.",
         "x-permission": "provider signature",
         "parameters": [
           {
@@ -4187,8 +4414,7 @@
             "schema": {
               "type": "string",
               "enum": [
-                "github",
-                "gitlab"
+                "github"
               ]
             }
           },
@@ -4204,6 +4430,16 @@
           {
             "name": "X-GitHub-Delivery",
             "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-GitHub-Event",
+            "in": "header",
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -4211,22 +4447,10 @@
           {
             "name": "X-Hub-Signature-256",
             "in": "header",
+            "required": true,
             "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "X-Gitlab-Event-UUID",
-            "in": "header",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "X-Gitlab-Token",
-            "in": "header",
-            "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^sha256=[0-9a-f]{64}$"
             }
           }
         ],
@@ -4264,7 +4488,7 @@
           }
         },
         "security": [],
-        "x-implementation": "planned"
+        "x-implementation": "implemented"
       }
     },
     "/audit-events": {
@@ -4709,7 +4933,7 @@
           "autoDeployAllowed": {
             "type": "boolean",
             "default": false,
-            "description": "Current P0 requires false for all environments. Automatic deployment remains deferred."
+            "description": "Explicit opt-in for non-production environments only. production=true requires false. Only platform administrators can create environment policies."
           }
         },
         "required": [
@@ -5268,7 +5492,7 @@
               "degraded",
               "stopped"
             ],
-            "description": "Derived from binding observations refreshed by application resource reads. Expires after 60 seconds; a new execution/revision, binding edit or cluster credential rotation invalidates the observation. Release success alone does not imply healthy. Archived applications report stopped."
+            "description": "Derived from binding observations refreshed by application resource reads or opt-in background health polling (PODRY_HEALTH_POLLING_ENABLED, default false). The poller uses the latest release requester with current app/resource permissions and durable per-binding leases; normal retries are scheduled after 30 seconds. Unreadable/stale results do not publish health. Expires after 60 seconds; a new execution/revision, binding edit or cluster credential rotation invalidates the observation. Release success alone does not imply healthy. Archived applications report stopped."
           },
           "archivedAt": {
             "anyOf": [
@@ -5321,7 +5545,8 @@
           },
           "cloneFromAppId": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Optional source application. Atomically copies its latest authorized config into the new app; sourceMode must match. Source app.view and destination app.configure are required. Credential references must be usable in both scopes. Build imageRepository becomes podry/<new app UUID>. No workflows, bindings, artifacts or execution state are copied."
           }
         },
         "required": [
@@ -5919,7 +6144,7 @@
               "type": "string",
               "format": "uuid"
             },
-            "description": "Local candidates require an enabled release executor/CD, a verified build artifact, valid render inputs, deploy role, target write grants including Helm Secret storage, and usable exact credential/Secret versions. No network probe or release task is performed. Preview and confirmation revalidate the selected inputs and target occupancy."
+            "description": "Local candidates require an enabled release executor/CD, a verified build or external image artifact, valid render inputs, deploy role, target write grants including Helm Secret storage, and usable exact credential/Secret versions. No network probe or release task is performed. Preview and confirmation revalidate the selected inputs and target occupancy."
           },
           "nextSection": {
             "anyOf": [
@@ -6052,7 +6277,8 @@
           "overrideValues",
           "autoDeploy"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Creates an independent binding only; no CD or execution is implied. Requires saved base configuration, app.configure and write grants for effective resource kinds. autoDeploy=true requires an environment with autoDeployAllowed=true and production=false. Binding opt-in alone does not delegate deployment; save an enabled on_ci_success CD. Environment and physical target are immutable after creation. Overrides merge recursively over base values; null and platform image/identity/Secret fields are rejected."
       },
       "BindingUpdate": {
         "type": "object",
@@ -6073,7 +6299,8 @@
           "overrideValues",
           "autoDeploy"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Replaces the complete override object and increments binding version. Empty object restores base inheritance. Maps merge recursively over base; scalars replace. Requires write grants for both previous and resulting resource kinds. Queued, active, unknown or occupied targets reject with target_busy. Existing previews become stale. autoDeploy=true requires explicit non-production environment policy. Changing the binding version invalidates older automatic intents; environment and target cannot be changed."
       },
       "CIDefinition": {
         "type": "object",
@@ -6105,7 +6332,8 @@
           "branch",
           "webhookCredentialId"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "At least one of manual/push must be true. push requires a dedicated kind=secret credential containing only data.webhookSecret (32-256 bytes); push=false requires null. Saving delegates Push admission to the saving user, rechecked on every delivery. Only GitHub Push is implemented. Automatic CD is a separate explicit delegation to its saving user."
       },
       "CDDefinition": {
         "type": "object",
@@ -6139,7 +6367,8 @@
           "upstreamPipelineId",
           "deployTimeoutSeconds"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "on_ci_success requires the same application CI, an opted-in binding and non-production environment policy. Enabled automatic CD explicitly delegates deploy to the saving user; current deploy, target and credential access is rechecked. Only builds admitted after this delegation capture automatic intents. Configuration/workflow/CI/CD/binding version changes invalidate old intents. Manual preview/confirmation remain available."
       },
       "Pipeline": {
         "type": "object",
@@ -6396,7 +6625,7 @@
             }
           }
         ],
-        "description": "Atomic template transaction. Null CD upstream in build_deploy is resolved to the newly created CI ID. add_deploy references the existing CI. No builds/deployments are started by saving a template."
+        "description": "Atomic template transaction. Null CD upstream in build_deploy is resolved to the newly created CI ID. external_image requires sourceMode=image and creates a binding/CD with null upstream. add_deploy references the existing CI for Git apps or adds another CD to an existing image workflow. No builds/deployments are started by saving a template."
       },
       "WorkflowTemplateResult": {
         "type": "object",
@@ -6488,6 +6717,13 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "autoDeployments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AutoDeployment"
+            },
+            "description": "Optional build detail field; omitted when empty and on build list/admission responses. waiting awaits a verified successful artifact, including a later retry of this Build; failed/canceled/unknown builds never dispatch. blocked retries local admission every 30 seconds. dispatched means release queued, not deployed or healthy. skipped is terminal after stale policy or revoked authorization."
           }
         },
         "required": [
@@ -6499,6 +6735,72 @@
           "attemptNo",
           "artifactId",
           "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "AutoDeployment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pipelineId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bindingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "blocked",
+              "dispatched",
+              "skipped"
+            ]
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "pipelineId",
+          "bindingId",
+          "status",
+          "errorCode",
+          "requestId",
+          "createdAt",
+          "updatedAt"
         ],
         "additionalProperties": false
       },
@@ -6659,7 +6961,7 @@
         "properties": {
           "imageRef": {
             "type": "string",
-            "description": "Registry reference to resolve and pin. Mutable tags are resolved server-side."
+            "description": "Full reference: registry.example.test/team/demo:tag or registry.example.test/team/demo@sha256:<64 lowercase hex>. Authority must match the selected Registry. Omitted tag defaults to latest. No URLs or embedded credentials. Mutable tags are pinned server-side; manifest/index content is verified, not individual blobs."
           },
           "registryId": {
             "type": "string",
@@ -6708,6 +7010,137 @@
         "required": [
           "before",
           "after"
+        ],
+        "additionalProperties": false
+      },
+      "DriftObservation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "aligned",
+              "drifted",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "compared",
+              "read_failed",
+              "identity_changed",
+              "identity_unconfirmed",
+              "release_unsettled",
+              "resource_operation_pending"
+            ]
+          },
+          "resourceCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missingCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "deploymentId",
+          "status",
+          "reason",
+          "resourceCount",
+          "changedCount",
+          "missingCount",
+          "observedAt"
+        ],
+        "additionalProperties": false
+      },
+      "DriftReport": {
+        "type": "object",
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "baselineDeploymentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "aligned",
+              "drifted",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "compared",
+              "read_failed",
+              "identity_changed",
+              "identity_unconfirmed",
+              "release_unsettled",
+              "resource_operation_pending",
+              "no_baseline",
+              "no_observation",
+              "stale"
+            ]
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DriftObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriftObservation"
+            },
+            "maxItems": 20
+          },
+          "secretValuesCompared": {
+            "const": false
+          }
+        },
+        "required": [
+          "bindingId",
+          "baselineDeploymentId",
+          "status",
+          "reason",
+          "current",
+          "history",
+          "secretValuesCompared"
         ],
         "additionalProperties": false
       },
@@ -6867,6 +7300,11 @@
               "unknown"
             ]
           },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Durable reconciliation revision, independent of Helm revision. Send as expectedRevision for explicit read-only reconciliation."
+          },
           "kind": {
             "type": "string",
             "enum": [
@@ -6943,6 +7381,7 @@
           "imageRef",
           "configVersion",
           "status",
+          "revision",
           "kind",
           "sourceDeploymentId",
           "helmRevision",
@@ -6950,6 +7389,86 @@
           "startedAt",
           "finishedAt",
           "errorCode"
+        ],
+        "additionalProperties": false
+      },
+      "ReconcileDeploymentInput": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "description": "Requires a submitted, nonterminal deployment and no live worker lease. Trimmed reason must contain 1-1000 characters. The full input participates in the idempotency hash; only reason length enters audit, never free text."
+      },
+      "DeploymentReconciliation": {
+        "type": "object",
+        "properties": {
+          "deploymentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "observing",
+              "unknown",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "helmRevision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errorCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "targetReleased": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deploymentId",
+          "revision",
+          "status",
+          "helmRevision",
+          "errorCode",
+          "checkedAt",
+          "targetReleased"
         ],
         "additionalProperties": false
       },
@@ -6969,20 +7488,23 @@
           "bindingId",
           "expectedConfigVersion"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Requires a successful source deployment and another binding of the same app. Reuses the exact verified artifact digest with the current destination configuration and overrides. Requires enabled manual CD and current target/Secret permissions. No Registry network probe is performed."
       },
       "RollbackInput": {
         "type": "object",
         "properties": {
           "reason": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 1000
           }
         },
         "required": [
           "reason"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Reason must contain 1-1000 characters after trimming. Uses the successful source deployment in the same binding, preserving historical business values, exact archived Chart, image digest and Secret versions. New deployment/Job/Secret identities are created. Current CD authorization and cluster transport credentials apply. Reason is stored with the request and omitted from audit payloads."
       },
       "ResourceRef": {
         "type": "object",
@@ -7184,19 +7706,23 @@
         "type": "object",
         "properties": {
           "manifest": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 262144
           },
           "expectedUid": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 256
           },
           "expectedResourceVersion": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 256
           }
         },
         "required": [
           "manifest"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "One strict YAML/JSON object per entry; namespaced objects require metadata.namespace. Existing objects require both UID and resourceVersion, explicitly or in metadata. Creates use POST; updates use PUT full replacement. Lists and generateName are not accepted."
       },
       "ResourceDryRunInput": {
         "type": "object",
@@ -7240,7 +7766,8 @@
             ]
           },
           "diff": {
-            "$ref": "#/components/schemas/Diff"
+            "$ref": "#/components/schemas/Diff",
+            "description": "Before/after JSON strings contain removed/added/changed field paths only, never manifest values."
           },
           "valid": {
             "type": "boolean"
@@ -7248,7 +7775,7 @@
           "error": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Error"
+                "$ref": "#/components/schemas/ResourceOperationError"
               },
               {
                 "type": "null"
@@ -7319,11 +7846,35 @@
             ]
           },
           "ref": {
-            "$ref": "#/components/schemas/ResourceRef"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResourceRef"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "uid": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "resourceVersion": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "uid",
+                  "resourceVersion"
+                ]
+              }
+            ]
           },
           "replicas": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 2147483647
           },
           "propagationPolicy": {
             "type": "string",
@@ -7338,6 +7889,65 @@
           "action",
           "ref"
         ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "const": "scale"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "replicas"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "replicas"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "restart",
+                    "scale"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "propagationPolicy"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Full UID/resourceVersion confirms the target. delete needs view+delete; restart/scale need view+write and apps/v1 Deployment. scale rejects matching HPA or incomplete checks. Namespace conflicts with platform releases return 409. An accepted 202 is not completion."
+      },
+      "ResourceOperationError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
         "additionalProperties": false
       },
       "ResourceOperationItem": {
@@ -7350,6 +7960,9 @@
           "status": {
             "type": "string",
             "enum": [
+              "pending",
+              "running",
+              "unknown",
               "succeeded",
               "failed",
               "skipped"
@@ -7368,7 +7981,7 @@
           "error": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Error"
+                "$ref": "#/components/schemas/ResourceOperationError"
               },
               {
                 "type": "null"
@@ -7390,6 +8003,10 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
           },
           "status": {
             "type": "string",
@@ -7415,9 +8032,71 @@
         },
         "required": [
           "id",
+          "revision",
           "status",
           "items",
           "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "ReconcileResourceOperationInput": {
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "writeOnly": true,
+            "description": "Trimmed nonempty reason; only character count is audited. Included in idempotency fingerprint."
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ResourceOperationReconciliation": {
+        "type": "object",
+        "properties": {
+          "operationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "partial",
+              "unknown"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceOperationItem"
+            }
+          },
+          "checkedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "operationId",
+          "revision",
+          "status",
+          "items",
+          "checkedAt"
         ],
         "additionalProperties": false
       },
@@ -7430,13 +8109,17 @@
           "keys": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]{1,253}$"
             },
-            "minItems": 1
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true
           },
           "reason": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 500
           }
         },
         "required": [
@@ -7469,14 +8152,18 @@
             "$ref": "#/components/schemas/ResourceRef"
           },
           "container": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63
           },
           "command": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "minItems": 1
+            "minItems": 1,
+            "maxItems": 32,
+            "description": "Exact argv, at most 8 KiB in total; no implicit shell or automatic retry."
           },
           "tty": {
             "type": "boolean"

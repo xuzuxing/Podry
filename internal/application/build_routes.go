@@ -40,6 +40,19 @@ func (s *Service) registerAppBuildRoutes(r chi.Router) {
 		out, e := s.ListArtifacts(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"), page)
 		reply(w, r, 200, out, e)
 	})
+	r.Post("/artifacts", func(w http.ResponseWriter, r *http.Request) {
+		var in ArtifactInput
+		if e := httpx.Decode(w, r, &in); e != nil {
+			reply(w, r, 0, nil, e)
+			return
+		}
+		out, e := s.ImportArtifact(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"), in, r.Header.Get("Idempotency-Key"), middleware.GetReqID(r.Context()))
+		if e != nil {
+			reply(w, r, 0, nil, e)
+			return
+		}
+		httpx.JSON(w, out.Status, out.Body)
+	})
 }
 func (s *Service) registerBuildRoutes(r chi.Router) {
 	r.Route("/builds/{buildId}", func(r chi.Router) {
@@ -61,5 +74,26 @@ func (s *Service) registerBuildRoutes(r chi.Router) {
 			reply(w, r, 200, out, e)
 		})
 		r.Get("/logs", s.buildLogs)
+		for _, action := range []string{"cancel", "retry"} {
+			r.Post("/"+action, func(w http.ResponseWriter, r *http.Request) {
+				if r.ContentLength != 0 {
+					var empty struct{}
+					if e := httpx.Decode(w, r, &empty); e != nil {
+						reply(w, r, 0, nil, e)
+						return
+					}
+				}
+				fn := s.CancelBuild
+				if action == "retry" {
+					fn = s.RetryBuild
+				}
+				out, e := fn(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "buildId"), r.Header.Get("Idempotency-Key"), middleware.GetReqID(r.Context()))
+				if e != nil {
+					reply(w, r, 0, nil, e)
+					return
+				}
+				httpx.JSON(w, out.Status, out.Body)
+			})
+		}
 	})
 }

@@ -1,6 +1,8 @@
 # 后端开发任务清单
 
-日期：2026-11-21 · 状态：T02–T06、T08–T10、T11/T12 管理配置、T14 Git 及 T15–T18 构建范围已实现。T19 内置 Chart/预览/快照、T20 确认/持久 Helm 提交/占用及 T15 发布恢复已实现并通过隔离测试；T21 增加应用资源及 ReplicaSet/Pod 控制器链归属，T22 增加实时差异、查询时健康观察和 setup 候选。提前实现 T24 的统一停机 deadline 与 Worker drain，补充隔离数据库备份恢复演练；T23 真实 CI/CD、T24 生产恢复与外部清理仍未验收，P1 进入条件不变。健康缓存 60 秒，后台持续轮询尚待开发，构建/发布 Worker 默认关闭。当前边界见 [进程启停与备份恢复](14-runtime-recovery.md)、[应用资源与健康观察](13-application-observation.md)、[发布执行与恢复](12-release-execution.md)、[发布规划](11-release-planning.md) 与 [构建执行](09-build-execution.md)。Git SHA-256 仓库尚未适配，fixture 通过不代表真实 CI/CD 验收。
+日期：2026-11-21 · 状态：T02–T06、T08–T10、T11/T12 管理配置、T14 Git 及 T15–T18 构建范围已实现。T19 内置 Chart/预览/快照、T20 确认/持久 Helm 提交/占用及 T15 发布恢复已实现并通过隔离测试；T21 增加应用资源及 ReplicaSet/Pod 控制器链归属，T22 增加实时差异、查询时健康观察和 setup 候选。提前实现 T24 的统一停机 deadline 与 Worker drain，补充隔离数据库备份恢复演练；T23 真实 CI/CD、T24 生产恢复与外部清理仍未验收，P1 进入条件不变。健康缓存 60 秒，后台持续轮询已实现持久调度、当前请求者权限及租约 fencing，见 [持续健康巡检](25-background-health.md)；巡检和构建/发布 Worker 默认关闭。当前边界见 [进程启停与备份恢复](14-runtime-recovery.md)、[应用资源与健康观察](13-application-observation.md)、[发布执行与恢复](12-release-execution.md)、[发布规划](11-release-planning.md) 与 [构建执行](09-build-execution.md)。Git SHA-256 仓库尚未适配，fixture 通过不代表真实 CI/CD 验收。
+
+T15/T24 补充显式发布人工核对接口，复用 v17 历史与事务；后台执行关闭时可只读核对已提交状态，不强制释放 unknown，见 [合同](26-release-reconciliation.md)。E06/E07 的资源 Apply/动作人工只读核对也已补齐，包含当前拥有者授权、revision/lease、当前连接凭据、逐项证据、pending 跳过及原子审计/幂等，见 [资源核对](27-resource-reconciliation.md)。通用 Apply/Helm 排他及无证据强制解锁仍未开放。
 
 总体范围、估算、状态恢复和验收见 [开发计划](01-development-plan.md)；现有 API 的分期见 [接口矩阵](03-api-delivery-matrix.md)；参考函数和适配差异见 [Devtron 源码对照](04-devtron-source-mapping.md)。任务可拆为多个提交，但必须交付对应权限、错误与测试，不以创建空目录或空 handler 结项。
 
@@ -40,17 +42,23 @@
 
 | ID | 范围 | 进入条件与重点 |
 | --- | --- | --- |
-| E01 / P1-A | 用户取消与重试 | B6；取消等待实际退出、竞态可判定；重试新增 Attempt，固定原 SHA/配置 |
-| E02 / P1-A | Push Webhook 与开发环境自动部署 | B6；先实现明确 provider（首批 GitHub），签名/Delivery 去重；开发环境策略显式允许，生产只能手动 |
+| E01 / P1-A | 用户取消与重试 | 提前实现业务：持久意图、退出核对、竞态、固定输入新增 Attempt；B6/真实执行仍待验收，见 [记录](17-build-actions.md) |
+| E02 / P1-A | Push Webhook 与开发环境自动部署 | 首批 GitHub Push 验签、Delivery 去重和冻结构建准入已实现（v15），见 [记录](23-git-webhooks.md)；on_ci_success 与显式非生产自动部署业务已补齐（v16），见 [记录](24-ci-auto-deploy.md)；生产只能手动，真实 CI/CD/B6 待验收 |
 | E03 / P1-A | 额外环境、环境覆盖、独立 Binding 管理 | B6；固定一 CI、多 CD；版本冲突/目标唯一性/跨环境权限；已有目标占用不可改绑 |
-| E04 / P1-A | 现有镜像导入、镜像应用、其他模板与克隆 | B6；Registry 解析 digest；克隆不复制执行/目标/凭据明文；禁止无权引用 |
+| E04 / P1-A | 现有镜像导入、镜像应用、其他模板与克隆 | 提前实现镜像导入/镜像应用/external_image；v11，见 [记录](18-image-artifacts.md)。克隆已补齐，见 [克隆记录](19-application-cloning.md)；真实执行验收仍需 B6 |
 | E05 / P1-A | 晋级与回滚 | E03；晋级只复用 Artifact，回滚复用完整历史快照；Chart/Secret/digest 缺失明确拒绝；Job 会重新执行 |
-| E06 / P1-B | ConfigMap 与 Manifest Dry Run/Apply | B6；resource_previews/resource_operations；preview 绑定操作者与版本；原始敏感 YAML 加密；逐对象 partial |
-| E07 / P1-B | 删除、Deployment 重启/扩缩容 | E06；UID 前置条件、影响确认、适用 Kind、HPA 边界；异步操作与审计 |
-| E08 / P1-B | 应用资源人工修改与漂移 | E06、T21；只显示/记录差异；不静默回写基础配置、不直接宣称集群状态已收敛 |
-| E09 / P2 | Secret reveal、exec 会话与终端 | 独立评审；reveal 单独授权，exec 单次短票据、Origin/UID/用户检查及退出回收 |
+| E06 / P1-B | ConfigMap 与 Manifest Dry Run/Apply | 已提前实现三条接口、v12 加密快照、UID/RV、持久逐对象执行与 unknown 只读核对；默认关闭，真实验收仍需 B6，见 [资源写入](20-resource-writes.md) |
+| E07 / P1-B | 删除、Deployment 重启/扩缩容 | 已提前实现 UID/RV 删除、Deployment 重启/扩缩容、HPA 与发布冲突、持久意图/只读恢复及审计；v13、默认关闭，见 [资源动作](21-resource-actions.md) |
+| E08 / P1-B | 应用资源人工修改与漂移 | 已提前实现当前成功发布基线、显式只读刷新、脱敏摘要/有限历史及版本/权限失效；v14，不静默回写配置或宣称收敛，见 [应用漂移](22-application-drift.md)；真实验收仍需 B6 |
+| E09 / P2 | Secret reveal、exec 会话与终端 | 已实现三个 HTTP 操作及 WebSocket/SPDY：独立授权、单次短票据、Origin/UID/用户检查及退出/停机回收，见 [实施合同](28-sensitive-resource-access.md)；真实集群待验收 |
 
 P1 不引入第二套任务调度器或发布引擎。所有增强复用 P0 的执行身份、快照、幂等、占用与恢复。
+
+2026-11-21 按“暂缓真实 CI/CD、继续业务开发”的安排，提前实现 E03 的独立绑定、版本化覆盖与 add_deploy，见 [实施记录](15-environment-bindings.md)。原 B6 进入条件仍用于真实执行验收；本批离线业务实现不表示 B6 已通过。目标/环境变更未扩展到 PUT 合同，创建后保持固定。
+
+同日继续提前实现 E05 的晋级/回滚请求、来源追溯、历史 Chart/Secret 冻结与 Job 新身份，见 [晋级与回滚实施记录](16-release-actions.md)。复用既有 Worker；真实跨环境执行、旧镜像可拉取性及故障验收仍待基础设施恢复。
+
+同日继续提前实现 E04 镜像导入、镜像应用和无 CI 手动工作流，接入已有发布链路；应用克隆随后通过 POST /apps 可选分支补齐。见 [镜像导入实施记录](18-image-artifacts.md)、[应用克隆实施记录](19-application-cloning.md)。
 
 ## 3. 代码和迁移交付约定
 
@@ -88,3 +96,5 @@ P1 不引入第二套任务调度器或发布引擎。所有增强复用 P0 的�
 | SC06 | T09、T10、T21、T23；E06/E07 | Discovery 部分失败、分页范围授权、同名资源新 UID、Secret 多出口脱敏；P1 写入按对象返回 partial 结果 |
 
 这些内容细化原任务的完成条件，不以已有参考实现为理由扣除恢复、适配和真实验收工作量。
+
+E09 三个 HTTP 操作及 WebSocket/SPDY 通道已实现，全部 79 个 HTTP 操作已注册。Secret 仅返回指定 key，终端采用同源短票据与当前用户/Pod UID/授权持续检查，DELETE/断连/drain 释放资源。实施与真实验收边界见 [敏感资源合同](28-sensitive-resource-access.md)。数据库仍为 v17，无新增迁移。

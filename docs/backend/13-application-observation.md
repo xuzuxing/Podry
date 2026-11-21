@@ -2,6 +2,8 @@
 
 日期：2026-11-20。继续 B5 的业务开发，Gitea/Registry 故障期间仍暂停真实 CI/CD 执行。本批使用隔离 PostgreSQL 和只读 TLS 模拟 Kubernetes API；没有使用用户的 kubeconfig，没有访问 Gitea/Registry，也没有向真实集群写入资源。
 
+当前补充：v17 已实现默认关闭的持续巡检，复用本文健康/归属规则，详见 [后台健康巡检](25-background-health.md)。下文 v7 的“查询时观察”与验证数字保留为该历史批次记录。
+
 ## 接口与迁移
 
 OpenAPI V1.8.0 共 76 个操作，**61 implemented / 15 planned**，P0 的 61 个操作已有业务实现；该计数不代表真实链路验收通过。新增接口：

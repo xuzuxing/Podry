@@ -12,10 +12,19 @@ import (
 )
 
 // Serve owns the runtime after Open. The pool closes only after HTTP handlers
-// and both workers exit. A deadline failure returns without waiting on Pool.Close,
+// and all workers exit. A deadline failure returns without waiting on Pool.Close,
 // which itself waits for borrowed connections; the caller must exit the process.
 func (r *Runtime) Serve(ctx context.Context, srv *http.Server, timeout time.Duration) error {
-	return serve(ctx, srv, timeout, r.Pool.Close, r.Builds.RunDraining, r.Releases.RunDraining)
+	workers := []func(context.Context, context.Context){r.Builds.RunDraining, r.Releases.RunDraining}
+	if r.Dependencies.Application != nil {
+		workers = append(workers, r.Dependencies.Application.RunAutoDeployDraining)
+		workers = append(workers, r.Dependencies.Application.RunHealthPollingDraining)
+	}
+	if r.Resources != nil {
+		workers = append(workers, r.Resources.RunWritesDraining)
+		workers = append(workers, r.Resources.RunExecDraining)
+	}
+	return serve(ctx, srv, timeout, r.Pool.Close, workers...)
 }
 
 func serve(ctx context.Context, srv *http.Server, timeout time.Duration, closeResources func(), workers ...func(context.Context, context.Context)) error {

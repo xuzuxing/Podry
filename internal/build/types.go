@@ -90,14 +90,28 @@ func Hash(v any) string {
 }
 
 type Build struct {
-	ID            string    `json:"id"`
-	AppID         string    `json:"appId"`
-	Status        string    `json:"status"`
-	CommitSHA     string    `json:"commitSha"`
-	ConfigVersion int32     `json:"configVersion"`
-	AttemptNo     int32     `json:"attemptNo"`
-	ArtifactID    *string   `json:"artifactId"`
-	CreatedAt     time.Time `json:"createdAt"`
+	ID              string           `json:"id"`
+	AppID           string           `json:"appId"`
+	Status          string           `json:"status"`
+	CommitSHA       string           `json:"commitSha"`
+	ConfigVersion   int32            `json:"configVersion"`
+	AttemptNo       int32            `json:"attemptNo"`
+	ArtifactID      *string          `json:"artifactId"`
+	CreatedAt       time.Time        `json:"createdAt"`
+	AutoDeployments []AutoDeployment `json:"autoDeployments,omitempty"`
+}
+
+// Detail-only durable automatic admission state. Dispatch means queued release,
+// never a successful Helm operation or a healthy workload.
+type AutoDeployment struct {
+	ID         string    `json:"id"`
+	PipelineID string    `json:"pipelineId"`
+	BindingID  string    `json:"bindingId"`
+	Status     string    `json:"status"`
+	ErrorCode  *string   `json:"errorCode"`
+	RequestID  *string   `json:"requestId"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 type Attempt struct {
 	ID              string     `json:"id"`

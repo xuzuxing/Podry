@@ -113,6 +113,12 @@ func (s *Service) Register(r chi.Router) {
 			out, err := s.GetBindings(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"))
 			reply(w, r, 200, out, err)
 		})
+		r.Post("/environments", input[BindingInput](201, func(r *http.Request, in BindingInput) (any, error) {
+			return s.CreateBinding(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"), in, middleware.GetReqID(r.Context()))
+		}))
+		r.Put("/environments/{bindingId}", input[BindingUpdate](200, func(r *http.Request, in BindingUpdate) (any, error) {
+			return s.UpdateBinding(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"), chi.URLParam(r, "bindingId"), in, middleware.GetReqID(r.Context()))
+		}))
 		r.Get("/pipelines", func(w http.ResponseWriter, r *http.Request) {
 			out, err := s.GetWorkflow(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"))
 			reply(w, r, 200, out, err)

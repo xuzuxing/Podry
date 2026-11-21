@@ -2,7 +2,7 @@
 
 日期：2026-11-21 · 范围：提前实现 T24 可离线验证的进程启停，补充隔离 PostgreSQL 备份恢复演练和操作说明。T23 真实 CI/CD、T24 生产恢复及外部资源清理尚未验收，P1 进入条件保持不变。
 
-正式迁移仍为 v7，HTTP 合同仍为 V1.8.0、61 implemented / 15 planned。本批没有新增 HTTP 操作或迁移，不开启构建和发布 Worker。
+本节历史批次迁移为 v7，HTTP 合同为 V1.8.0、61 implemented / 15 planned。本批没有新增 HTTP 操作或迁移，不开启构建和发布 Worker。
 
 ## 进程启停
 
@@ -73,7 +73,7 @@ pg_dump --format=custom --no-owner --no-acl --file=podry.dump
 
 3. 上述命令不恢复原 owner/ACL。由部署方重新建立原有迁移角色、服务角色和最小表/序列授权，再启动服务；不得将迁移所有者连接直接用作长期服务连接。
 4. 恢复原加密密钥、部署版本及 `PODRY_DATA_DIR`。不要在恢复目录上运行清理任务；超过原七天有效期的日志仍按过期处理，恢复不会延长保留期。
-5. 保持两个执行器开关关闭，启动 API，核对迁移版本、用户/项目权限、历史请求、快照、目标占用及日志。启动不自动迁移。当前版本要求干净的 v7；其他版本先按对应版本说明制定显式升级方案，不能以 `migrate down` 代替数据恢复。
+5. 保持两个执行器开关关闭，启动 API，核对迁移版本、用户/项目权限、历史请求、快照、目标占用及日志。启动不自动迁移。本批基线要求干净的 v7；后续 [多环境覆盖版本](15-environment-bindings.md) 要求 v8，[晋级与回滚版本](16-release-actions.md) 要求 v9，[构建取消与重试版本](17-build-actions.md) 要求 v10。按所恢复的二进制与备份版本制定显式升级方案，不能以 `migrate down` 代替数据恢复。
 6. 确认原集群、Helm 存储、Registry 镜像和准确凭据可用，旧实例已隔离后，再分别决定是否启用构建/发布 Worker。活动/unknown 任务会沿原协议恢复观察，不能人工直接写 succeeded 或置空 activeDeploymentId。
 7. 记录恢复后的实际状态、缺失项与外部核对证据。网络或凭据不可用继续保留现场；缺失/损坏归档返回明确不可读取，不回退为虚构日志，也不抹除已有 Artifact。
 
@@ -105,3 +105,49 @@ pg_dump --format=custom --no-owner --no-acl --file=podry.dump
 | HTTP 合同 | OpenAPI 文件 SHA-256 仍为 `e475bd8060b97fcd5c848c7dfb24d20d58d3d636898ef1e7906123a8535c81b1`，未改生成源或操作状态 |
 
 测试只创建并回收本轮隔离数据库/容器及临时文件，没有修改开发服务数据库或真实集群。这里的数据库恢复演练不包含真实 Git/BuildKit/Registry/Helm/Kubernetes 灾备或生产恢复。
+
+## v10 构建操作恢复补充
+
+持久取消意图随备份恢复，Worker 恢复后继续确认 Job 和 Pod 的退出；不能因 lease 到期直接置 canceled。重试保留原 Build 与所有历史 Attempt，准确密文版本必须可解密。恢复仍须匹配 v10 二进制/迁移并核对外部执行状态。已有取消/重试历史时禁止降级，详见 [构建取消与重试](17-build-actions.md)。
+
+## v11 镜像来源恢复补充
+
+镜像应用及外部产物依赖 v11。备份必须保留 Registry、导入者、准确凭据版本和既有 Artifact 不可变关系。导入幂等重放无需 Registry 在线；真实发布前仍须核对 digest 可拉取及集群拉取认证。镜像历史存在时禁止降级。详见 [镜像导入](18-image-artifacts.md)。
+
+## v12 资源写入恢复补充
+
+新增资源写入 Worker 复用同一 drain/work 和统一停机 deadline，默认 `PODRY_RESOURCE_WRITES_ENABLED=false`。单步预算 40 秒、lease 60 秒；默认停机 30 秒可能中断步骤，但持久意图继续保留，重启只读核对已发送项，绝不因租约过期再次提交。
+
+完整数据库备份需包含 resource_previews/resource_operations 的密文、owner/预览消费关系、逐项状态、lease/revision/retry_at 和审计，保留原加密密钥及 JWT_SECRET（派生核对标记的签名密钥）。恢复先关闭三个执行器；匹配干净 v12 后再按外部核对结果分别启用。凭据轮换/授权指纹变化会阻止旧预览或待发送项；已在途且缺证据的项保留 unknown。旧实例仍须隔离，不能直接改写 succeeded 或清空意图。存在资源预览/操作历史时 v12 降级拒绝。见 [资源写入](20-resource-writes.md)。
+
+## v13 资源动作恢复补充
+
+恢复仍先关闭三个 Worker，匹配干净 v13 并保留密钥、原始 UID/RV、动作类型及逐项意图。已发送的删除只按原 UID 消失核对；restart/scale 按原 UID、签名及预期内容核对，不能重发。unknown 动作持续占用与平台发布冲突的 namespace；最终状态不明时禁止手工清除意图。动作历史存在时 v13 降级拒绝，Apply-only 历史可回 v12，仍受 v12 历史保护。详见 [资源动作](21-resource-actions.md)。
+
+## v14 应用漂移恢复补充
+
+E08 批次二进制要求匹配干净 v14；当前版本要求 v17。备份包含 application_drift_observations 的身份摘要、状态、数量和观察时间；恢复后的旧观察仍需通过当前身份及 60 秒有效期检查，不能将历史 aligned 当作集群已收敛。没有观察时允许 v14→v13，有历史时拒绝降级。只读刷新不需要开启任何 Worker，也不触发外部修复。详见 [应用漂移](22-application-drift.md)。
+
+## GitHub Webhook 恢复补充
+
+GitHub Push 批次要求干净 v15；当前二进制要求干净 v17。备份 pipeline_push_authorizations、webhook_deliveries、Build/Attempt 和审计；恢复保持三个 Worker 关闭。同 Delivery 读取持久结果，有投递历史或 Push 配置拒绝 v15 降级。不得删除去重记录后重投制造新任务。on_ci_success 的后续 v16 恢复合同见 [自动部署](24-ci-auto-deploy.md)，Push 签名/去重见 [Webhook 合同](23-git-webhooks.md)。
+
+## v16 自动部署恢复补充
+
+备份保留 pipeline_deploy_authorizations 与 auto_deploy_intents，连同其 Build/Artifact、冻结版本、用户及发布记录。构建准入时捕获策略，恢复不追补开启前的历史构建。本地协调器复用统一 drain/work；三个外部执行 Worker 继续默认关闭，发布执行器不可用只保留 blocked 意图。渲染在事务外，最终预览消费、快照/请求/执行/意图/审计原子提交；并发或崩溃不重复派发。启用前可关闭不需要的 CD；排队但未提交的自动发布还会重验策略，已提交继续观察外部结果。自动配置或意图历史存在时拒绝 v16 降级，禁止删除/重写意图绕过保护。完整合同见 [构建成功自动部署](24-ci-auto-deploy.md)。
+
+## v17 后台健康恢复补充
+
+binding_health_polls 保存调度/租约及安全错误码，可随数据库备份恢复。恢复时保持 PODRY_HEALTH_POLLING_ENABLED=false；核对主密钥、集群与请求者权限后再显式开启。遗留租约 45 秒到期后恢复读取，旧 token 不能写缓存；无需内存回调或重放外部写操作。巡检接入统一 drain/work 和停机 deadline。v17 降级只删除可重建调度行，不删除观察及发布历史；v16 及更早历史保护仍有效。完整合同见 [后台健康巡检](25-background-health.md)。
+
+## 显式发布核对补充
+
+当前可在全部 Worker 关闭时，由有完整权限的操作者调用 `POST /api/deployments/{deploymentId}/reconcile`。先读取部署 revision，等待有效租约结束，再以 expectedRevision 和幂等键提交只读核对；不需要直接修改数据库或启用发布执行器。仅 submitting/observing/unknown 可用，远端证据明确才收敛状态与占用，无法证实的结果仍 unknown。中断不改变原意图；并发 Worker 的新 revision/fencing 或凭据/授权变化会拒绝迟到结果。复用 v17 及原有历史表，无新迁移；恢复必须保留相关幂等记录和审计。完整调用与约束见 [人工发布核对](26-release-reconciliation.md)。
+
+## 显式资源操作核对补充
+
+原资源操作拥有者可在后台开关关闭时调用 `POST /api/resource-operations/{operationId}/reconcile`。从 GET 读取 revision，以 expectedRevision 和幂等键只读核对 running/unknown 中的持久意图；当前完整目标权限与连接凭据前后重验，不重发写入。未发出的 pending 项跳过，证据不足的项保留 unknown；原 UID 仍在的删除不能视为完成。新核对须有原加密计划密钥和签名密钥，已提交结果的重放只重验当前授权，不依赖密钥/网络。保留 v17 历史、lease/revision、密钥与幂等结果，并先隔离旧实例；接口不能撤回旧实例已在途的写入。通用 Apply/Helm 排他和无证据强制解锁仍未开放。详见 [资源人工核对](27-resource-reconciliation.md)。
+
+## 临时终端的停机回收
+
+终端会话不进入备份和任务恢复。未消费票据到期删除；重启后旧会话/票据失效，用户重新创建连接。HTTP Shutdown 不负责已 hijack 的 WebSocket，因此终端单独接入 drain/work：停止准入、取消所有活动连接、等待终端 handler 及上游退出后再关闭数据库。四个后台开关继续默认关闭。见 [Secret 与终端](28-sensitive-resource-access.md)。

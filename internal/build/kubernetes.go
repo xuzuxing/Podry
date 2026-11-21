@@ -140,23 +140,30 @@ func (s *Service) step(ctx context.Context, spec ExecutionSpec, row sqlcdb.Build
 	r.availability = "runtime"
 	conditions, _ := obj(j["status"])["conditions"].([]any)
 	complete := false
+	failed := false
 	for _, v := range conditions {
 		cond := obj(v)
 		if cond["status"] == "True" {
 			if cond["type"] == "Failed" {
-				return fail("build_job_failed")
+				failed = true
 			}
 			if cond["type"] == "Complete" {
 				complete = true
 			}
 		}
 	}
-	if !complete {
+	if !complete && !failed {
 		return r
 	}
 	pods, e := readPods(ctx, c, spec, uid)
 	if e != nil {
 		return unknown(code(e))
+	}
+	if !jobStopped(j) || !podsStopped(pods) {
+		return r
+	}
+	if failed {
+		return fail("build_job_failed")
 	}
 	var result RunnerResult
 	found := false

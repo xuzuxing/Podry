@@ -156,16 +156,17 @@ func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialPara
 }
 
 const createEnvironment = `-- name: CreateEnvironment :one
-INSERT INTO environments(name,production) VALUES($1,$2) RETURNING id, name, production, auto_deploy_allowed, created_at
+INSERT INTO environments(name,production,auto_deploy_allowed) VALUES($1,$2,$3) RETURNING id, name, production, auto_deploy_allowed, created_at
 `
 
 type CreateEnvironmentParams struct {
-	Name       string
-	Production bool
+	Name              string
+	Production        bool
+	AutoDeployAllowed bool
 }
 
 func (q *Queries) CreateEnvironment(ctx context.Context, arg CreateEnvironmentParams) (Environment, error) {
-	row := q.db.QueryRow(ctx, createEnvironment, arg.Name, arg.Production)
+	row := q.db.QueryRow(ctx, createEnvironment, arg.Name, arg.Production, arg.AutoDeployAllowed)
 	var i Environment
 	err := row.Scan(
 		&i.ID,

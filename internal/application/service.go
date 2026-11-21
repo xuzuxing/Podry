@@ -19,6 +19,7 @@ import (
 	"github.com/xuzuxing/podry/internal/gitremote"
 	"github.com/xuzuxing/podry/internal/httpx"
 	"github.com/xuzuxing/podry/internal/project"
+	"github.com/xuzuxing/podry/internal/registry"
 )
 
 type Service struct {
@@ -33,6 +34,9 @@ type Service struct {
 	buildLogMu     sync.Mutex
 	buildLogUsers  map[string]int
 	buildLogActive int
+	images         ImageReader
+	// HealthPollingEnabled opts into read-only background cluster observations.
+	HealthPollingEnabled bool
 }
 
 func (s *Service) UseBuilds(b *build.Service) *Service { s.builds = b; return s }
@@ -43,7 +47,7 @@ func New(pool *pgxpool.Pool, vault *credential.Vault, reader GitReader, cursorKe
 	if reader == nil {
 		reader = gitremote.New(nil)
 	}
-	return &Service{pool: pool, q: sqlcdb.New(pool), vault: vault, git: reader, cursorKey: []byte(cursorKey)}
+	return &Service{pool: pool, q: sqlcdb.New(pool), vault: vault, git: reader, cursorKey: []byte(cursorKey), images: &registry.Client{}}
 }
 func appDTO(a sqlcdb.Application) Application {
 	health := "unknown"
@@ -100,8 +104,16 @@ func (s *Service) Create(ctx context.Context, a auth.Actor, in ApplicationInput,
 	if !regexp.MustCompile(`^[a-z][a-z0-9-]{1,61}[a-z0-9]$`).MatchString(in.Name) || len(in.Description) > 4000 {
 		return Application{}, httpx.Invalid("应用名称或描述无效")
 	}
-	if in.SourceMode != "git" || in.CloneFromAppID != nil {
-		return Application{}, httpx.Fail(422, "feature_not_available", "当前阶段只支持新建 Git 应用")
+	if in.CloneFromAppID != nil {
+		if err := httpx.UUID(*in.CloneFromAppID); err != nil {
+			return Application{}, err
+		}
+	}
+	if in.SourceMode != "git" && in.SourceMode != "image" {
+		return Application{}, httpx.Invalid("sourceMode 必须为 git 或 image")
+	}
+	if in.CloneFromAppID != nil {
+		return s.clone(ctx, a, in, req)
 	}
 	return database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (Application, error) {
 		if err := auth.LockActor(ctx, q, a); err != nil {
@@ -292,6 +304,17 @@ func (s *Service) SaveConfig(ctx context.Context, a auth.Actor, id string, in Co
 		if err = s.validateConfig(ctx, q, a, app, c); err != nil {
 			return c, err
 		}
+		if in.Section == "base" {
+			bindings, err := q.ListBindings(ctx, id)
+			if err != nil {
+				return c, err
+			}
+			for _, b := range bindings {
+				if _, err = bindingConfig(c, b.OverrideValues); err != nil {
+					return c, err
+				}
+			}
+		}
 		c.Version++
 		err = q.InsertAppConfig(ctx, sqlcdb.InsertAppConfigParams{AppID: id, Version: c.Version, GitConfig: nullableJSON(c.GitConfig), BuildConfig: nullableJSON(c.BuildConfig), ChartConfig: nullableJSON(c.ChartConfig), DeployValues: nullableJSON(c.DeployValues), SecretRefs: nullableJSON(c.SecretRefs), CreatedBy: a.ID})
 		if err != nil {
@@ -335,10 +358,15 @@ func (s *Service) deriveSetup(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	}
 	out := Setup{AppID: app.ID, ConfigVersion: c.Version, WorkflowVersion: w.Version, Total: 4, Steps: []Step{}, DeployableBindingIDs: []string{}}
 	ci := false
+	manualCI := false
 	cd := false
 	for _, p := range w.Items {
 		if p.Kind == "ci" && p.Enabled {
 			ci = true
+			var definition CI
+			if json.Unmarshal(nullableJSON(p.Definition), &definition) == nil {
+				manualCI = definition.Manual
+			}
 		}
 		if p.Kind == "cd" && p.Enabled {
 			cd = true
@@ -348,6 +376,11 @@ func (s *Service) deriveSetup(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 		key   string
 		ready bool
 	}{{"git", c.GitConfig != nil}, {"build", c.BuildConfig != nil}, {"base", c.ChartConfig != nil}, {"workflow", ci && cd}}
+	if app.SourceMode == "image" {
+		out.Total = 2
+		facts = facts[2:]
+		facts[1].ready = cd
+	}
 	for _, f := range facts {
 		st := Step{Key: f.key, Status: "pending", Blockers: []Blocker{}}
 		if f.ready {
@@ -366,24 +399,26 @@ func (s *Service) deriveSetup(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	// B4 enables build submission from configured execution inputs; artifact and
 	// deployment readiness remain independent and require actual execution evidence.
 	out.CanBuild = false
+	buildAvailable := false
 	role, err := project.ProjectRole(ctx, q, a, app.ProjectID)
 	if err != nil {
 		return out, err
 	}
 	if s.builds != nil && s.builds.Ready() == nil && c.GitConfig != nil && c.BuildConfig != nil && ci && app.ArchivedAt == nil && c.BuildConfig.Platform == s.builds.Settings.Platform && project.RequireRole(role, "build") == nil {
-		out.CanBuild = true
+		buildAvailable = true
+		out.CanBuild = manualCI
 	}
 	if ci {
-		if !out.CanBuild {
-			out.Steps[3].Blockers = append(out.Steps[3].Blockers, Blocker{"execution_unavailable", "执行环境尚未就绪；工作流可以保存", "workflow"})
+		if !buildAvailable {
+			out.Steps[len(out.Steps)-1].Blockers = append(out.Steps[len(out.Steps)-1].Blockers, Blocker{"execution_unavailable", "执行环境尚未就绪；工作流可以保存", "workflow"})
 		}
 	}
 	if cd && (s.releases == nil || s.releases.Ready(Target{}) != nil) {
-		out.Steps[3].Blockers = append(out.Steps[3].Blockers, Blocker{"deployment_execution_unavailable", "发布执行器尚未接入；可以保存工作流并预览", "workflow"})
+		out.Steps[len(out.Steps)-1].Blockers = append(out.Steps[len(out.Steps)-1].Blockers, Blocker{"deployment_execution_unavailable", "发布执行器尚未接入；可以保存工作流并预览", "workflow"})
 	}
 	if app.ArchivedAt != nil {
-		out.Steps[3].Status = "blocked"
-		out.Steps[3].Blockers = append(out.Steps[3].Blockers, Blocker{"application_archived", "应用已归档", "workflow"})
+		out.Steps[len(out.Steps)-1].Status = "blocked"
+		out.Steps[len(out.Steps)-1].Blockers = append(out.Steps[len(out.Steps)-1].Blockers, Blocker{"application_archived", "应用已归档", "workflow"})
 	}
 	if cd && app.ArchivedAt == nil && c.ChartConfig != nil && s.releases != nil && project.RequireRole(role, "deploy") == nil {
 		out.DeployableBindingIDs, err = s.deployableBindings(ctx, q, a, app, c)

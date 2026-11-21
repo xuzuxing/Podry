@@ -36,13 +36,17 @@ func (s *Service) deployableBindings(ctx context.Context, q *sqlcdb.Queries, a a
 			continue
 		}
 		check := func() error {
-			if e := validateReleaseValues(c); e != nil {
+			if e := artifactScope(ctx, q, a, app, artifact); e != nil {
+				return e
+			}
+			effective, e := bindingConfig(c, binding.OverrideValues)
+			if e != nil {
 				return e
 			}
 			if _, _, e := enabledCD(ctx, q, app.ID, binding.ID); e != nil {
 				return e
 			}
-			if e := releasePermission(ctx, q, a, app, c, target); e != nil {
+			if e := releasePermission(ctx, q, a, app, effective, target); e != nil {
 				return e
 			}
 			if e := s.releaseSecrets(ctx, q, a, app, c.SecretRefs); e != nil {
@@ -51,7 +55,7 @@ func (s *Service) deployableBindings(ctx context.Context, q *sqlcdb.Queries, a a
 			if _, e := s.releaseCluster(ctx, q, binding.ClusterID); e != nil {
 				return e
 			}
-			_, e := chart.Render(chart.Input{AppID: app.ID, BindingID: binding.ID, DeploymentID: "setup", Namespace: target.Namespace, ReleaseName: target.ReleaseName, WorkloadKind: c.ChartConfig.WorkloadKind, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, Values: c.DeployValues, SecretKeys: keys})
+			_, e = chart.Render(chart.Input{AppID: app.ID, BindingID: binding.ID, DeploymentID: "setup", Namespace: target.Namespace, ReleaseName: target.ReleaseName, WorkloadKind: c.ChartConfig.WorkloadKind, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, Values: effective.DeployValues, SecretKeys: keys})
 			if e != nil {
 				return httpx.Fail(422, "chart_render_failed", "基础部署配置不能渲染")
 			}

@@ -86,6 +86,13 @@ func (s *Service) secret(ctx context.Context, ref CredentialRef) (map[string]any
 	return s.vault.Open(ref.ID, ref.Version, v.KeyID, v.EncryptedPayload)
 }
 func (s *Service) authorize(ctx context.Context, p Plan, user string) error {
+	allowed, err := s.q.RequestAutoDeployAllowed(ctx, &p.RequestID)
+	if err != nil {
+		return err
+	}
+	if allowed == nil || !*allowed {
+		return httpx.Forbidden()
+	}
 	u, err := s.q.GetUser(ctx, user)
 	if err != nil {
 		return err
@@ -272,20 +279,7 @@ func (s *Service) processOne(claimCtx, ctx context.Context) (bool, error) {
 	if ctx.Err() != nil {
 		return true, ctx.Err()
 	}
-	if err != nil {
-		result.State = "unknown"
-		result.Code = "release_outcome_unknown"
-	}
-	if result.State != "observing" && result.State != "succeeded" && result.State != "failed" && result.State != "unknown" {
-		result.State = "unknown"
-		result.Code = "release_observation_invalid"
-	}
-	// Only a settled Helm release may time out as failed. Unsettled outcomes keep
-	// the target occupied regardless of elapsed wall time.
-	if result.State == "observing" && d.StartedAt != nil && time.Since(*d.StartedAt) > time.Duration(p.TimeoutSeconds)*time.Second {
-		result.State = "failed"
-		result.Code = "release_timeout"
-	}
+	result = NormalizeObservation(result, err, d.StartedAt, p.TimeoutSeconds)
 	return true, s.finish(ctx, c, result)
 }
 func strptr(v string) *string {
@@ -305,46 +299,8 @@ func (s *Service) finish(ctx context.Context, c claimed, o Observation) error {
 		if err != nil {
 			return false, err
 		}
-		for _, r := range o.Resources {
-			owners := r.Owners
-			if owners == nil {
-				owners = []metav1.OwnerReference{}
-			}
-			raw, err := json.Marshal(owners)
-			if err != nil {
-				return false, err
-			}
-			n, err := q.SaveDeploymentResource(ctx, sqlcdb.SaveDeploymentResourceParams{DeploymentID: d.ID, ApiVersion: r.APIVersion, Kind: r.Kind, Namespace: r.Namespace, Name: r.Name, Uid: r.UID, OwnerReferences: raw, ObservedGeneration: r.Generation})
-			if err != nil {
-				return false, err
-			}
-			if n != 1 {
-				return false, errors.New("release resource identity changed")
-			}
-		}
-		requestState := "executing"
-		if o.State == "queued" {
-			requestState = "queued"
-		}
-		if o.State == "unknown" || o.State == "succeeded" || o.State == "failed" {
-			requestState = o.State
-		}
-		if err = q.SetReleaseRequestState(ctx, sqlcdb.SetReleaseRequestStateParams{ID: d.RequestID, Status: requestState}); err != nil {
+		if err = PersistObservation(ctx, q, d, c.row.BindingID, o); err != nil {
 			return false, err
-		}
-		if o.State == "succeeded" {
-			if _, err = q.SetCurrentDeployment(ctx, sqlcdb.SetCurrentDeploymentParams{ID: c.row.BindingID, CurrentDeploymentID: &d.ID, TargetID: d.TargetID}); err != nil {
-				return false, err
-			}
-		}
-		if o.State == "succeeded" || o.State == "failed" {
-			n, err := q.ReleaseTarget(ctx, sqlcdb.ReleaseTargetParams{ID: d.TargetID, ActiveDeploymentID: &d.ID, FencingToken: d.FencingToken})
-			if err != nil {
-				return false, err
-			}
-			if n != 1 {
-				return false, errors.New("release target fencing conflict")
-			}
 		}
 		if c.row.Status != o.State {
 			pr, err := q.GetProject(ctx, app.ProjectID)

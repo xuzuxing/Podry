@@ -6,13 +6,13 @@
 
 Podry 面向个人开发者和中小团队，提供两个核心工作区：应用 CI/CD、Kubernetes 资源查看与管理。功能与信息架构参考 Devtron Application Management 和 Resource Browser，采用 Podry 自身技术栈实现。
 
-当前后端实施入口为 [后端开发计划](backend/01-development-plan.md)、[开发任务清单](backend/02-task-breakdown.md)、[HTTP 接口分期矩阵](backend/03-api-delivery-matrix.md) 和 [Devtron 后端源码映射与取舍](backend/04-devtron-source-mapping.md)。后端参考来自用户提供的 `D:/workspace/devtron`，固定提交并追踪关键调用。按 B0–B6 分期开发；身份、团队/项目、加密凭据、Registry、集群授权、应用配置、工作流、Git、Kubernetes 资源/日志、持久构建、发布预览/确认与历史、应用资源和实时 Diff 等共 61 个操作已实现，15 个待实现。正式迁移版本 7；健康采用资源查询时观察和 60 秒缓存，持久构建/发布默认关闭，真实 CI/CD 执行按用户要求暂缓。当前增量见 [应用资源与健康观察](backend/13-application-observation.md)，前批见 [发布执行与恢复](backend/12-release-execution.md)、[发布规划](backend/11-release-planning.md)、[Kubernetes 读取](backend/08-kubernetes-resources.md) 和 [构建执行](backend/09-build-execution.md)，B1 历史见 [后端实施记录](backend/05-implementation.md)。
+当前后端实施入口为 [后端开发计划](backend/01-development-plan.md)、[开发任务清单](backend/02-task-breakdown.md)、[HTTP 接口分期矩阵](backend/03-api-delivery-matrix.md) 和 [Devtron 后端源码映射与取舍](backend/04-devtron-source-mapping.md)。后端参考来自用户提供的 `D:/workspace/devtron`，固定提交并追踪关键调用。按 B0–B6 分期开发；身份、团队/项目、加密凭据、Registry、集群授权、应用配置、工作流、Git、Kubernetes 资源/日志、持久构建、发布预览/确认与历史、应用资源和实时 Diff、环境绑定/覆盖、晋级与回滚、构建取消/重试、已有镜像导入及资源变更预览/提交/操作查询以及删除/Deployment 重启/扩缩容及应用漂移及 GitHub Webhook 及发布/资源人工核对、Secret 明文和 Pod 终端共 79 个 HTTP 操作已实现。正式迁移版本 17；健康支持资源查询时观察与默认关闭的持久后台巡检，缓存仍为 60 秒，持久构建/发布/资源写入默认关闭，真实 CI/CD 执行按用户要求暂缓。当前增量见 [Secret 与终端](backend/28-sensitive-resource-access.md)、[发布人工核对](backend/26-release-reconciliation.md)、[后台健康巡检](backend/25-background-health.md) 与 [自动部署](backend/24-ci-auto-deploy.md)，前批见 [资源动作](backend/21-resource-actions.md)，前批见 [资源写入](backend/20-resource-writes.md)，前批见 [已有镜像导入](backend/18-image-artifacts.md)，前批见 [构建取消与重试](backend/17-build-actions.md)，前批见 [晋级与回滚](backend/16-release-actions.md)，前批见 [多环境绑定与覆盖](backend/15-environment-bindings.md)、 [应用资源与健康观察](backend/13-application-observation.md)、[发布执行与恢复](backend/12-release-execution.md)、[发布规划](backend/11-release-planning.md)、[Kubernetes 读取](backend/08-kubernetes-resources.md) 和 [构建执行](backend/09-build-execution.md)，B1 历史见 [后端实施记录](backend/05-implementation.md)。
 
 已记录的交互证据来自用户测试实例的 **71 张实际截图**：前轮 27 张只读页面，新应用目录共 44 张（首次 26 张，2026-11-20 补拍 18 张构建、镜像、发布及资源页面）。此前的 [Vue 工程原型说明](prototype/02-vue-engineering.md)、[V2.1 离线原型](prototype/index.html)、[新应用实测及缺口](references/devtron-onboarding/README.md) 和 [完整流水线截图](references/devtron-onboarding/gallery.html) 保留作历史对照，不构成当前空工程的目录或实现前提。主流程证据明确使用 **Build & Deploy from Source Code**，同时包含 CI 和 Deploy。V1 已保存在 [历史目录](prototype/archive-v1/README.md)。
 
 历史 Vue 原型曾根据最新反馈本土化为中文研发交付台：桌面使用 152px 带文字导航，常驻项目/状态筛选；日常“构建发布”采用代码构建与环境发布列表，关系图保留在流水线配置页。新建应用使用居中弹窗，简单流水线编辑使用较窄抽屉。完整 Git → Build → Deploy、发布确认、资源 Review/Apply 均保留。这些内容只作为交互参考；Devtron 提供业务参考，CloudBase 仅保留配色参考，当前迁移边界以 [轻量化迁移方案](migration/01-devtron-to-vue-plan.md) 为准。
 
-最新后端增量为 [进程启停与备份恢复](backend/14-runtime-recovery.md)：统一停机 deadline、停止领取与在途步骤收尾、隔离 PostgreSQL 恢复演练。它补充 T24 的离线部分，真实 CI/CD、生产恢复和外部清理仍待验收。
+进程启停与备份恢复基线见 [进程启停与备份恢复](backend/14-runtime-recovery.md)：统一停机 deadline、停止领取与在途步骤收尾、隔离 PostgreSQL 恢复演练。它补充 T24 的离线部分，真实 CI/CD、生产恢复和外部清理仍待验收。
 
 ## 阅读入口
 
@@ -20,7 +20,7 @@ Podry 面向个人开发者和中小团队，提供两个核心工作区：应�
 | --- | --- | --- |
 | 产品说明 | [产品说明](product/01-product-spec.md) | 定位、术语、角色、功能范围与业务规则 |
 | 产品说明 | [业务流程与状态](product/02-workflows-and-states.md) | 构建、发布、晋级、回滚、异常恢复 |
-| 产品说明 | [功能点清单](product/03-function-inventory.md) | 76 个 HTTP 功能点与 14 个平台功能点的层级与实现现状 |
+| 产品说明 | [功能点清单](product/03-function-inventory.md) | 79 个 HTTP 功能点与 14 个平台功能点的层级与实现现状 |
 | 产品说明 | [功能树](product/04-function-tree.md) | 产品与平台能力的树形视图、分期标记与前后端对齐线 |
 | 页面原型 | [页面与交互规格](prototype/01-page-spec.md) | 导航、页面字段、组件边界、状态覆盖 |
 | 页面原型 | [Vue 3 + TDesign 工程原型](prototype/02-vue-engineering.md) | 工程入口、组件/API/Mock 分层、运行、构建与真实接口接入 |
@@ -34,7 +34,7 @@ Podry 面向个人开发者和中小团队，提供两个核心工作区：应�
 | 技术设计 | [技术架构](architecture/01-architecture.md) | 模块职责、执行链、部署方式、恢复机制 |
 | 后端开发 | [后端开发计划](backend/01-development-plan.md) | 当前源码基线、P0/P1/P2、模块职责、B0–B6、事务与恢复、投入估算 |
 | 后端开发 | [开发任务清单](backend/02-task-breakdown.md) | T00–T24、增强任务、文件/函数落点、依赖和完成条件 |
-| 后端开发 | [HTTP 接口分期矩阵](backend/03-api-delivery-matrix.md) | 现有 76 个操作的分期、交付阶段与可选字段边界 |
+| 后端开发 | [HTTP 接口分期矩阵](backend/03-api-delivery-matrix.md) | 现有 79 个操作的分期、交付阶段与可选字段边界 |
 | 后端开发 | [管理与配置接口](backend/06-control-plane.md) | 管理配置、加密密钥与迁移、独立于 Kubernetes 的联调和验证 |
 | 后端开发 | [Git 代码选择接口](backend/07-git-material.md) | HTTPS 分支/提交、私仓凭据、完整 SHA、分页及验证边界 |
 | 后端开发 | [Kubernetes 资源读取与 Pod 日志](backend/08-kubernetes-resources.md) | 连接测试、mTLS/TLS 选项、Discovery、授权查询、Secret 脱敏与有界日志流；该批历史覆盖 48 个操作 |
@@ -44,6 +44,20 @@ Podry 面向个人开发者和中小团队，提供两个核心工作区：应�
 | 后端开发 | [持久发布执行与恢复](backend/12-release-execution.md) | 默认关闭的 Helm Worker、物理目标占用、租约 fencing、Deployment/Job 观察；真实执行待验收 |
 | 后端开发 | [应用资源与健康观察](backend/13-application-observation.md) | UID/OwnerReference 归属、实时脱敏 Diff、60 秒健康观察和 setup 发布候选；v7 迁移 |
 | 后端开发 | [进程启停与备份恢复](backend/14-runtime-recovery.md) | 停止领取、统一停机时限、在途步骤收尾、隔离数据库恢复演练与备份操作说明；真实 CI/CD/生产恢复待验收 |
+| 后端开发 | [多环境绑定与覆盖](backend/15-environment-bindings.md) | 独立绑定、受控覆盖、add_deploy、版本/目标/权限保护；v8 迁移，真实执行待验收 |
+| 后端开发 | [晋级与回滚](backend/16-release-actions.md) | 复用产物、历史 Chart/Secret/Values、新 Job 身份、来源/幂等/占用保护；v9 迁移，真实执行待验收 |
+| 后端开发 | [已有镜像导入](backend/18-image-artifacts.md) | Registry 验证、镜像应用与无 CI 工作流；v11，真实拉取待验收 |
+| 后端开发 | [应用克隆](backend/19-application-cloning.md) | 原子复制最新授权配置、独立镜像仓库、双向作用域检查，不复制工作流或执行状态；无新增迁移 |
+| 后端开发 | [发布人工核对](backend/26-release-reconciliation.md) | 当前权限、只读 Observe、revision/lease/fencing、原子审计与幂等；不强制解锁 unknown |
+| 后端开发 | [Secret 明文与 Pod 终端](backend/28-sensitive-resource-access.md) | 指定 key、独立授权、单次票据、WebSocket/SPDY 与停机回收；无新增迁移 |
+| 后端开发 | [资源 Apply/动作人工核对](backend/27-resource-reconciliation.md) | 当前拥有者权限、只读逐项证据、revision/lease、pending 跳过、原子审计/幂等；不重发写入 |
+| 后端开发 | [资源变更预览与提交](backend/20-resource-writes.md) | 严格文档、权限/CAS、加密预览、持久异步逐对象执行与 unknown 只读核对；v12，默认关闭写入 |
+| 后端开发 | [资源删除、重启与扩缩容](backend/21-resource-actions.md) | UID/RV、HPA 与平台发布互斥、只读恢复；v13、执行默认关闭 |
+| 后端开发 | [GitHub Push Webhook](backend/23-git-webhooks.md) | 验签、持久 Delivery 去重、显式用户授权与构建准入 |
+| 后端开发 | [构建成功自动部署](backend/24-ci-auto-deploy.md) | 显式非生产策略、持久构建意图、版本/权限重验、发布去重与恢复 |
+| 后端开发 | [后台持续健康巡检](backend/25-background-health.md) | 当前发布请求者权限、持久租约、失败失效、迟到结果保护与统一停机；默认关闭 |
+| 后端开发 | [应用人工修改与漂移](backend/22-application-drift.md) | 当前成功发布基线、只读刷新、脱敏摘要/有限历史；v14、不自动修复 |
+| 后端开发 | [构建取消与重试](backend/17-build-actions.md) | 持久取消、退出核对、固定输入与新 Attempt 身份；v10，真实执行待验收 |
 | 后端开发 | [Devtron 后端源码映射与取舍](backend/04-devtron-source-mapping.md) | 本地参考提交、30 组源码入口、CI/CD/资源/恢复链路与 SC01–SC06 任务补充 |
 | 开发验收 | [开发与验收计划](delivery/01-plan-and-acceptance.md) | 原 M0–M5 全量路线和用例；后端实施顺序以 B0–B6 为准 |
 | 迁移方案 | [Devtron Dashboard → Podry Web 轻量化迁移方案](migration/01-devtron-to-vue-plan.md) | 首版 P0/P1/P2 范围、菜单、路由、组件边界、数据流与验收标准 |
@@ -58,6 +72,7 @@ Podry 面向个人开发者和中小团队，提供两个核心工作区：应�
 | 检查工具 | [原型浏览器检查](tools/check-prototype.mjs) | 使用本机 Chrome 验证实际点击流程及截图 |
 | 检查结果 | [验证记录](delivery/02-validation.md) | 本次实际执行结果与尚未验证的边界 |
 | 检查结果 | [Vue 工程原型验证](delivery/03-vue-validation.md) | 27 项原生 Vue 浏览器检查、独立构建和生产构建边界 |
+
 
 ## 当前仓库与设计目标
 

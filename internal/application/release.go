@@ -55,6 +55,7 @@ type Deployment struct {
 	ImageRef           string     `json:"imageRef"`
 	ConfigVersion      int32      `json:"configVersion"`
 	Status             string     `json:"status"`
+	Revision           int64      `json:"revision"`
 	Kind               string     `json:"kind"`
 	SourceDeploymentID *string    `json:"sourceDeploymentId"`
 	HelmRevision       *int32     `json:"helmRevision"`
@@ -73,6 +74,13 @@ func (s *Service) UseReleases(queue ReleaseQueue) *Service { s.releases = queue;
 
 type frozenCredential = release.CredentialRef
 type releasePlan = release.Plan
+
+// Values are captured with the locked binding and are not part of the canonical
+// Plan until Chart rendering freezes them. Preserve historical snapshot hashes.
+type previewPlan struct {
+	releasePlan
+	values map[string]any
+}
 
 func decodeReleasePlan(raw []byte, hash string) (releasePlan, error) {
 	p, err := release.Decode(raw, hash)
@@ -124,7 +132,7 @@ func enabledCD(ctx context.Context, q *sqlcdb.Queries, id, binding string) (sqlc
 			return p, cd, validateCD(cd, ciID)
 		}
 	}
-	return sqlcdb.Pipeline{}, CD{}, httpx.Fail(422, "prerequisite_missing", "请先保存并启用目标环境的手动 CD 流水线")
+	return sqlcdb.Pipeline{}, CD{}, httpx.Fail(422, "prerequisite_missing", "请先保存并启用目标环境的 CD 流水线")
 }
 func (s *Service) releaseSecrets(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, app sqlcdb.Application, refs []SecretRef) error {
 	p, e := q.GetProject(ctx, app.ProjectID)
@@ -191,22 +199,17 @@ func (s *Service) CreateDeploymentPreview(ctx context.Context, a auth.Actor, id 
 	}
 	// Rendering uses a read snapshot obtained under a short transaction. No network
 	// I/O or template rendering runs while the application/target locks are held.
-	plan, e := database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (releasePlan, error) { return s.planRelease(ctx, q, a, id, in) })
+	planned, e := database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (previewPlan, error) { return s.planRelease(ctx, q, a, id, in) })
 	if e != nil {
 		return DeploymentPreview{}, e
 	}
-	var values map[string]any
 	// Config versions are immutable; render exactly the selected version.
-	c, e := readConfig(ctx, s.q, id, plan.ConfigVersion)
-	if e != nil {
-		return DeploymentPreview{}, e
-	}
-	values = c.DeployValues
+	plan := planned.releasePlan
 	keys := make([]string, 0, len(plan.SecretRefs))
 	for _, ref := range plan.SecretRefs {
 		keys = append(keys, ref.TargetKey)
 	}
-	plan.Chart, e = chart.Render(chart.Input{AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: values, SecretKeys: keys})
+	plan.Chart, e = chart.Render(chart.Input{AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: planned.values, SecretKeys: keys})
 	if e != nil {
 		return DeploymentPreview{}, httpx.Fail(422, "chart_render_failed", "内置 Chart 无法渲染，请检查基础配置")
 	}
@@ -251,8 +254,8 @@ func (s *Service) CreateDeploymentPreview(ctx context.Context, a auth.Actor, id 
 		return DeploymentPreview{PreviewID: preview.ID, ExpiresAt: preview.ExpiresAt, ImageRef: plan.ImageRef, Target: plan.Target, ValuesRedacted: plan.Chart.Values, Diff: Diff{Before: before, After: plan.Chart.Manifest}, Warnings: []string{"差异基于平台上次成功发布的快照，未查询集群实时资源。", "预览不执行构建或发布；确认发布受执行器开关控制。"}}, nil
 	})
 }
-func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string, in DeploymentPreviewInput) (releasePlan, error) {
-	var out releasePlan
+func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string, in DeploymentPreviewInput) (previewPlan, error) {
+	var out previewPlan
 	app, e := deployAccess(ctx, q, a, id)
 	if e != nil {
 		return out, e
@@ -267,10 +270,11 @@ func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	if c.Version != in.ExpectedConfigVersion {
 		return out, httpx.Fail(409, "revision_conflict", "应用配置版本已变化")
 	}
-	if e = validateReleaseValues(c); e != nil {
+	b, e := q.GetReleaseBinding(ctx, sqlcdb.GetReleaseBindingParams{ID: in.BindingID, AppID: id})
+	if e != nil {
 		return out, e
 	}
-	b, e := q.GetReleaseBinding(ctx, sqlcdb.GetReleaseBindingParams{ID: in.BindingID, AppID: id})
+	c, e = bindingConfig(c, b.OverrideValues)
 	if e != nil {
 		return out, e
 	}
@@ -285,19 +289,9 @@ func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	if e != nil {
 		return out, e
 	}
-	artifact, e := q.GetArtifact(ctx, in.ArtifactID)
+	artifact, e := usableArtifact(ctx, q, a, app, in.ArtifactID)
 	if e != nil {
 		return out, e
-	}
-	if artifact.AppID != id {
-		return out, httpx.NotFound()
-	}
-	built, e := q.GetBuild(ctx, artifact.BuildID)
-	if e != nil {
-		return out, e
-	}
-	if built.Status != "succeeded" || built.ArtifactID == nil || *built.ArtifactID != artifact.ID {
-		return out, httpx.Fail(422, "artifact_unavailable", "产物尚未通过构建验证")
 	}
 	if e = s.releaseSecrets(ctx, q, a, app, c.SecretRefs); e != nil {
 		return out, e
@@ -306,7 +300,7 @@ func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	if e != nil {
 		return out, e
 	}
-	return releasePlan{SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, nil
+	return previewPlan{releasePlan: releasePlan{SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, values: c.DeployValues}, nil
 }
 func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string, p releasePlan) (sqlcdb.Application, error) {
 	app, e := deployAccess(ctx, q, a, id)
@@ -327,6 +321,10 @@ func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a au
 	if e != nil {
 		return app, e
 	}
+	c, e = bindingConfig(c, b.OverrideValues)
+	if e != nil {
+		return app, e
+	}
 	if e = releasePermission(ctx, q, a, app, c, p.Target); e != nil {
 		return app, e
 	}
@@ -343,6 +341,13 @@ func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a au
 	}
 	if c.Version != p.ConfigVersion || app.WorkflowVersion != p.WorkflowVersion || b.Version != p.BindingVersion || b.TargetID != p.TargetID || (Target{ClusterID: b.ClusterID, Namespace: b.Namespace, ReleaseName: b.ReleaseName}) != p.Target || pipeline.ID != p.PipelineID || pipeline.Version != p.PipelineVersion || cr != p.ClusterCredential {
 		return app, httpx.Fail(409, "revision_conflict", "配置、绑定、CD 或集群凭据已变化，请重新预览")
+	}
+	artifact, e := usableArtifact(ctx, q, a, app, p.ArtifactID)
+	if e != nil {
+		return app, e
+	}
+	if artifact.ImageRepository+"@"+artifact.Digest != p.ImageRef {
+		return app, httpx.Fail(409, "artifact_unavailable", "产物与快照不一致")
 	}
 	return app, s.releaseSecrets(ctx, q, a, app, p.SecretRefs)
 }
@@ -375,7 +380,13 @@ func (s *Service) ConfirmRelease(ctx context.Context, a auth.Actor, id string, i
 		if e != nil {
 			return idempotency.Result{}, e
 		}
+		// Replay permissions cover the exact frozen resources, including resources
+		// enabled only by an environment override.
+		c.DeployValues = plan.Chart.Values
 		if e = releasePermission(ctx, q, a, app, c, plan.Target); e != nil {
+			return idempotency.Result{}, e
+		}
+		if _, e = usableArtifact(ctx, q, a, app, plan.ArtifactID); e != nil {
 			return idempotency.Result{}, e
 		}
 		return idempotency.Execute(ctx, q, a.ID, "createReleaseRequest", key, "POST", "/api/apps/"+id+"/deployments", in, func() (idempotency.Result, error) {
@@ -451,7 +462,8 @@ func (s *Service) GetDeployment(ctx context.Context, a auth.Actor, id string) (D
 			return Deployment{}, e
 		}
 		d, e := deploymentDTO(r.ID, r.RequestID, r.AppID, r.BindingID, r.ArtifactID, r.ConfigVersion, r.Status, r.Kind, r.HelmRevision, r.CreatedAt, r.Snapshot)
-		d.StartedAt, d.FinishedAt, d.ErrorCode = r.StartedAt, r.FinishedAt, r.ErrorCode
+		d.StartedAt, d.FinishedAt, d.ErrorCode, d.SourceDeploymentID = r.StartedAt, r.FinishedAt, r.ErrorCode, r.SourceDeploymentID
+		d.Revision = r.Revision
 		return d, e
 	})
 }
@@ -480,7 +492,8 @@ func (s *Service) ListDeployments(ctx context.Context, a auth.Actor, id string, 
 			if e != nil {
 				return out, e
 			}
-			d.StartedAt, d.FinishedAt, d.ErrorCode = r.StartedAt, r.FinishedAt, r.ErrorCode
+			d.StartedAt, d.FinishedAt, d.ErrorCode, d.SourceDeploymentID = r.StartedAt, r.FinishedAt, r.ErrorCode, r.SourceDeploymentID
+			d.Revision = r.Revision
 			out.Items = append(out.Items, d)
 		}
 		return out, nil

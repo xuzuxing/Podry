@@ -197,6 +197,26 @@ func TestHelmRefusesForeignReleaseWithoutWrites(t *testing.T) {
 	}
 }
 
+func TestHelmObservesTypedPodListWithoutPerItemTypeMeta(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "inferred-pod", false: "explicit-foreign-kind"}[typed], func(t *testing.T) {
+			f := newHelmFixture(t, "Job")
+			want := "succeeded"
+			if typed {
+				f.pods[0].SetAPIVersion("")
+				f.pods[0].SetKind("")
+			} else {
+				f.pods[0].SetKind("Job")
+				want = "observing"
+			}
+			o, err := NewHelm().Observe(context.Background(), f.input)
+			if err != nil || o.State != want || f.writes.Load() != 0 {
+				t.Fatalf("typed PodList observation=%+v err=%v", o, err)
+			}
+		})
+	}
+}
+
 type countingTransport struct{ count *atomic.Int32 }
 
 func (t countingTransport) RoundTrip(*http.Request) (*http.Response, error) {

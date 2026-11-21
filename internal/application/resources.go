@@ -33,10 +33,18 @@ func (s *Service) readApplicationResources(ctx context.Context, q *sqlcdb.Querie
 	if err := auth.LockActor(ctx, q, a); err != nil {
 		return out, err
 	}
-	if _, err := view(ctx, q, a, appID); err != nil {
+	app, err := q.GetApplication(ctx, appID)
+	if err != nil {
 		return out, err
 	}
-	var err error
+	// Membership mutations take these same locks. Rechecking in the final
+	// transaction keeps a revoked project grant from racing a cache write.
+	if _, err := lockProject(ctx, q, a, app.ProjectID, "view"); err != nil {
+		return out, err
+	}
+	if _, err := q.ShareApplication(ctx, appID); err != nil {
+		return out, err
+	}
 	out.Binding, err = q.GetReleaseBinding(ctx, sqlcdb.GetReleaseBindingParams{ID: bindingID, AppID: appID})
 	if err != nil {
 		return out, err
@@ -103,14 +111,28 @@ func (s *Service) ListResources(ctx context.Context, a auth.Actor, id, binding s
 	if err != nil {
 		return nil, err
 	}
+	return s.observeResources(ctx, a, id, binding, before, nil)
+}
+
+// finish runs in the observation transaction, after all network I/O and all
+// authorization checks. Pollers use it to fence the cache write and complete
+// their lease atomically; interactive callers need no scheduling state.
+func (s *Service) observeResources(ctx context.Context, a auth.Actor, id, binding string, before applicationRead, finish func(*sqlcdb.Queries, error) error) ([]resource.Object, error) {
+	// Interactive reads and poll claims share the database clock. Host clock
+	// skew must not let a failed poll delete a newer interactive observation.
+	startedAt, err := s.q.BindingObservationClock(ctx)
+	if err != nil {
+		return nil, err
+	}
 	reader := resource.New(s.pool, s.vault, string(s.cursorKey))
 	out, readErr := reader.ReadOwned(ctx, a, before.Binding.ClusterID, rootsForRead(before.Roots), false, true)
+	out.ObservedAt = startedAt
 	if readErr != nil && out.CredentialID == "" {
 		return nil, readErr
 	}
 	// Revalidate actor, target, resource records, execution revision and credential
 	// in a short transaction after all network reads. No database lock spans I/O.
-	if err = reader.RecheckOwned(ctx, a, out); err != nil {
+	if err := reader.RecheckOwned(ctx, a, out); err != nil {
 		return nil, err
 	}
 	_, err = database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (bool, error) {
@@ -120,6 +142,16 @@ func (s *Service) ListResources(ctx context.Context, a auth.Actor, id, binding s
 		}
 		if !sameRead(before, after) {
 			return false, httpx.Fail(409, "revision_conflict", "绑定、发布或资源身份已变化，请重新查询")
+		}
+		if e = reader.RecheckOwnedQuery(ctx, q, a, out); e != nil {
+			return false, e
+		}
+		// Pollers lock their scheduling row before the cache row, matching the
+		// failure path. Both the lease completion and observation roll back together.
+		if finish != nil {
+			if e = finish(q, readErr); e != nil {
+				return false, e
+			}
 		}
 		if before.Latest.ID != "" && out.CredentialID == before.CredentialID && out.CredentialVersion == before.CredentialVersion {
 			health := "unknown"

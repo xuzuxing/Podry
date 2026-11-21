@@ -10,13 +10,49 @@ import (
 	"time"
 )
 
+const cancelUnclaimedBuildAttempt = `-- name: CancelUnclaimedBuildAttempt :one
+UPDATE build_attempts SET stage='finished',status='canceled',finished_at=clock_timestamp(),
+ lease_owner=NULL,lease_expires_at=NULL,revision=revision+1
+WHERE id=$1 AND stage='planned' AND job_uid IS NULL AND cancel_requested_at IS NOT NULL
+ AND (lease_expires_at IS NULL OR lease_expires_at<clock_timestamp()) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
+`
+
+func (q *Queries) CancelUnclaimedBuildAttempt(ctx context.Context, id string) (BuildAttempt, error) {
+	row := q.db.QueryRow(ctx, cancelUnclaimedBuildAttempt, id)
+	var i BuildAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.BuildID,
+		&i.AttemptNo,
+		&i.Status,
+		&i.BuildClusterID,
+		&i.Namespace,
+		&i.JobName,
+		&i.JobUid,
+		&i.ExecutionSpec,
+		&i.ExecutionHash,
+		&i.Stage,
+		&i.LeaseOwner,
+		&i.LeaseExpiresAt,
+		&i.Revision,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
 const claimBuildAttempt = `-- name: ClaimBuildAttempt :one
 WITH candidate AS (
- SELECT id FROM build_attempts WHERE status IN ('queued','running','unknown') AND next_poll_at<=now()
+ SELECT id FROM build_attempts WHERE status IN ('queued','running','canceling','unknown') AND next_poll_at<=now()
  AND (lease_expires_at IS NULL OR lease_expires_at<now()) ORDER BY next_poll_at,id FOR UPDATE SKIP LOCKED LIMIT 1
 )
 UPDATE build_attempts SET lease_owner=$1,lease_expires_at=now()+interval '60 seconds',revision=revision+1
-WHERE id IN (SELECT id FROM candidate) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability
+WHERE id IN (SELECT id FROM candidate) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
 `
 
 func (q *Queries) ClaimBuildAttempt(ctx context.Context, leaseOwner *string) (BuildAttempt, error) {
@@ -42,6 +78,8 @@ func (q *Queries) ClaimBuildAttempt(ctx context.Context, leaseOwner *string) (Bu
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
 	)
 	return i, err
 }
@@ -69,14 +107,14 @@ func (q *Queries) CountBuilds(ctx context.Context, appID string) (int64, error) 
 }
 
 const createArtifact = `-- name: CreateArtifact :one
-INSERT INTO artifacts(id,app_id,build_id,attempt_id,image_repository,digest) VALUES($1,$2,$3,$4,$5,$6) RETURNING id, app_id, build_id, attempt_id, image_repository, digest, source, created_at
+INSERT INTO artifacts(id,app_id,build_id,attempt_id,image_repository,digest) VALUES($1,$2,$3,$4,$5,$6) RETURNING id, app_id, build_id, attempt_id, image_repository, digest, source, created_at, registry_id, registry_credential_id, registry_credential_version, imported_by
 `
 
 type CreateArtifactParams struct {
 	ID              string
 	AppID           string
-	BuildID         string
-	AttemptID       string
+	BuildID         *string
+	AttemptID       *string
 	ImageRepository string
 	Digest          string
 }
@@ -100,6 +138,10 @@ func (q *Queries) CreateArtifact(ctx context.Context, arg CreateArtifactParams) 
 		&i.Digest,
 		&i.Source,
 		&i.CreatedAt,
+		&i.RegistryID,
+		&i.RegistryCredentialID,
+		&i.RegistryCredentialVersion,
+		&i.ImportedBy,
 	)
 	return i, err
 }
@@ -144,7 +186,7 @@ func (q *Queries) CreateBuild(ctx context.Context, arg CreateBuildParams) (Build
 
 const createBuildAttempt = `-- name: CreateBuildAttempt :one
 INSERT INTO build_attempts(id,build_id,attempt_no,build_cluster_id,namespace,job_name,execution_spec,execution_hash)
-VALUES($1,$2,1,$3,$4,$5,$6,$7) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability
+VALUES($1,$2,1,$3,$4,$5,$6,$7) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
 `
 
 type CreateBuildAttemptParams struct {
@@ -188,6 +230,107 @@ func (q *Queries) CreateBuildAttempt(ctx context.Context, arg CreateBuildAttempt
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
+const createExternalArtifact = `-- name: CreateExternalArtifact :one
+INSERT INTO artifacts(id,app_id,image_repository,digest,source,registry_id,registry_credential_id,registry_credential_version,imported_by)
+VALUES($1,$2,$3,$4,'external',$5,$6,$7,$8) RETURNING id, app_id, build_id, attempt_id, image_repository, digest, source, created_at, registry_id, registry_credential_id, registry_credential_version, imported_by
+`
+
+type CreateExternalArtifactParams struct {
+	ID                        string
+	AppID                     string
+	ImageRepository           string
+	Digest                    string
+	RegistryID                *string
+	RegistryCredentialID      *string
+	RegistryCredentialVersion *int32
+	ImportedBy                *string
+}
+
+func (q *Queries) CreateExternalArtifact(ctx context.Context, arg CreateExternalArtifactParams) (Artifact, error) {
+	row := q.db.QueryRow(ctx, createExternalArtifact,
+		arg.ID,
+		arg.AppID,
+		arg.ImageRepository,
+		arg.Digest,
+		arg.RegistryID,
+		arg.RegistryCredentialID,
+		arg.RegistryCredentialVersion,
+		arg.ImportedBy,
+	)
+	var i Artifact
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.BuildID,
+		&i.AttemptID,
+		&i.ImageRepository,
+		&i.Digest,
+		&i.Source,
+		&i.CreatedAt,
+		&i.RegistryID,
+		&i.RegistryCredentialID,
+		&i.RegistryCredentialVersion,
+		&i.ImportedBy,
+	)
+	return i, err
+}
+
+const createRetryBuildAttempt = `-- name: CreateRetryBuildAttempt :one
+INSERT INTO build_attempts(id,build_id,attempt_no,build_cluster_id,namespace,job_name,execution_spec,execution_hash)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
+`
+
+type CreateRetryBuildAttemptParams struct {
+	ID             string
+	BuildID        string
+	AttemptNo      int32
+	BuildClusterID string
+	Namespace      string
+	JobName        string
+	ExecutionSpec  []byte
+	ExecutionHash  string
+}
+
+func (q *Queries) CreateRetryBuildAttempt(ctx context.Context, arg CreateRetryBuildAttemptParams) (BuildAttempt, error) {
+	row := q.db.QueryRow(ctx, createRetryBuildAttempt,
+		arg.ID,
+		arg.BuildID,
+		arg.AttemptNo,
+		arg.BuildClusterID,
+		arg.Namespace,
+		arg.JobName,
+		arg.ExecutionSpec,
+		arg.ExecutionHash,
+	)
+	var i BuildAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.BuildID,
+		&i.AttemptNo,
+		&i.Status,
+		&i.BuildClusterID,
+		&i.Namespace,
+		&i.JobName,
+		&i.JobUid,
+		&i.ExecutionSpec,
+		&i.ExecutionHash,
+		&i.Stage,
+		&i.LeaseOwner,
+		&i.LeaseExpiresAt,
+		&i.Revision,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
 	)
 	return i, err
 }
@@ -248,7 +391,7 @@ func (q *Queries) GetBuild(ctx context.Context, id string) (Build, error) {
 }
 
 const getBuildAttempt = `-- name: GetBuildAttempt :one
-SELECT id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability FROM build_attempts WHERE build_id=$1 AND attempt_no=$2
+SELECT id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by FROM build_attempts WHERE build_id=$1 AND attempt_no=$2
 `
 
 type GetBuildAttemptParams struct {
@@ -279,6 +422,8 @@ func (q *Queries) GetBuildAttempt(ctx context.Context, arg GetBuildAttemptParams
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
 	)
 	return i, err
 }
@@ -314,7 +459,7 @@ func (q *Queries) HasActiveBuilds(ctx context.Context, appID string) (bool, erro
 }
 
 const listArtifacts = `-- name: ListArtifacts :many
-SELECT id, app_id, build_id, attempt_id, image_repository, digest, source, created_at FROM artifacts WHERE app_id=$1 ORDER BY created_at DESC,id LIMIT $3 OFFSET $2
+SELECT id, app_id, build_id, attempt_id, image_repository, digest, source, created_at, registry_id, registry_credential_id, registry_credential_version, imported_by FROM artifacts WHERE app_id=$1 ORDER BY created_at DESC,id LIMIT $3 OFFSET $2
 `
 
 type ListArtifactsParams struct {
@@ -341,6 +486,10 @@ func (q *Queries) ListArtifacts(ctx context.Context, arg ListArtifactsParams) ([
 			&i.Digest,
 			&i.Source,
 			&i.CreatedAt,
+			&i.RegistryID,
+			&i.RegistryCredentialID,
+			&i.RegistryCredentialVersion,
+			&i.ImportedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -353,7 +502,7 @@ func (q *Queries) ListArtifacts(ctx context.Context, arg ListArtifactsParams) ([
 }
 
 const listBuildAttempts = `-- name: ListBuildAttempts :many
-SELECT id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability FROM build_attempts WHERE build_id=$1 ORDER BY attempt_no
+SELECT id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by FROM build_attempts WHERE build_id=$1 ORDER BY attempt_no
 `
 
 func (q *Queries) ListBuildAttempts(ctx context.Context, buildID string) ([]BuildAttempt, error) {
@@ -385,6 +534,8 @@ func (q *Queries) ListBuildAttempts(ctx context.Context, buildID string) ([]Buil
 			&i.FinishedAt,
 			&i.ErrorCode,
 			&i.LogAvailability,
+			&i.CancelRequestedAt,
+			&i.CancelRequestedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -437,9 +588,70 @@ func (q *Queries) ListBuilds(ctx context.Context, arg ListBuildsParams) ([]Build
 	return items, nil
 }
 
+const lockBuild = `-- name: LockBuild :one
+SELECT id, app_id, pipeline_id, config_version, commit_sha, status, attempt_no, artifact_id, requested_by, created_at FROM builds WHERE id=$1 FOR UPDATE
+`
+
+func (q *Queries) LockBuild(ctx context.Context, id string) (Build, error) {
+	row := q.db.QueryRow(ctx, lockBuild, id)
+	var i Build
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.PipelineID,
+		&i.ConfigVersion,
+		&i.CommitSha,
+		&i.Status,
+		&i.AttemptNo,
+		&i.ArtifactID,
+		&i.RequestedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const lockBuildAttempt = `-- name: LockBuildAttempt :one
+SELECT id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by FROM build_attempts WHERE build_id=$1 AND attempt_no=$2 FOR UPDATE
+`
+
+type LockBuildAttemptParams struct {
+	BuildID   string
+	AttemptNo int32
+}
+
+func (q *Queries) LockBuildAttempt(ctx context.Context, arg LockBuildAttemptParams) (BuildAttempt, error) {
+	row := q.db.QueryRow(ctx, lockBuildAttempt, arg.BuildID, arg.AttemptNo)
+	var i BuildAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.BuildID,
+		&i.AttemptNo,
+		&i.Status,
+		&i.BuildClusterID,
+		&i.Namespace,
+		&i.JobName,
+		&i.JobUid,
+		&i.ExecutionSpec,
+		&i.ExecutionHash,
+		&i.Stage,
+		&i.LeaseOwner,
+		&i.LeaseExpiresAt,
+		&i.Revision,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
 const markBuildCreateIntent = `-- name: MarkBuildCreateIntent :one
 UPDATE build_attempts SET stage='creating',revision=revision+1
-WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_expires_at>clock_timestamp() AND stage='planned' RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability
+WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_expires_at>clock_timestamp() AND stage='planned'
+ AND cancel_requested_at IS NULL RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
 `
 
 type MarkBuildCreateIntentParams struct {
@@ -471,6 +683,8 @@ func (q *Queries) MarkBuildCreateIntent(ctx context.Context, arg MarkBuildCreate
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
 	)
 	return i, err
 }
@@ -479,7 +693,7 @@ const nextBuildArchive = `-- name: NextBuildArchive :one
 UPDATE build_attempts SET next_poll_at=now()+interval '30 seconds'
 WHERE id=(SELECT id FROM build_attempts WHERE stage='finished' AND job_uid IS NOT NULL AND log_availability IN ('runtime','unavailable')
  AND finished_at>now()-interval '7 days' AND next_poll_at<=now()
- ORDER BY next_poll_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability
+ ORDER BY next_poll_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
 `
 
 func (q *Queries) NextBuildArchive(ctx context.Context) (BuildAttempt, error) {
@@ -505,6 +719,94 @@ func (q *Queries) NextBuildArchive(ctx context.Context) (BuildAttempt, error) {
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
+const otherActiveBuildAttempt = `-- name: OtherActiveBuildAttempt :one
+SELECT EXISTS(SELECT 1 FROM build_attempts WHERE build_id=$1 AND attempt_no<>$2
+ AND (stage<>'finished' OR status IN ('queued','running','canceling','unknown') OR lease_expires_at>clock_timestamp()))
+`
+
+type OtherActiveBuildAttemptParams struct {
+	BuildID   string
+	AttemptNo int32
+}
+
+func (q *Queries) OtherActiveBuildAttempt(ctx context.Context, arg OtherActiveBuildAttemptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, otherActiveBuildAttempt, arg.BuildID, arg.AttemptNo)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const requestBuildCancel = `-- name: RequestBuildCancel :one
+UPDATE build_attempts SET cancel_requested_at=COALESCE(cancel_requested_at,clock_timestamp()),
+ cancel_requested_by=COALESCE(cancel_requested_by,$2::uuid),
+ status=CASE WHEN status='unknown' THEN status ELSE 'canceling' END,next_poll_at=clock_timestamp()
+WHERE id=$1 AND stage<>'finished' RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
+`
+
+type RequestBuildCancelParams struct {
+	ID      string
+	ActorID string
+}
+
+func (q *Queries) RequestBuildCancel(ctx context.Context, arg RequestBuildCancelParams) (BuildAttempt, error) {
+	row := q.db.QueryRow(ctx, requestBuildCancel, arg.ID, arg.ActorID)
+	var i BuildAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.BuildID,
+		&i.AttemptNo,
+		&i.Status,
+		&i.BuildClusterID,
+		&i.Namespace,
+		&i.JobName,
+		&i.JobUid,
+		&i.ExecutionSpec,
+		&i.ExecutionHash,
+		&i.Stage,
+		&i.LeaseOwner,
+		&i.LeaseExpiresAt,
+		&i.Revision,
+		&i.NextPollAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.ErrorCode,
+		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
+const retryBuild = `-- name: RetryBuild :one
+UPDATE builds SET status='queued',attempt_no=attempt_no+1,artifact_id=NULL
+WHERE id=$1 AND attempt_no=$2 AND status IN ('failed','canceled') AND artifact_id IS NULL RETURNING id, app_id, pipeline_id, config_version, commit_sha, status, attempt_no, artifact_id, requested_by, created_at
+`
+
+type RetryBuildParams struct {
+	ID        string
+	AttemptNo int32
+}
+
+func (q *Queries) RetryBuild(ctx context.Context, arg RetryBuildParams) (Build, error) {
+	row := q.db.QueryRow(ctx, retryBuild, arg.ID, arg.AttemptNo)
+	var i Build
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.PipelineID,
+		&i.ConfigVersion,
+		&i.CommitSha,
+		&i.Status,
+		&i.AttemptNo,
+		&i.ArtifactID,
+		&i.RequestedBy,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -570,7 +872,7 @@ UPDATE build_attempts SET stage=$4,status=$5,job_uid=COALESCE(job_uid,$6::text),
  finished_at=CASE WHEN $4::text='finished' THEN now() ELSE finished_at END,
  log_availability=CASE WHEN log_availability='archived' THEN log_availability ELSE $8::text END,
  lease_owner=NULL,lease_expires_at=NULL,next_poll_at=now()+interval '2 seconds',revision=revision+1
-WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_expires_at>clock_timestamp() RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability
+WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_expires_at>clock_timestamp() RETURNING id, build_id, attempt_no, status, build_cluster_id, namespace, job_name, job_uid, execution_spec, execution_hash, stage, lease_owner, lease_expires_at, revision, next_poll_at, started_at, finished_at, error_code, log_availability, cancel_requested_at, cancel_requested_by
 `
 
 type TransitionBuildAttemptParams struct {
@@ -616,6 +918,41 @@ func (q *Queries) TransitionBuildAttempt(ctx context.Context, arg TransitionBuil
 		&i.FinishedAt,
 		&i.ErrorCode,
 		&i.LogAvailability,
+		&i.CancelRequestedAt,
+		&i.CancelRequestedBy,
+	)
+	return i, err
+}
+
+const verifiedArtifact = `-- name: VerifiedArtifact :one
+SELECT a.id, a.app_id, a.build_id, a.attempt_id, a.image_repository, a.digest, a.source, a.created_at, a.registry_id, a.registry_credential_id, a.registry_credential_version, a.imported_by FROM artifacts a
+LEFT JOIN builds b ON b.id=a.build_id LEFT JOIN build_attempts t ON t.id=a.attempt_id
+WHERE a.id=$1 AND a.app_id=$2 AND (
+ (a.source='external' AND a.build_id IS NULL AND a.attempt_id IS NULL AND a.registry_id IS NOT NULL AND a.imported_by IS NOT NULL)
+ OR (a.source='build' AND b.app_id=a.app_id AND t.build_id=b.id AND t.status='succeeded' AND b.status='succeeded' AND b.artifact_id=a.id))
+`
+
+type VerifiedArtifactParams struct {
+	ID    string
+	AppID string
+}
+
+func (q *Queries) VerifiedArtifact(ctx context.Context, arg VerifiedArtifactParams) (Artifact, error) {
+	row := q.db.QueryRow(ctx, verifiedArtifact, arg.ID, arg.AppID)
+	var i Artifact
+	err := row.Scan(
+		&i.ID,
+		&i.AppID,
+		&i.BuildID,
+		&i.AttemptID,
+		&i.ImageRepository,
+		&i.Digest,
+		&i.Source,
+		&i.CreatedAt,
+		&i.RegistryID,
+		&i.RegistryCredentialID,
+		&i.RegistryCredentialVersion,
+		&i.ImportedBy,
 	)
 	return i, err
 }

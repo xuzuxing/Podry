@@ -132,7 +132,7 @@ func TestBuildOnlyWorkflowWithoutRegisteredCluster(t *testing.T) {
 func TestUpgradeIdentityDatabasePreservesExistingRows(t *testing.T) {
 	dsn, pool := testDatabase(t)
 	ctx := context.Background()
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 16; i++ {
 		if err := database.Migrate(dsn, true); err != nil {
 			t.Fatal(err)
 		}
@@ -275,7 +275,7 @@ func TestClusterRegistrationGrantsWithoutKubernetes(t *testing.T) {
 	f.call("GET", "/api/clusters/"+c.clusterID+"/resource-grants", c.developer, nil, 403)
 	f.call("DELETE", "/api/clusters/"+c.clusterID+"/resource-grants/"+grant.ID, c.admin, nil, 204)
 	f.call("GET", "/api/clusters/"+c.clusterID, c.developer, nil, 404)
-	f.call("POST", "/api/environments", c.admin, map[string]any{"name": "unsafe", "production": false, "autoDeployAllowed": true}, 422)
+	f.call("POST", "/api/environments", c.admin, map[string]any{"name": "unsafe", "production": true, "autoDeployAllowed": true}, 422)
 	f.call("POST", "/api/registries", c.admin, map[string]any{"name": "bad", "endpoint": "https://user:pass@registry.test", "credentialId": nil}, 422)
 	f.call("PATCH", "/api/clusters/"+c.clusterID, c.admin, map[string]any{"name": "Renamed"}, 200)
 	f.call("POST", "/api/clusters/"+c.clusterID+"/resource-grants", c.admin, map[string]any{"principalType": "user", "principalId": c.dev.ID, "namespace": "demo", "resources": []string{"bad/group/resource"}, "actions": []string{"resource.write"}}, 422)

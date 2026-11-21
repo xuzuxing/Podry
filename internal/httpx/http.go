@@ -164,6 +164,16 @@ func checkFields(data []byte, typ reflect.Type) error {
 	}
 	return nil
 }
+
+// ValidateJSONObject checks raw provider JSON without discarding the signed bytes.
+// Callers must separately bound input size; unknown provider fields are permitted.
+func ValidateJSONObject(data []byte) error {
+	if err := checkJSON(data); err != nil {
+		return Invalid("JSON 无效、字段重复或嵌套过深")
+	}
+	return nil
+}
+
 func checkJSON(data []byte) error {
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.UseNumber()
@@ -293,6 +303,9 @@ func RequestBoundary(next http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "api" && parts[1] == "builds" && UUID(parts[2]) == nil && parts[3] == "logs" {
 			timeout = 5 * time.Minute
+		}
+		if r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "api" && parts[1] == "exec-sessions" && UUID(parts[2]) == nil && parts[3] == "connect" {
+			timeout = time.Hour
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

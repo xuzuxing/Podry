@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	helmchart "helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
@@ -84,6 +85,27 @@ func Render(in Input) (Result, error) {
 	if err != nil {
 		return out, err
 	}
+	return render(in, ch, archive.Bytes())
+}
+
+// RenderArchived uses the exact approved historical package. Missing, altered or
+// unsupported packages fail instead of falling back to the current built-in Chart.
+func RenderArchived(in Input, archived Result) (Result, error) {
+	if archived.Name != "podry" || archived.Version != "1.0.0" || archived.SHA256 != PackageSHA256 || Hash(archived.Package) != archived.SHA256 {
+		return Result{}, fmt.Errorf("historical chart unavailable")
+	}
+	ch, err := loader.LoadArchive(bytes.NewReader(archived.Package))
+	if err != nil || ch.Name() != archived.Name || ch.Metadata.Version != archived.Version {
+		return Result{}, fmt.Errorf("historical chart invalid")
+	}
+	return render(in, ch, archived.Package)
+}
+
+func render(in Input, ch *helmchart.Chart, archive []byte) (Result, error) {
+	var out Result
+	if in.WorkloadKind != "Deployment" && in.WorkloadKind != "Job" {
+		return out, fmt.Errorf("unsupported workload")
+	}
 	// Clone caller values; only platform-owned fields can supply image or identity.
 	raw, err := json.Marshal(in.Values)
 	if err != nil {
@@ -133,5 +155,5 @@ func Render(in Input) (Result, error) {
 	if !ok {
 		return out, fmt.Errorf("invalid chart values")
 	}
-	return Result{Name: ch.Name(), Version: ch.Metadata.Version, SHA256: Hash(archive.Bytes()), Package: archive.Bytes(), Values: map[string]any(merged), Manifest: manifest.String(), ManifestSHA256: Hash([]byte(manifest.String()))}, nil
+	return Result{Name: ch.Name(), Version: ch.Metadata.Version, SHA256: Hash(archive), Package: archive, Values: map[string]any(merged), Manifest: manifest.String(), ManifestSHA256: Hash([]byte(manifest.String()))}, nil
 }

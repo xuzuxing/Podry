@@ -16,7 +16,6 @@ import (
 	helmrelease "helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
@@ -265,17 +264,16 @@ func (h *Helm) Observe(ctx context.Context, in Input) (Observation, error) {
 	return o, nil
 }
 func successfulPod(ctx context.Context, client *kubernetes.Client, job Resource, p Plan) bool {
-	var list struct {
-		Items    []unstructured.Unstructured `json:"items"`
-		Metadata metav1.ListMeta             `json:"metadata"`
-	}
+	// Typed PodList responses may omit per-item TypeMeta. The Kubernetes list
+	// decoder infers it from the enclosing list without relaxing Pod identity.
+	var list unstructured.UnstructuredList
 	err := client.Get(ctx, "/api/v1/namespaces/"+job.Namespace+"/pods", url.Values{"labelSelector": {"job-name=" + job.Name}, "limit": {"100"}}, &list)
-	if err != nil || list.Metadata.Continue != "" {
+	if err != nil || list.GetAPIVersion() != "v1" || list.GetKind() != "PodList" || list.GetContinue() != "" {
 		return false
 	}
 	for _, pod := range list.Items {
 		phase, _, _ := unstructured.NestedString(pod.Object, "status", "phase")
-		if phase != "Succeeded" || !owned(&pod, p) || pod.GetNamespace() != job.Namespace || pod.GetUID() == "" {
+		if phase != "Succeeded" || pod.GetAPIVersion() != "v1" || pod.GetKind() != "Pod" || !owned(&pod, p) || pod.GetNamespace() != job.Namespace || pod.GetUID() == "" {
 			continue
 		}
 		containers, _, _ := unstructured.NestedSlice(pod.Object, "spec", "containers")

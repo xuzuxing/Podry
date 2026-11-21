@@ -16,8 +16,12 @@ ON CONFLICT(binding_id) DO UPDATE SET binding_version=EXCLUDED.binding_version,d
 WHERE binding_observations.observed_at<=EXCLUDED.observed_at;
 -- name: GetApplicationHealth :one
 SELECT health FROM application_health WHERE app_id=$1;
+
+-- name: BindingObservationClock :one
+SELECT clock_timestamp()::timestamptz AS observed_at;
 -- name: LatestVerifiedArtifact :one
-SELECT a.* FROM artifacts a JOIN builds b ON b.id=a.build_id JOIN build_attempts t ON t.id=a.attempt_id
-WHERE a.app_id=$1 AND b.app_id=a.app_id AND t.build_id=b.id AND a.source='build'
-AND b.status='succeeded' AND t.status='succeeded' AND b.artifact_id=a.id
+SELECT a.* FROM artifacts a LEFT JOIN builds b ON b.id=a.build_id LEFT JOIN build_attempts t ON t.id=a.attempt_id
+WHERE a.app_id=$1 AND ((a.source='external' AND a.build_id IS NULL AND a.attempt_id IS NULL AND a.registry_id IS NOT NULL AND a.imported_by IS NOT NULL)
+OR (b.app_id=a.app_id AND t.build_id=b.id AND a.source='build'
+AND b.status='succeeded' AND t.status='succeeded' AND b.artifact_id=a.id))
 ORDER BY a.created_at DESC,a.id DESC LIMIT 1;

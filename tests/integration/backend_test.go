@@ -34,6 +34,8 @@ import (
 	"github.com/xuzuxing/podry/internal/idempotency"
 	"github.com/xuzuxing/podry/internal/platform"
 	"github.com/xuzuxing/podry/internal/project"
+	"github.com/xuzuxing/podry/internal/release"
+	"github.com/xuzuxing/podry/internal/resource"
 	"github.com/xuzuxing/podry/internal/server"
 )
 
@@ -569,10 +571,20 @@ func TestServiceRoleCannotRunDDL(t *testing.T) {
 		"GRANT INSERT,UPDATE ON users TO " + quoted,
 		"GRANT INSERT,UPDATE,DELETE ON teams,team_members,projects,project_members,idempotency_records TO " + quoted,
 		"GRANT INSERT ON audit_events TO " + quoted,
+		"GRANT INSERT ON webhook_deliveries TO " + quoted,
+		"GRANT INSERT,UPDATE,DELETE ON pipeline_push_authorizations TO " + quoted,
+		"GRANT INSERT,UPDATE,DELETE ON pipeline_deploy_authorizations TO " + quoted,
+		"GRANT INSERT,UPDATE ON auto_deploy_intents TO " + quoted,
+		"GRANT INSERT,UPDATE ON builds,build_attempts TO " + quoted,
+		"GRANT INSERT ON artifacts TO " + quoted,
 		"GRANT INSERT ON release_snapshots TO " + quoted,
 		"GRANT INSERT,UPDATE ON release_requests,deployments,deployment_resources TO " + quoted,
 		"GRANT INSERT,UPDATE ON binding_observations TO " + quoted,
+		"GRANT DELETE ON binding_observations TO " + quoted,
+		"GRANT INSERT,UPDATE ON binding_health_polls TO " + quoted,
+		"GRANT INSERT,DELETE ON application_drift_observations TO " + quoted,
 		"GRANT INSERT,UPDATE ON deployment_previews TO " + quoted,
+		"GRANT INSERT,UPDATE ON resource_previews,resource_operations TO " + quoted,
 		"GRANT INSERT,UPDATE ON credentials,clusters,applications,app_environment_bindings TO " + quoted,
 		"GRANT INSERT ON secret_versions,registries,environments,app_config_versions TO " + quoted,
 		"GRANT INSERT,UPDATE ON deployment_targets TO " + quoted,
@@ -626,6 +638,165 @@ func TestServiceRoleCannotRunDDL(t *testing.T) {
 	}
 	if _, err = runtime.Dependencies.Application.GetConfig(ctx, actor, app.ID, 0); err != nil {
 		t.Fatal("service configuration shared lock", err)
+	}
+	signing, err := runtime.Dependencies.Platform.CreateCredential(ctx, actor, platform.CredentialInput{Name: "service-webhook", Kind: "secret", Payload: map[string]any{"data": map[string]any{"webhookSecret": webhookTestSecret}}}, "service-role-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := runtime.Dependencies.Platform.CreateRegistry(ctx, actor, platform.RegistryInput{Name: "service-registry", Endpoint: "https://registry.example.test"}, "service-role-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := int32(1)
+	if _, err = runtime.Dependencies.Application.SaveConfig(ctx, actor, app.ID, application.ConfigInput{ExpectedVersion: &one, Section: "build", BuildConfig: &application.BuildConfig{Dockerfile: "Dockerfile", Context: ".", RegistryID: reg.ID, ImageRepository: "team/service", Platform: "linux/amd64", TimeoutSeconds: 600, BuildArgs: map[string]string{}}}, "service-role-test"); err != nil {
+		t.Fatal(err)
+	}
+	template, err := runtime.Dependencies.Application.CreateTemplate(ctx, actor, app.ID, application.TemplateInput{Template: "build_only", ExpectedConfigVersion: 2, ExpectedWorkflowVersion: &initialVersion, CI: &application.CI{Manual: true, Push: true, Branch: "main", WebhookCredentialID: &signing.ID}}, "service-push-template", "service-role-test")
+	if err != nil {
+		t.Fatal("service role push delegation", err)
+	}
+	var created application.TemplateResult
+	if err = json.Unmarshal(template.Body, &created); err != nil {
+		t.Fatal(err)
+	}
+	ping := []byte(`{"zen":"service-role"}`)
+	if result, err := runtime.Dependencies.Application.ReceiveGitHubWebhook(ctx, created.Workflow.Items[0].ID, webhookHeaders(ping, uuid.NewString(), "ping", webhookTestSecret), ping, "service-role-test"); err != nil || result.Status != "ignored" {
+		t.Fatal("service role signed delivery persistence", result, err)
+	}
+	if _, err = runtime.Pool.Exec(ctx, "DELETE FROM webhook_deliveries"); err == nil {
+		t.Fatal("service role can delete webhook history")
+	}
+	api := newResourceWriteAPI(t)
+	cred, err := runtime.Dependencies.Platform.CreateCredential(ctx, actor, platform.CredentialInput{Name: "service-kubeconfig", Kind: "kubeconfig", Payload: map[string]any{"apiServer": api.server.URL, "token": "resource-write-token", "insecureSkipTLSVerify": true}}, "service-role-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster, err := runtime.Dependencies.Platform.CreateCluster(ctx, actor, platform.ClusterInput{Name: "service-cluster", APIServer: api.server.URL, CredentialID: cred.ID}, "service-role-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Resources.WritesEnabled = true
+	api.objects["/api/v1/namespaces/demo/secrets/credentials"] = map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"namespace": "demo", "name": "credentials", "uid": "secret-uid", "resourceVersion": "7"}, "data": map[string]any{"password": "c2VydmljZS1yb2xl", "empty": ""}}
+	if _, err = runtime.Resources.RevealSecret(ctx, actor, cluster.ID, secretReveal(), "service-role-test"); err != nil {
+		t.Fatal("service role Secret reveal", err)
+	}
+	api.objects["/api/v1/namespaces/demo/pods/demo"] = map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"namespace": "demo", "name": "demo", "uid": "pod-uid", "resourceVersion": "4"}, "spec": map[string]any{"containers": []any{map[string]any{"name": "app"}}}}
+	session, err := runtime.Resources.CreateExecSession(ctx, actor, cluster.ID, execInput(false), "http://service.test", "service-role-test")
+	if err != nil {
+		t.Fatal("service role terminal create", err)
+	}
+	if err = runtime.Resources.CloseExecSession(ctx, actor, session.SessionID, "service-role-test"); err != nil {
+		t.Fatal("service role terminal close", err)
+	}
+	preview, err := runtime.Resources.DryRun(ctx, actor, cluster.ID, resource.DryRunInput{Documents: []resource.ManifestDocument{writeDoc("service-role-write")}}, "service-role-test")
+	if err != nil {
+		t.Fatal("service role resource preview", err)
+	}
+	accepted, err := runtime.Resources.Apply(ctx, actor, cluster.ID, "service-role-resource-key", resource.ApplyInput{PreviewID: preview.PreviewID}, "service-role-test")
+	if err != nil {
+		t.Fatal("service role resource enqueue", err)
+	}
+	if claimed, err := runtime.Resources.ProcessResourceOperation(ctx); err != nil || !claimed {
+		t.Fatal("service role resource worker", claimed, err)
+	}
+	var operation resource.Operation
+	if json.Unmarshal(accepted.Body, &operation) != nil {
+		t.Fatal("service role operation response")
+	}
+	result, err := runtime.Resources.GetOperation(ctx, actor, operation.ID)
+	if err != nil || result.Status != "succeeded" || api.writes != 1 {
+		t.Fatal("service role resource result", result, err)
+	}
+	ref := *result.Items[0].Ref
+	accepted, err = runtime.Resources.Act(ctx, actor, cluster.ID, "service-role-action-key", resource.ActionInput{Action: "delete", Ref: &ref}, "service-role-test")
+	if err != nil {
+		t.Fatal("service role action enqueue", err)
+	}
+	api.drop = true
+	if claimed, err := runtime.Resources.ProcessResourceOperation(ctx); err != nil || !claimed {
+		t.Fatal("service role action worker", claimed, err)
+	}
+	if json.Unmarshal(accepted.Body, &operation) != nil {
+		t.Fatal("service role action response")
+	}
+	result, err = runtime.Resources.GetOperation(ctx, actor, operation.ID)
+	if err != nil || result.Status != "unknown" || api.writes != 2 {
+		t.Fatal("service role uncertain action", result, err)
+	}
+	runtime.Resources.WritesEnabled = false
+	if _, err = runtime.Resources.ReconcileOperation(ctx, actor, operation.ID, "service-role-resource-reconcile", resource.ReconcileOperationInput{ExpectedRevision: result.Revision, Reason: "service role read-only recovery"}, "service-role-test"); err != nil {
+		t.Fatal("service role resource reconciliation", err)
+	}
+	result, err = runtime.Resources.GetOperation(ctx, actor, operation.ID)
+	if err != nil || result.Status != "succeeded" || api.writes != 2 {
+		t.Fatal("service role action result", result, err)
+	}
+	// The build INSERT trigger runs as the restricted caller, never SECURITY
+	// DEFINER. Exercise capture and automatic release admission with this role.
+	autoEnv, err := runtime.Dependencies.Platform.CreateEnvironment(ctx, actor, platform.EnvironmentInput{Name: "service-auto", AutoDeployAllowed: true}, "service-role-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := int32(2)
+	if _, err = runtime.Dependencies.Application.SaveConfig(ctx, actor, app.ID, application.ConfigInput{ExpectedVersion: &two, Section: "base", ChartConfig: &application.ChartConfig{WorkloadKind: "Deployment", ChartVersion: "1.0.0"}, DeployValues: map[string]any{"containerPort": float64(8080)}, SecretRefs: []application.SecretRef{}}, "service-role-test"); err != nil {
+		t.Fatal(err)
+	}
+	workflowVersion := int32(1)
+	if _, err = runtime.Dependencies.Application.CreateTemplate(ctx, actor, app.ID, application.TemplateInput{Template: "add_deploy", ExpectedConfigVersion: 3, ExpectedWorkflowVersion: &workflowVersion, Deployment: &struct {
+		Binding    application.BindingInput `json:"binding"`
+		Definition application.CD           `json:"definition"`
+	}{Binding: application.BindingInput{EnvironmentID: autoEnv.ID, Target: application.Target{ClusterID: cluster.ID, Namespace: "demo", ReleaseName: "service-auto"}, OverrideValues: map[string]any{}, AutoDeploy: true}, Definition: application.CD{TriggerMode: "on_ci_success", DeployTimeoutSeconds: 600}}}, "service-auto-template", "service-role-test"); err != nil {
+		t.Fatal("service role auto delegation", err)
+	}
+	buildID, attemptID, artifactID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO builds(id,app_id,pipeline_id,config_version,commit_sha,requested_by) VALUES($1,$2,$3,3,$4,$5)", []any{buildID, app.ID, created.Workflow.Items[0].ID, strings.Repeat("f", 40), actor.ID}},
+		{"INSERT INTO build_attempts(id,build_id,attempt_no,status,build_cluster_id,namespace,job_name,execution_spec,execution_hash,stage) VALUES($1,$2,1,'succeeded',$3,'fixture','service-auto-fixture','{}',$4,'finished')", []any{attemptID, buildID, cluster.ID, strings.Repeat("e", 64)}},
+		{"INSERT INTO artifacts(id,app_id,build_id,attempt_id,image_repository,digest) VALUES($1,$2,$3,$4,'registry.example.test/service',$5)", []any{artifactID, app.ID, buildID, attemptID, "sha256:" + strings.Repeat("d", 64)}},
+		{"UPDATE builds SET status='succeeded',artifact_id=$2 WHERE id=$1", []any{buildID, artifactID}},
+	} {
+		if _, err = runtime.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal("service role auto capture", err)
+		}
+	}
+	runtime.Dependencies.Application.UseReleases(releaseReady{})
+	if claimed, err := runtime.Dependencies.Application.ProcessAutoDeployOne(ctx); err != nil || !claimed {
+		t.Fatal("service role auto admission", claimed, err)
+	}
+	detail, err := runtime.Dependencies.Application.GetBuild(ctx, actor, buildID)
+	if err != nil || len(detail.AutoDeployments) != 1 || detail.AutoDeployments[0].Status != "dispatched" {
+		t.Fatal("service role auto result", detail, err)
+	}
+	if _, err = runtime.Pool.Exec(ctx, "DELETE FROM auto_deploy_intents"); err == nil {
+		t.Fatal("service role can delete automatic history")
+	}
+	runtime.Dependencies.Application.HealthPollingEnabled = true
+	if claimed, err := runtime.Dependencies.Application.ProcessHealthOne(ctx); err != nil || !claimed {
+		t.Fatal("service role health claim/invalidation/completion", claimed, err)
+	}
+	// Explicit reconciliation must also work under the restricted runtime role,
+	// with release execution disabled and no runtime Secret values opened.
+	requestID := *detail.AutoDeployments[0].RequestID
+	request, err := runtime.Dependencies.Application.GetReleaseRequest(ctx, actor, requestID)
+	if err != nil || request.DeploymentID == nil {
+		t.Fatal("service role reconciliation source", err)
+	}
+	id := *request.DeploymentID
+	if _, err = runtime.Pool.Exec(ctx, "UPDATE deployments SET status='unknown',revision=1,fencing_token=1 WHERE id=$1", id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runtime.Pool.Exec(ctx, "UPDATE deployment_targets SET active_deployment_id=$1,fencing_token=1 WHERE id=(SELECT target_id FROM deployments WHERE id=$1)", id); err != nil {
+		t.Fatal(err)
+	}
+	runtime.Dependencies.Application.UseReleases(release.New(runtime.Pool, nil, release.Settings{}, releaseExecutor{observe: func(_ context.Context, in release.Input) (release.Observation, error) {
+		revision := int32(1)
+		return release.Observation{State: "succeeded", Revision: &revision, Resources: releaseResources(t, in)}, nil
+	}}))
+	if _, err = runtime.Dependencies.Application.ReconcileDeployment(ctx, actor, id, application.ReconcileDeploymentInput{ExpectedRevision: 1, Reason: "service role recovery"}, "service-role-reconcile", "service-role-test"); err != nil {
+		t.Fatal("service role explicit reconciliation", err)
 	}
 	if _, err = runtime.Pool.Exec(ctx, "CREATE TABLE forbidden_ddl(id integer)"); err == nil {
 		t.Fatal("service role can create tables")

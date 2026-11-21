@@ -68,7 +68,10 @@ try {
         $previousErrorAction = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            docker exec -e PODRY_TEST_DATABASE_URL -e PODRY_TEST_BINARY -e PODRY_TEST_KUBE_PAYLOAD $testContainer /tmp/backend-integration.test '-test.v=true' '-test.timeout=180s' "-test.run=$TestPattern" 2>&1 | ForEach-Object { $_.ToString() }
+            # Includes shutdown, backup/restore, health, reconciliation races and terminal lifetimes.
+            # Only the suite-level budget grows; operation timeouts and worker leases
+            # keep their own limits.
+            docker exec -e PODRY_TEST_DATABASE_URL -e PODRY_TEST_BINARY -e PODRY_TEST_KUBE_PAYLOAD $testContainer /tmp/backend-integration.test '-test.v=true' '-test.timeout=900s' "-test.run=$TestPattern" 2>&1 | ForEach-Object { $_.ToString() }
             $testExitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousErrorAction

@@ -1,4 +1,4 @@
-// Package kubernetes provides bounded, read-only Kubernetes REST access.
+// Package kubernetes provides bounded Kubernetes REST access.
 package kubernetes
 
 import (
@@ -120,7 +120,7 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values, out any
 }
 
 // Write is reserved for platform-owned execution objects. Resource-browser
-// handlers continue to use the GET-only Open/Get paths.
+// browsing uses Open/Get; opt-in manifest writes use ResourceWrite separately.
 func (c *Client) Write(ctx context.Context, method, path string, input, output any) error {
 	if (method != http.MethodPost && method != http.MethodPatch) || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\\") || strings.Contains(path, "..") || strings.Contains(path, "//") {
 		return httpx.Invalid("Kubernetes 执行请求无效")

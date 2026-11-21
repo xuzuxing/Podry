@@ -37,9 +37,11 @@ type buildAPI struct {
 	mu                                                                      sync.Mutex
 	server                                                                  *httptest.Server
 	objects                                                                 map[string]map[string]any
-	creates, starts                                                         int
+	creates, starts, suspends                                               int
+	dropSuspend, cancelExited, cancelHeld, terminalHeld                     bool
 	dropCreate, dropSecret, dropStart, missing, complete, failed, badResult bool
 	digest                                                                  string
+	beforeRequest                                                           func(*http.Request)
 }
 
 func bm(v any) map[string]any { m, _ := v.(map[string]any); return m }
@@ -50,6 +52,9 @@ func newBuildAPI(t *testing.T, digest string) *buildAPI {
 	return k
 }
 func (k *buildAPI) serve(w http.ResponseWriter, r *http.Request) {
+	if k.beforeRequest != nil {
+		k.beforeRequest(r)
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if r.Header.Get("Authorization") != "Bearer build-fixture-token" {
@@ -109,10 +114,19 @@ func (k *buildAPI) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(409)
 			return
 		}
-		bm(o["spec"])["suspend"] = false
-		k.starts++
-		if k.dropStart {
-			k.dropStart = false
+		suspend := bm(patch["spec"])["suspend"] == true
+		bm(o["spec"])["suspend"] = suspend
+		if suspend {
+			k.suspends++
+		} else {
+			k.starts++
+		}
+		if (suspend && k.dropSuspend) || (!suspend && k.dropStart) {
+			if suspend {
+				k.dropSuspend = false
+			} else {
+				k.dropStart = false
+			}
 			conn, _, e := w.(http.Hijacker).Hijack()
 			if e == nil {
 				_ = conn.Close()
@@ -132,7 +146,7 @@ func (k *buildAPI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, o := range k.objects {
-			if o["kind"] == "Job" {
+			if o["kind"] == "Job" && r.URL.Query().Get("labelSelector") == "controller-uid="+fmt.Sprint(bm(o["metadata"])["uid"]) {
 				write(map[string]any{"items": []any{k.pod(o)}})
 				return
 			}
@@ -163,6 +177,9 @@ func (k *buildAPI) serve(w http.ResponseWriter, r *http.Request) {
 	if o["kind"] == "Job" && k.failed {
 		o["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Failed", "status": "True"}}}
 	}
+	if o["kind"] == "Job" && bm(o["spec"])["suspend"] == true && !k.complete && !k.failed && !k.cancelHeld {
+		o["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Suspended", "status": "True"}}, "active": 0}
+	}
 	write(o)
 }
 func (k *buildAPI) pod(j map[string]any) map[string]any {
@@ -170,7 +187,7 @@ func (k *buildAPI) pod(j map[string]any) map[string]any {
 	a := bm(m["annotations"])
 	var spec build.ExecutionSpec
 	for _, o := range k.objects {
-		if o["kind"] == "ConfigMap" {
+		if o["kind"] == "ConfigMap" && bm(bm(o["metadata"])["annotations"])["podry.io/attempt-id"] == a["podry.io/attempt-id"] {
 			_ = json.Unmarshal([]byte(bm(o["data"])["input.json"].(string)), &spec)
 		}
 	}
@@ -181,7 +198,14 @@ func (k *buildAPI) pod(j map[string]any) map[string]any {
 		result.AttemptID = "wrong-attempt"
 	}
 	raw, _ := json.Marshal(result)
-	return map[string]any{"metadata": map[string]any{"name": "build-pod", "uid": "pod-uid", "ownerReferences": []any{map[string]any{"uid": m["uid"], "kind": "Job", "controller": true}}}, "status": map[string]any{"containerStatuses": []any{map[string]any{"name": "build", "state": map[string]any{"terminated": map[string]any{"exitCode": 0, "message": string(raw)}}}}}}
+	phase := "Running"
+	if k.complete && !k.terminalHeld {
+		phase = "Succeeded"
+	}
+	if (k.failed && !k.terminalHeld) || k.cancelExited {
+		phase = "Failed"
+	}
+	return map[string]any{"metadata": map[string]any{"name": "build-pod", "uid": "pod-uid", "ownerReferences": []any{map[string]any{"uid": m["uid"], "kind": "Job", "controller": true}}}, "status": map[string]any{"phase": phase, "containerStatuses": []any{map[string]any{"name": "build", "state": map[string]any{"terminated": map[string]any{"exitCode": 0, "message": string(raw)}}}}}}
 }
 
 type buildFixture struct {

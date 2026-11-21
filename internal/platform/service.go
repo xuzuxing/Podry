@@ -322,8 +322,8 @@ func (s *Service) CreateEnvironment(ctx context.Context, a auth.Actor, in Enviro
 	if err != nil {
 		return Environment{}, err
 	}
-	if in.AutoDeployAllowed {
-		return Environment{}, httpx.Fail(422, "feature_not_available", "当前阶段只支持手动部署")
+	if in.AutoDeployAllowed && in.Production {
+		return Environment{}, httpx.Invalid("生产环境只能手动部署")
 	}
 	return database.Tx(ctx, s.pool, func(q *sqlcdb.Queries) (Environment, error) {
 		if err := auth.LockActor(ctx, q, a); err != nil {
@@ -332,12 +332,12 @@ func (s *Service) CreateEnvironment(ctx context.Context, a auth.Actor, in Enviro
 		if err := admin(a); err != nil {
 			return Environment{}, err
 		}
-		r, err := q.CreateEnvironment(ctx, sqlcdb.CreateEnvironmentParams{Name: name, Production: in.Production})
+		r, err := q.CreateEnvironment(ctx, sqlcdb.CreateEnvironmentParams{Name: name, Production: in.Production, AutoDeployAllowed: in.AutoDeployAllowed})
 		if err != nil {
 			return Environment{}, err
 		}
 		err = project.Record(ctx, q, a, nil, nil, "environment.create", req, map[string]string{"environmentId": r.ID})
-		return Environment{r.ID, r.Name, r.Production, false}, err
+		return Environment{r.ID, r.Name, r.Production, r.AutoDeployAllowed}, err
 	})
 }
 func (s *Service) ListClusters(ctx context.Context, a auth.Actor) ([]Cluster, error) {

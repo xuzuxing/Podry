@@ -37,7 +37,17 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8);
 -- name: CreateTarget :one
 INSERT INTO deployment_targets(cluster_id,namespace,release_name) VALUES($1,$2,$3) RETURNING *;
 -- name: CreateBinding :one
-INSERT INTO app_environment_bindings(app_id,environment_id,target_id) VALUES($1,$2,$3) RETURNING *;
+INSERT INTO app_environment_bindings(app_id,environment_id,target_id,override_values,auto_deploy)
+VALUES($1,$2,$3,COALESCE(sqlc.narg(override_values)::jsonb,'{}'::jsonb),$4) RETURNING *;
+-- name: UpdateBinding :one
+UPDATE app_environment_bindings SET override_values=$3,auto_deploy=sqlc.arg(auto_deploy),version=version+1
+WHERE id=$1 AND app_id=$2 AND version=sqlc.arg(expected_version) RETURNING *;
+-- name: BindingTargetBusy :one
+SELECT EXISTS(
+ SELECT 1 FROM deployment_targets t WHERE t.id=sqlc.arg(target_id)::uuid AND t.active_deployment_id IS NOT NULL
+ UNION ALL
+ SELECT 1 FROM deployments d WHERE d.target_id=sqlc.arg(target_id)::uuid AND d.status IN ('queued','submitting','observing','unknown')
+) AS busy;
 -- name: ListBindings :many
 SELECT b.*,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
 JOIN deployment_targets t ON t.id=b.target_id WHERE b.app_id=$1 ORDER BY b.id;

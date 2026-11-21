@@ -43,20 +43,37 @@ type Application struct {
 	UpdatedAt       time.Time
 }
 
+type ApplicationDriftObservation struct {
+	ID            string
+	BindingID     string
+	DeploymentID  string
+	SnapshotKey   string
+	Status        string
+	Reason        string
+	ResourceCount int32
+	ChangedCount  int32
+	MissingCount  int32
+	ObservedAt    time.Time
+}
+
 type ApplicationHealth struct {
 	AppID  string
 	Health string
 }
 
 type Artifact struct {
-	ID              string
-	AppID           string
-	BuildID         string
-	AttemptID       string
-	ImageRepository string
-	Digest          string
-	Source          string
-	CreatedAt       time.Time
+	ID                        string
+	AppID                     string
+	BuildID                   *string
+	AttemptID                 *string
+	ImageRepository           string
+	Digest                    string
+	Source                    string
+	CreatedAt                 time.Time
+	RegistryID                *string
+	RegistryCredentialID      *string
+	RegistryCredentialVersion *int32
+	ImportedBy                *string
 }
 
 type AuditEvent struct {
@@ -71,6 +88,34 @@ type AuditEvent struct {
 	Result       string
 	DiffRedacted []byte
 	CreatedAt    time.Time
+}
+
+type AutoDeployIntent struct {
+	ID              string
+	BuildID         string
+	PipelineID      string
+	BindingID       string
+	AuthorizedBy    string
+	ConfigVersion   int32
+	WorkflowVersion int32
+	PipelineVersion int32
+	CiVersion       int32
+	BindingVersion  int32
+	Status          string
+	ErrorCode       *string
+	RequestID       *string
+	NextPollAt      time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type BindingHealthPoll struct {
+	BindingID     string
+	NextPollAt    time.Time
+	LeaseToken    *string
+	LeaseUntil    *time.Time
+	StartedAt     *time.Time
+	LastErrorCode *string
 }
 
 type BindingObservation struct {
@@ -98,25 +143,27 @@ type Build struct {
 }
 
 type BuildAttempt struct {
-	ID              string
-	BuildID         string
-	AttemptNo       int32
-	Status          string
-	BuildClusterID  string
-	Namespace       string
-	JobName         string
-	JobUid          *string
-	ExecutionSpec   []byte
-	ExecutionHash   string
-	Stage           string
-	LeaseOwner      *string
-	LeaseExpiresAt  *time.Time
-	Revision        int64
-	NextPollAt      time.Time
-	StartedAt       *time.Time
-	FinishedAt      *time.Time
-	ErrorCode       *string
-	LogAvailability string
+	ID                string
+	BuildID           string
+	AttemptNo         int32
+	Status            string
+	BuildClusterID    string
+	Namespace         string
+	JobName           string
+	JobUid            *string
+	ExecutionSpec     []byte
+	ExecutionHash     string
+	Stage             string
+	LeaseOwner        *string
+	LeaseExpiresAt    *time.Time
+	Revision          int64
+	NextPollAt        time.Time
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	ErrorCode         *string
+	LogAvailability   string
+	CancelRequestedAt *time.Time
+	CancelRequestedBy *string
 }
 
 type Cluster struct {
@@ -231,6 +278,21 @@ type Pipeline struct {
 	Enabled    bool
 }
 
+type PipelineDeployAuthorization struct {
+	PipelineID      string
+	AuthorizedBy    string
+	PipelineVersion int32
+	CreatedAt       time.Time
+}
+
+type PipelinePushAuthorization struct {
+	PipelineID      string
+	AuthorizedBy    string
+	PipelineVersion int32
+	RepositoryUrl   string
+	CreatedAt       time.Time
+}
+
 type Project struct {
 	ID        string
 	TeamID    string
@@ -254,12 +316,14 @@ type Registry struct {
 }
 
 type ReleaseRequest struct {
-	ID          string
-	SnapshotID  string
-	Kind        string
-	Status      string
-	RequestedBy string
-	CreatedAt   time.Time
+	ID                 string
+	SnapshotID         string
+	Kind               string
+	Status             string
+	RequestedBy        string
+	CreatedAt          time.Time
+	SourceDeploymentID *string
+	Reason             string
 }
 
 type ReleaseSnapshot struct {
@@ -284,6 +348,38 @@ type ResourceGrant struct {
 	Namespace string
 	Resources []string
 	Actions   []string
+}
+
+type ResourceOperation struct {
+	ID               string
+	PreviewID        *string
+	ClusterID        string
+	RequestedBy      string
+	Kind             string
+	Status           string
+	EncryptedPayload []byte
+	KeyID            string
+	PayloadRedacted  []byte
+	ResultRedacted   []byte
+	StopOnError      bool
+	LeaseOwner       *string
+	LeaseExpiresAt   *time.Time
+	Revision         int64
+	RetryAt          time.Time
+	CreatedAt        time.Time
+	FinishedAt       *time.Time
+}
+
+type ResourcePreview struct {
+	ID                 string
+	ClusterID          string
+	RequestedBy        string
+	EncryptedDocuments []byte
+	KeyID              string
+	ItemsRedacted      []byte
+	ExpiresAt          time.Time
+	ConsumedAt         *time.Time
+	CreatedAt          time.Time
 }
 
 type SecretVersion struct {
@@ -315,4 +411,15 @@ type User struct {
 	TokenVersion int64
 	DisabledAt   *time.Time
 	CreatedAt    time.Time
+}
+
+type WebhookDelivery struct {
+	ID          string
+	Provider    string
+	PipelineID  string
+	DeliveryID  string
+	RequestHash string
+	BuildID     *string
+	Status      string
+	CreatedAt   time.Time
 }

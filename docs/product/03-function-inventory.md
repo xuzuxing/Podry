@@ -1,12 +1,12 @@
 # 功能点清单：现状与分层
 
-版本 V1.0 / 日期：2026-11-20 · 口径：以 [OpenAPI 3.1](../api/openapi.json)（58 路径 / 76 操作）、[产品说明](01-product-spec.md)、[技术架构](../architecture/01-architecture.md)、`web/` 与 `internal/` 工作树为准
+版本 V1.0 / 日期：2026-11-20 · 口径：以 [OpenAPI 3.1](../api/openapi.json)（61 路径 / 79 操作）、[产品说明](01-product-spec.md)、[技术架构](../architecture/01-architecture.md)、`web/` 与 `internal/` 工作树为准
 
-> 历史基线提示：本文下方“0 个已实现”、起始模板和“合同有”状态保留为规划时快照，不代表当前工作树。当前后端 54 个操作已实现、22 个待开发，正式迁移版本 4；实时边界以 [接口矩阵](../backend/03-api-delivery-matrix.md) 和 [构建实施](../backend/09-build-execution.md) 为准。真实 CI 验收尚待环境联调。
+> 历史基线提示：本文下方“0 个已实现”、起始模板和“合同有”状态保留为规划时快照，不代表当前工作树。v11 历史批次为 68 个操作已实现、8 个待开发；当前状态以正文最新增量、[接口矩阵](../backend/03-api-delivery-matrix.md) 和 [根进度](../../DEVELOPMENT_PROGRESS.md) 为准。真实 CI 验收尚待环境联调。
 
 ## 0. 一句话
 
-**业务功能点目前 0 个已实现。** 合同定义了 **76 个 HTTP 功能点 + 14 个平台功能点**：后端分期 P0 61 / P1 12 / P2 3，前端首版需要其中 42 个。数据层、认证、集群接入、构建执行、发布执行、流网关、运维这七条非前端战线都还是空白，但已有 [后端开发计划](../backend/01-development-plan.md)（B0–B6）。
+**当前后端 79 个 HTTP 操作已全部实现。** 合同定义了 **79 个 HTTP 功能点 + 14 个平台功能点**：后端分期 P0 61 / P1 15 / P2 3，前端首版原清单需要其中 42 个。以下保留初始盘点的功能分类及部分历史现状，当前交付以文末后端增量和 [接口矩阵](../backend/03-api-delivery-matrix.md) 为准；真实 CI/CD 与 B6 尚未验收。
 
 ## 1. 现在实际有什么
 
@@ -32,7 +32,7 @@
 | 缺合同 | 字段不足 | 4 项 | 本文 §3.7 |
 | 平台功能点 | 非 HTTP | 14 | 本文 §4 |
 
-后端 P0 的 61 个覆盖了前端首版需要的 42 个，多出的 19 个是管理类与前置能力：团队/项目成员增删、集群详情与接入、凭据与 Registry、资源授权、环境创建、连接测试。反过来有两处需要留意：`POST /apps/{appId}/environments`（独立建绑定）与 `POST /apps/{appId}/artifacts`（镜像导入）在后端都是 P1，前端首版不依赖它们（首个绑定由完整模板原子创建）。
+后端 P0 的 61 个覆盖了前端首版需要的 42 个，多出的 19 个是管理类与前置能力：团队/项目成员增删、集群详情与接入、凭据与 Registry、资源授权、环境创建、连接测试。`POST /apps/{appId}/environments`（独立建绑定）与 `POST /apps/{appId}/artifacts`（镜像导入）在后端均按 P1 排期，前端首版不依赖它们（首个绑定由完整模板原子创建）。2026-11-21 已提前实现 E03 的独立建绑定及更新覆盖，连同 E01/E05 和 E04 镜像导入，加上 E06 资源写入和 E07 资源动作，后端当前总计 72 个已实现操作；应用克隆随后补齐，详见 [克隆记录](../backend/19-application-cloning.md) 和 [镜像导入](../backend/18-image-artifacts.md)。
 
 ## 3. 功能点明细
 
@@ -92,8 +92,8 @@
 | GT-01 | 分支查询 | ✓ | `GET /apps/{appId}/git/branches` | 合同有 |
 | GT-02 | 提交查询（固定 SHA） | ✓ | `GET /apps/{appId}/git/commits?ref` | 合同有 |
 | BD-01 | 环境绑定列表 | ✓ | `GET /apps/{appId}/environments` | 合同有 |
-| BD-02 | 独立创建环境绑定 | — | `POST /apps/{appId}/environments` | 合同有 |
-| BD-03 | 更新绑定 / 环境覆盖 | — | `PUT /apps/{appId}/environments/{bindingId}` | 合同有 |
+| BD-02 | 独立创建环境绑定 | — | `POST /apps/{appId}/environments` | 后端已实现，真实执行待验收 |
+| BD-03 | 更新绑定 / 环境覆盖 | — | `PUT /apps/{appId}/environments/{bindingId}` | 覆盖已实现；目标/环境不可变 |
 | WF-01 | 读工作流（一 CI 多 CD） | ✓ | `GET /apps/{appId}/pipelines` | 合同有 |
 | WF-02 | 保存工作流 | ✓ | `PUT /apps/{appId}/pipelines` | 合同有 |
 
@@ -109,7 +109,7 @@
 | BU-06 | 重试构建（新 attempt） | — | `POST /builds/{buildId}/retry` | 合同有 |
 | BU-07 | 构建日志（NDJSON） | ✓ | `GET /builds/{buildId}/logs?follow&cursor` | 合同有 |
 | AR-01 | 产物列表（digest） | ✓ | `GET /apps/{appId}/artifacts` | 合同有 |
-| AR-02 | 外部镜像导入 | — | `POST /apps/{appId}/artifacts` | 合同有 |
+| AR-02 | 外部镜像导入 | — | `POST /apps/{appId}/artifacts` | 后端已实现；真实拉取待验收 |
 
 ### 3.5 发布
 
@@ -121,14 +121,16 @@
 | DL-03 | 发布请求详情 | ✓ | `GET /release-requests/{requestId}` | 合同有 |
 | DL-04 | 部署详情（Helm 观察） | ✓ | `GET /deployments/{deploymentId}` | 合同有 |
 | DL-05 | 配置 Diff | — | `GET /deployments/{deploymentId}/diff` | 合同有 |
-| DL-06 | 晋级（复用产物） | — | `POST /deployments/{id}/promote` | 合同有 |
-| DL-07 | 回滚（历史快照重新发布） | — | `POST /deployments/{id}/rollback` | 合同有 |
+| DL-06 | 晋级（复用产物） | — | `POST /deployments/{id}/promote` | 已实现请求业务；复用产物与目标当前配置，真实执行待验收 |
+| DL-07 | 回滚（历史快照重新发布） | — | `POST /deployments/{id}/rollback` | 已实现请求业务；历史 Chart/Secret/Values、新 Job 身份，真实执行待验收 |
+| DL-08 | 发布人工核对 | — | `POST /deployments/{id}/reconcile` | 已实现：当前完整授权、只读证据、revision/lease/fencing、事务审计与幂等；unknown 不强制解锁 |
 
 ### 3.6 运行资源
 
 | ID | 功能点 | 前端首版 | 端点 | 现状 |
 | --- | --- | --- | --- | --- |
 | RS-01 | 应用运行资源清单 | ✓ | `GET /apps/{appId}/resources?bindingId` | 合同有 |
+| RS-02 | 应用漂移摘要与观察历史 | — | `GET /apps/{appId}/drift?bindingId&refresh` | E08 已实现当前成功发布基线、只读刷新与脱敏数量历史，不回写配置或自动修复 |
 | DS-01 | 资源类型发现（GVR / category / verbs） | ✓ | `GET /clusters/{id}/discovery` | 合同有 |
 | DS-02 | Namespace 列表 | ✓ | `GET /clusters/{id}/namespaces` | 合同有 |
 | RL-01 | 资源列表（continueToken） | ✓ | `GET /clusters/{id}/resources` | 合同有 |
@@ -137,8 +139,9 @@
 | EX-01 | Pod 日志流 | ✓ | `GET /clusters/{id}/pod-logs` | 合同有 |
 | RW-01 | 多文档 Dry Run | — | `POST /clusters/{id}/resources/dry-run` | 合同有 |
 | RW-02 | Apply（逐对象结果） | — | `POST /clusters/{id}/resources/apply` | 合同有 |
-| RW-03 | 资源操作（删除 / 重启 / 扩缩容） | — | `POST /clusters/{id}/resource-actions` | 合同有 |
+| RW-03 | 资源操作（删除 / 重启 / 扩缩容） | — | `POST /clusters/{id}/resource-actions` | E07 已实现，执行默认关闭 |
 | RW-04 | 操作结果查询 | — | `GET /resource-operations/{id}` | 合同有 |
+| RW-05 | 操作人工只读核对 | — | `POST /resource-operations/{id}/reconcile` | 已实现：当前拥有者完整授权、revision/lease、逐项证据、pending 跳过与原子审计/幂等 |
 | SC-01 | Secret 明文读取（独立授权 + 审计） | P2 | `POST /clusters/{id}/secrets/reveal` | 合同有 |
 | EX-02 | 终端会话创建（ticket） | P2 | `POST /clusters/{id}/exec-sessions` | 合同有 |
 | EX-03 | 终端会话关闭 | P2 | `DELETE /exec-sessions/{sessionId}` | 合同有 |
@@ -214,7 +217,24 @@
 
 ## 8. 统计口径
 
-- 76 个 HTTP 功能点 = OpenAPI 的 76 个 operation，一操作对一功能点；`GET /apps` 的多个筛选条件算一个功能点。
+- 79 个 HTTP 功能点 = OpenAPI 的 79 个 operation，一操作对一功能点；`GET /apps` 的多个筛选条件算一个功能点。
 - "前端首版"列的 42 项与 [轻量化迁移方案](../migration/01-devtron-to-vue-plan.md) 的 P0 清单一致；差异仅为本文把"登出""团队与成员查看"算进首版（缺了它们页面不可用），把独立建绑定与镜像导入留在 P1。
-- 后端分期（61 / 12 / 3）以 [接口分期矩阵](../backend/03-api-delivery-matrix.md) 为准；两处文档不一致时应改本文，不改矩阵。
+- 后端分期（61 / 14 / 3）以 [接口分期矩阵](../backend/03-api-delivery-matrix.md) 为准；两处文档不一致时应改本文，不改矩阵。
 - "现状"列只反映当前工作树；前端迁移按 `web/` 为 Vite + Vue 3 空工程处理。历史原型与验证记录仅用于交互溯源，不代表当前实现状态。
+
+## 2026-11-21 后端增量
+
+E08 已补齐，新增第 77 个 HTTP 操作、P1 合计 13 个；正式迁移 v14 共 31 张业务表，完整设计稿共 32 张表。漂移只比较当前成功发布的投影根，Secret 值不参与比较；缓存与历史都重验授权，平台未完成操作、版本变化或过期投影 unknown。见 [应用漂移](../backend/22-application-drift.md)。前文初始盘点的“合同有/无实现”等静态描述保留为历史口径，当前后端状态以本节和交付矩阵为准。
+
+当前 OpenAPI V1.22.0：79 个已实现、0 个待实现；E01 构建取消与重试已提前实现业务，补充 E03 多环境与 E05 晋级/回滚；E04 镜像导入、镜像应用和 external_image 已实现，原子克隆已补齐，见 [实施记录](../backend/19-application-cloning.md)。E06 预览/异步提交/查询也已提前实现，见 [资源写入](../backend/20-resource-writes.md)。E07 的 UID 删除、Deployment 重启/扩缩容及 HPA/发布冲突已实现，见 [资源动作](../backend/21-resource-actions.md)。分期数量以当前矩阵为准，不能据此认为 B6 或真实 CI/CD 已验收；执行器仍默认关闭。详见 [构建取消与重试](../backend/17-build-actions.md) 和 [交付矩阵](../backend/03-api-delivery-matrix.md)。
+
+E02 首批 GitHub Push Webhook 已实现验签、持久 Delivery 去重与 Build/Attempt 原子入队；正式迁移 v15，共 33 张业务表。后续 v16 已补齐 on_ci_success、显式非生产自动部署、持久意图/去重/恢复及构建详情状态，共 35 张业务表，见 [自动部署](../backend/24-ci-auto-deploy.md)；生产手动，真实执行仍待验收。Push 合同见 [Webhook](../backend/23-git-webhooks.md)。
+
+T22 持续健康巡检已实现，见 [后台健康](../backend/25-background-health.md)。v17 共 36 张业务表；全局默认关闭，使用最近发布请求者的当前权限，持久租约与失败缓存失效，不触发集群写入。真实轮询容量和集群健康仍待独立验收。
+
+
+发布人工核对已补齐，第 78 个 HTTP 操作、P1 共 14 个；不新增迁移，正式仍为 v17、36 张表。只读核对可独立于后台开关使用，真实集群及故障恢复仍待验收，见 [实施合同](../backend/26-release-reconciliation.md)。
+
+资源 Apply/动作人工核对已补齐，第 79 个 HTTP 操作、P1 共 15 个；原拥有者当前权限、revision/lease 和凭据重验，核对不重发写入、pending 标记跳过，证据不足继续 unknown。正式仍为 v17、36 张表，见 [实施合同](../backend/27-resource-reconciliation.md)。
+
+E09 已补齐 Secret 指定 key 明文读取、终端会话创建/关闭及真实 WebSocket/SPDY 桥接。独立授权、UID/凭据重验、一次性票据和停机回收见 [Secret 与终端](../backend/28-sensitive-resource-access.md)。会话临时存在进程内，数据库仍 v17；fixture 通过不代替真实集群验收。
