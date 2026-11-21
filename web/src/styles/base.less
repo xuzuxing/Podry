@@ -1,0 +1,369 @@
+// Podry 全局样式：直角、12px 正文、teal 灰底、蓝主色（对齐 docs/prototype/brand-spec.md）
+:root {
+  --tk-header: 48px;
+  --tk-sider: 190px;
+  --tk-sider-collapsed: 48px;
+  --tk-bg: #f2f4f8;
+  --tk-surface: #ffffff;
+  --tk-border: #e6e9ef;
+  --tk-border-strong: #d3d9e3;
+  --tk-text: #1f2733;
+  --tk-text-2: #5b6678;
+  --tk-text-3: #8a94a6;
+  --tk-primary: #0052d9;
+  --tk-primary-weak: #e8f0fe;
+  --tk-success: #2ba471;
+  --tk-warning: #e37318;
+  --tk-danger: #d54941;
+  --tk-radius: 4px;
+  --tk-font: 13px;
+  --tk-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-size: var(--tk-font);
+  line-height: 18px;
+  color: var(--tk-text);
+  background: var(--tk-bg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--tk-primary);
+  text-decoration: none;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c7cedb;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+// ---- TDesign 令牌收敛：直角、紧凑 ----
+.t-button {
+  border-radius: var(--tk-radius);
+}
+.t-input,
+.t-select,
+.t-textarea,
+.t-input-number {
+  border-radius: var(--tk-radius);
+}
+.t-dialog,
+.t-drawer,
+.t-popup,
+.t-card {
+  border-radius: var(--tk-radius);
+}
+.t-card {
+  box-shadow: none;
+}
+.t-table {
+  font-size: var(--tk-font);
+}
+.t-table th {
+  background: #f7f9fc !important;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a94a6;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.t-table td,
+.t-table th {
+  padding: 8px 12px !important;
+}
+.t-table tbody tr:hover {
+  background: #f7f9fc;
+}
+.t-tabs__nav-item {
+  font-size: var(--tk-font);
+}
+.t-tag {
+  border-radius: var(--tk-radius);
+}
+
+// ---- 通用布局类 ----
+.u-flex {
+  display: flex;
+  align-items: center;
+}
+.u-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.u-gap-8 {
+  gap: 8px;
+}
+.u-gap-12 {
+  gap: 12px;
+}
+.u-gap-16 {
+  gap: 16px;
+}
+.u-muted {
+  color: var(--tk-text-2);
+}
+.u-dim {
+  color: var(--tk-text-3);
+}
+.u-mono {
+  font-family: var(--tk-mono);
+  font-size: 11px;
+}
+.u-right {
+  margin-left: auto;
+}
+.u-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.u-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tk-panel {
+  background: var(--tk-surface);
+  border: 1px solid var(--tk-border);
+  border-radius: var(--tk-radius);
+  box-shadow: 0 1px 2px rgba(16, 42, 99, 0.04);
+}
+
+.tk-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--tk-border);
+  font-weight: 600;
+}
+
+.tk-panel__body {
+  padding: 12px;
+}
+
+.tk-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  margin-bottom: 8px;
+  color: var(--tk-text-2);
+  font-weight: 600;
+}
+
+.tk-kv {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  row-gap: 6px;
+  font-size: var(--tk-font);
+}
+
+.tk-kv dt {
+  color: var(--tk-text-2);
+}
+
+.tk-kv dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.tk-code {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--tk-mono);
+  font-size: 11px;
+  line-height: 17px;
+  color: #cfe3ff;
+  background: #1e2430;
+  border-radius: var(--tk-radius);
+}
+
+.tk-code--light {
+  color: #1f2733;
+  background: #f7f9fc;
+  border: 1px solid var(--tk-border);
+}
+
+.tk-code-lines {
+  max-height: 320px;
+}
+
+.tk-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--tk-surface);
+  border: 1px solid var(--tk-border);
+  border-radius: var(--tk-radius);
+}
+
+.tk-metric__value {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.tk-metric__label {
+  color: var(--tk-text-2);
+}
+
+.tk-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--tk-surface);
+  border-bottom: 1px solid var(--tk-border);
+}
+
+.tk-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  color: var(--tk-text-2);
+  cursor: pointer;
+}
+
+.tk-tab:hover {
+  color: var(--tk-primary);
+}
+
+.tk-tab--active {
+  color: var(--tk-primary);
+  font-weight: 600;
+}
+
+.tk-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--tk-primary);
+}
+
+@media (max-width: 1120px) {
+  :root {
+    --tk-sider: 64px;
+  }
+}
+
+// ---- Devtron 风格的工具栏 / 状态卡 / 上下文栏 ----
+.tk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px;
+  margin-bottom: 12px;
+  background: var(--tk-surface);
+  border: 1px solid var(--tk-border);
+  border-radius: var(--tk-radius);
+}
+
+.tk-toolbar__search {
+  width: 260px;
+}
+
+.tk-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 300px;
+  padding: 12px 14px;
+  background: var(--tk-surface);
+  border: 1px solid var(--tk-border);
+  border-radius: var(--tk-radius);
+}
+
+.tk-status-card__label {
+  color: var(--tk-text-2);
+  font-size: 12px;
+}
+
+.tk-status-card__value {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tk-status-card__foot {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.tk-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  color: var(--tk-primary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--tk-primary-weak);
+  border-radius: var(--tk-radius);
+}
+
+.tk-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 12px;
+  color: var(--tk-text-2);
+  font-size: 12px;
+  background: var(--tk-surface);
+  border-top: 1px solid var(--tk-border);
+}
+
+.tk-overline {
+  color: var(--tk-text-3);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}

@@ -5,6 +5,7 @@
 *.out
 # GoReleaser 发版产物(本地 snapshot / release 的输出目录),不入库
 /dist/
+/web-ignore/
 *.db
 *.db-journal
 *.db-wal
@@ -59,3 +60,9 @@
 
 # Local Kubernetes test credentials (never source)
 /docs/k3s.yaml
+
+# 前端校验截图（scripts/check-*.mjs 生成，可重新生成，不入库）
+/web/screenshots*/
+# 本地 IDE 配置
+/.openidea/
+
