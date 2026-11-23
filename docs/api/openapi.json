@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Podry V1 API Design",
-    "version": "1.22.0",
-    "description": "All 79 HTTP operations implemented. Adds independently authorized Secret reveal and real Pod terminal WebSocket bridging with one-use same-origin tickets, current authorization/Pod UID checks, ownership close and shutdown reclamation. Sessions are process-local; database remains v17. Build, release, resource write and health polling workers default disabled. Isolated fixtures are not real cluster, CI/CD or B6 acceptance. See docs/backend/28-sensitive-resource-access.md."
+    "version": "1.24.0",
+    "description": "All 79 HTTP operations implemented. GitHub, Gitea, GitLab and Gitee Push Webhook providers share persistent build admission. Database v18 expands the delivery provider constraint without adding tables; non-GitHub history prevents downgrade. Built-in Chart 1.1.0 preserves Chart 1.0.0 and historical snapshots. Build, release, resource write and health polling workers default disabled. Provider protocol/isolated integration tests are separate from real provider delivery and CI/CD acceptance. See docs/backend/38-git-webhook-providers.md and docs/backend/29-live-cicd-acceptance.md."
   },
   "servers": [
     {
@@ -4400,12 +4400,12 @@
     "/webhooks/git/{provider}/{pipelineId}": {
       "post": {
         "operationId": "receiveGitWebhook",
-        "summary": "接收已验签的 Push Webhook",
+        "summary": "接收已认证的 Push Webhook",
         "tags": [
           "webhooks"
         ],
-        "description": "GitHub only; application/json, maximum 1 MiB. Verify raw-body HMAC-SHA256 before parsing. Current delegated user/project/credential authorization is required. Match configured repository and branch; deleted/tag/other-repository/non-push events are durably ignored. Event plus raw body hash is unique per provider/pipeline/Delivery: same hash replays the original 202; different hash returns 409. New accepted builds require enabled build execution; 503 leaves Delivery reusable. No remote Git query; signed full SHA is frozen for runner checkout. No automatic deployment. Never persist/log raw payload or signing secret.",
-        "x-permission": "provider signature",
+        "description": "GitHub/Gitea/GitLab/Gitee; application/json, maximum 1 MiB. Authenticate before strict JSON parsing. GitHub uses X-GitHub-Delivery/Event and raw-body HMAC-SHA256 X-Hub-Signature-256; Gitea uses X-Gitea-Delivery/Event/Signature (hex HMAC, no prefix). GitLab uses X-Gitlab-Event and either X-Gitlab-Token or Standard Webhooks whsec_ signing token with webhook-id/timestamp/signature (5 minute tolerance); no fallback from signature to token. GitLab delivery id preference: webhook-id, Idempotency-Key, X-Gitlab-Event-UUID. Gitee uses X-Gitee-Event/Token/Timestamp (milliseconds, 1 hour tolerance); signature covers timestamp plus secret, NOT body. Gitee token mode requires explicit credential opt-in. TLS is required for integrity of token/Gitee payloads. Gitee deliveryId is sha256:<digest> of event plus canonical JSON excluding top-level password/sign/timestamp, so re-signing replays and identical events coalesce. Other providers hash event plus raw body; same provider/pipeline/delivery with different hash returns 409. Current delegated authorization, credential version and repository/branch are rechecked. Ignore deleted/tag/other-repository/non-push events durably. New accepted builds require enabled build execution; 503 leaves delivery reusable. Freeze full lowercase SHA-1 for runner checkout; no remote Git query. Existing explicit non-production on_ci_success policy can subsequently deploy the successful build. Never persist/log raw payload, tokens or secrets.",
+        "x-permission": "provider authentication",
         "parameters": [
           {
             "name": "provider",
@@ -4414,7 +4414,10 @@
             "schema": {
               "type": "string",
               "enum": [
-                "github"
+                "github",
+                "gitea",
+                "gitlab",
+                "gitee"
               ]
             }
           },
@@ -4430,28 +4433,146 @@
           {
             "name": "X-GitHub-Delivery",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
           },
           {
             "name": "X-GitHub-Event",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
           },
           {
             "name": "X-Hub-Signature-256",
             "in": "header",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
-              "pattern": "^sha256=[0-9a-f]{64}$"
-            }
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitea-Delivery",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitea-Event",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitea-Signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitlab-Event",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitlab-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "webhook-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "webhook-timestamp",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "webhook-signature",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitlab-Event-UUID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitee-Event",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitee-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
+          },
+          {
+            "name": "X-Gitee-Timestamp",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Conditionally required by provider/authentication mode; see docs/backend/38-git-webhook-providers.md."
           }
         ],
         "responses": {
@@ -5793,8 +5914,11 @@
           },
           "chartVersion": {
             "type": "string",
-            "minLength": 1,
-            "description": "Built-in chart 1.0.0 supports offline Helm SDK rendering. Live Helm release execution is not enabled yet."
+            "enum": [
+              "1.0.0",
+              "1.1.0"
+            ],
+            "description": "Built-in immutable Chart version. 1.1.0 adds Ingress className, TLS secret reference and optional cert-manager ClusterIssuer. Existing 1.0.0 snapshots remain supported. Live execution requires the release worker."
           }
         },
         "required": [
@@ -5848,7 +5972,30 @@
           },
           "ingress": {
             "type": "object",
-            "additionalProperties": true
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              },
+              "className": {
+                "type": "string",
+                "maxLength": 253
+              },
+              "tlsSecretName": {
+                "type": "string",
+                "maxLength": 253
+              },
+              "clusterIssuer": {
+                "type": "string",
+                "maxLength": 253
+              }
+            },
+            "required": [],
+            "additionalProperties": false
           },
           "env": {
             "type": "object",
@@ -5894,7 +6041,7 @@
             "additionalProperties": false
           }
         },
-        "description": "Current subset: replicaCount, containerPort, resources.requests/limits.cpu/memory, non-sensitive literal env, service.enabled/port/type=ClusterIP, ingress.enabled/host, and Job single-run fields. volumes and all unknown/reserved image/ownership fields are rejected. Sensitive values use versioned secretRefs; targetKey is the environment key and must not duplicate literal env. Job rejects Deployment/service/ingress fields."
+        "description": "Current subset: replicaCount, containerPort, resources.requests/limits.cpu/memory, non-sensitive literal env, service.enabled/port/type=ClusterIP, ingress.enabled/host, and Job single-run fields. Chart 1.1.0 additionally permits ingress.className/tlsSecretName/clusterIssuer as DNS subdomain names; empty optional strings omit the setting. A nonempty clusterIssuer requires tlsSecretName and cert-manager installed on the cluster. Enabled Ingress requires an enabled Service and host. Volumes and all unknown/reserved image/ownership fields are rejected. Sensitive values use versioned secretRefs; targetKey must not duplicate literal env. Job rejects Deployment/service/ingress fields."
       },
       "AppConfig": {
         "type": "object",
@@ -6333,7 +6480,7 @@
           "webhookCredentialId"
         ],
         "additionalProperties": false,
-        "description": "At least one of manual/push must be true. push requires a dedicated kind=secret credential containing only data.webhookSecret (32-256 bytes); push=false requires null. Saving delegates Push admission to the saving user, rechecked on every delivery. Only GitHub Push is implemented. Automatic CD is a separate explicit delegation to its saving user."
+        "description": "At least one of manual/push must be true. push requires a dedicated kind=secret credential with data.webhookSecret (32-256 bytes) and optional data.webhookAuthMode=signature/token; no other data fields. push=false requires null. Saving delegates Push admission to the saving user, rechecked on every delivery. GitHub, Gitea, GitLab and Gitee Push are implemented. GitHub/Gitea require signature mode; GitLab defaults to Standard Webhooks for whsec_ secrets, otherwise token; Gitee defaults to timestamp signature, token requires explicit opt-in. Automatic CD is a separate explicit delegation to its saving user."
       },
       "CDDefinition": {
         "type": "object",

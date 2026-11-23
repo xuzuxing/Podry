@@ -246,7 +246,7 @@ func (s *Service) releaseAction(ctx context.Context, a auth.Actor, id, kind stri
 	for _, ref := range candidate.SecretRefs {
 		keys = append(keys, ref.TargetKey)
 	}
-	renderInput := chart.Input{AppID: candidate.AppID, BindingID: candidate.BindingID, DeploymentID: candidate.DeploymentID, Namespace: candidate.Target.Namespace, ReleaseName: candidate.Target.ReleaseName, WorkloadKind: candidate.WorkloadKind, ImageRef: candidate.ImageRef, Values: candidate.values, SecretKeys: keys}
+	renderInput := chart.Input{Version: candidate.chartVersion, AppID: candidate.AppID, BindingID: candidate.BindingID, DeploymentID: candidate.DeploymentID, Namespace: candidate.Target.Namespace, ReleaseName: candidate.Target.ReleaseName, WorkloadKind: candidate.WorkloadKind, ImageRef: candidate.ImageRef, Values: candidate.values, SecretKeys: keys}
 	var rendered chart.Result
 	if kind == "rollback" {
 		rendered, err = chart.RenderArchived(renderInput, candidate.Chart)

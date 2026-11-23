@@ -1,0 +1,74 @@
+{
+  "date": "2026-11-22",
+  "scope": "HTTP cancellation regression, sanitized diagnostics, isolated Helm server dry-run",
+  "originalPendingRootCauseConfirmed": false,
+  "fixedCodeDeployedToLiveAPI": false,
+  "cancellationRegression": {
+    "before": "request cancellation during response body read lost; test failed after 2 seconds",
+    "after": "request cancellation, step cancellation, client timeout and response lifecycle tests passed",
+    "originalClientTimeoutFailureProven": false,
+    "stepSeconds": 20,
+    "httpSeconds": 8,
+    "helmActionSeconds": 15
+  },
+  "diagnostics": {
+    "rawErrorsLogged": false,
+    "urlsHeadersQueriesBodiesLogged": false,
+    "sdkFailureAndReplayFixturePassed": true,
+    "fixtureUpgradeCalls": 1,
+    "fixtureHistoryAfterReplay": 2
+  },
+  "isolatedDiagnostic": {
+    "realHelmStorageReads": true,
+    "helmStorageMutations": "memory only",
+    "kubernetesMutations": "POST and PATCH forced dryRun=All; DELETE blocked",
+    "elapsedMs": 16047,
+    "deadlineExceeded": false,
+    "secretPostStatus": 201,
+    "servicePatchStatus": 200,
+    "deploymentPatchStatus": 200,
+    "actualHelmStorageWritesIncluded": false,
+    "postSubmitObservationIncluded": false,
+    "completeLiveUpgrade": false,
+    "reproducedOriginalFailure": false
+  },
+  "unchangedTarget": {
+    "release": "podry-demo-secret",
+    "upgradeDeployment": "1cffcba3-4523-4c94-8eb2-ce9b4943b78e",
+    "helmRevision": 2,
+    "helmStatus": "pending-upgrade",
+    "workloadUID": "364b7134-b91a-4b12-b963-2ae3196fc645",
+    "workloadGeneration": 1,
+    "workloadExecution": "23f884aa-7e33-4ede-a025-45f04acd54a9",
+    "readyReplicas": 1,
+    "upgradeBusinessSecretCountAfter": 0,
+    "unknownTargetsOccupied": 3
+  },
+  "liveDatabaseCountsAfter": {
+    "builds": 9,
+    "attempts": 11,
+    "artifacts": 7,
+    "intents": 2,
+    "previews": 17,
+    "snapshots": 17,
+    "requests": 17,
+    "deployments": 17
+  },
+  "validation": {
+    "internalAndCmdTests": "passed",
+    "releaseVetAndBuild": "passed",
+    "isolatedPostgreSQLTopLevelTestsPassed": 6,
+    "shutdownSubtestsPassed": 2,
+    "backendScript": "stopped at go vet: web/dist files disappeared during embed; targeted backend tests executed separately",
+    "fullIntegrationRerun": false,
+    "publicPingStatus": 200,
+    "publicPingPong": true,
+    "normalPublicDNSAndTLS": true
+  },
+  "resubmittedUnknown": false,
+  "clearedTargetOccupancy": false,
+  "serviceRestarted": false,
+  "defaultFeatureFlagsChanged": false,
+  "secretsPersistedInThisEvidence": false,
+  "b6Complete": false
+}

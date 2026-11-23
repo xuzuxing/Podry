@@ -1,5 +1,7 @@
 # 持久构建执行、产物与日志
 
+历史记录：下文描述本批交付时点；2026-11-22 已完成两轮真实远端构建、推送和日志归档，最新证据与剩余故障验收见 [真实 CI/CD 验收](29-live-cicd-acceptance.md)。
+
 日期：2026-11-20。B4 的服务端执行逻辑和六个 HTTP 接口已实现；本批验证使用真实 PostgreSQL 和 Git/Kubernetes/Registry fixture。**真实 BuildKit 构建、镜像推送及按 digest 拉取尚未验收**，等待用户部署环境后联调。本批没有向 `docs/k3s.yaml` 对应的真实集群写入资源。
 
 当前 OpenAPI 共 76 个操作，54 个 implemented、22 个 planned。迁移版本为 4，共 22 张业务表；`docs/data/schema.sql` 的 31 张表仍是完整设计。此前 Kubernetes 只读实测见 [08](08-kubernetes-resources.md)，本页区分构建实现与真实 CI 验收。
@@ -93,7 +95,7 @@ Worker 通过短事务 `FOR UPDATE SKIP LOCKED` 领取 60 秒租约，每次领�
 5. 观察终态，从受控 build 容器读取小于 1 KiB 的版本化结果，校验 Attempt、镜像仓库和 digest；Registry 返回的 manifest 内容必须与 digest 匹配。
 6. Build 成功状态、Attempt 终态及不可变 Artifact 在同一事务落账。Registry 暂时不可用时保留 unknown 并继续核对，不宣布成功。
 
-同名异 UID/hash 对象不会被接管或覆盖。Job 使用 backoffLimit=0、restartPolicy=Never 和 activeDeadlineSeconds；平台不生成第二个 Job 身份，但这不是 Kubernetes 内部 Pod 执行恰好一次的保证。当前没有用户取消/重试、Job/Secret/ConfigMap 自动清理或 TTL；需保留 unknown 的外部证据，清理能力另行实现。
+同名异 UID/hash 对象不会被接管或覆盖。Job 使用 backoffLimit=0、restartPolicy=Never 和 activeDeadlineSeconds；平台不生成第二个 Job 身份，但这不是 Kubernetes 内部 Pod 执行恰好一次的保证。原批次未包含的取消/重试已在 [构建动作](17-build-actions.md) 实现；v19 增加默认关闭的 [Job/Secret/ConfigMap 自动清理](39-resource-cleanup.md)，不配置 TTL，不清理 unknown 的外部证据。
 
 ## 日志、游标与保留
 
@@ -103,7 +105,7 @@ Worker 通过短事务 `FOR UPDATE SKIP LOCKED` 领取 60 秒租约，每次领�
 
 签名 cursor 绑定用户、tokenVersion、Attempt 和 Job UID，有效十分钟，保存偏移和已读前缀链摘要。runtime 到归档可沿用游标；内容减少/变化返回 409 log_cursor_changed，篡改、过期或跨用户返回 422。HTTP 已开始后错误改为 NDJSON error 帧；正常返回 end 帧及可继续的 cursor。
 
-终态日志独立归档为 NDJSON，经临时文件、fsync、原子 rename 保存，在 PostgreSQL 记录大小、SHA-256、过期时间。当前保留期为归档成功后七天，失败在完成后七天内重试，超过预算/缺失/损坏时明确不可读取，**不改变成功产物**。过期清理只删除服务生成的确切 storage key，数据目录访问受 `os.OpenRoot` 约束；没有清理元数据或外部集群资源。多副本需要相同持久目录，当前尚未进行多副本运行验收。
+终态日志独立归档为 NDJSON，经临时文件、fsync、原子 rename 保存，在 PostgreSQL 记录大小、SHA-256、过期时间。当前保留期为归档成功后七天，失败在完成后七天内重试，超过预算/缺失/损坏时明确不可读取，**不改变成功产物**。过期清理只删除服务生成的确切 storage key，数据目录访问受 `os.OpenRoot` 约束；保留元数据。v19 外部资源清理另行校验归档或到期门槛，见 [资源清理](39-resource-cleanup.md)。多副本需要相同持久目录，当前尚未进行多副本运行验收。
 
 ## 验证与待验收
 

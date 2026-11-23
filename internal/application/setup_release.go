@@ -55,7 +55,7 @@ func (s *Service) deployableBindings(ctx context.Context, q *sqlcdb.Queries, a a
 			if _, e := s.releaseCluster(ctx, q, binding.ClusterID); e != nil {
 				return e
 			}
-			_, e = chart.Render(chart.Input{AppID: app.ID, BindingID: binding.ID, DeploymentID: "setup", Namespace: target.Namespace, ReleaseName: target.ReleaseName, WorkloadKind: c.ChartConfig.WorkloadKind, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, Values: effective.DeployValues, SecretKeys: keys})
+			_, e = chart.Render(chart.Input{Version: effective.ChartConfig.ChartVersion, AppID: app.ID, BindingID: binding.ID, DeploymentID: "setup", Namespace: target.Namespace, ReleaseName: target.ReleaseName, WorkloadKind: c.ChartConfig.WorkloadKind, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, Values: effective.DeployValues, SecretKeys: keys})
 			if e != nil {
 				return httpx.Fail(422, "chart_render_failed", "基础部署配置不能渲染")
 			}
@@ -77,7 +77,7 @@ func validateReleaseValues(c Config) error {
 	if c.ChartConfig == nil {
 		return httpx.Fail(422, "prerequisite_missing", "请先保存基础部署配置")
 	}
-	if err := validateValues(c.ChartConfig.WorkloadKind, c.DeployValues); err != nil {
+	if err := validateChartValues(c); err != nil {
 		return err
 	}
 	if ingress, ok := c.DeployValues["ingress"].(map[string]any); ok && ingress["enabled"] == true {

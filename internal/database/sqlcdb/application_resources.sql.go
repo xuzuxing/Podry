@@ -76,7 +76,7 @@ func (q *Queries) GetApplicationHealth(ctx context.Context, appID string) (strin
 }
 
 const latestBindingDeployment = `-- name: LatestBindingDeployment :one
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code FROM deployments d JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code, d.next_cleanup_at, d.cleanup_attempts, d.cleanup_error_code, d.resources_cleaned_at FROM deployments d JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id
 WHERE s.binding_id=$1 ORDER BY d.created_at DESC,d.id DESC LIMIT 1
 `
 
@@ -98,6 +98,10 @@ func (q *Queries) LatestBindingDeployment(ctx context.Context, bindingID string)
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }

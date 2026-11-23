@@ -1,13 +1,17 @@
 # Podry 开发进度与待办
 
-更新日期：2026-11-22。本文记录后端当前实现基线及剩余工作；首批后端已提交为 f9685e4，本次后端提交收录后续开发的多环境、晋级/回滚、构建取消/重试、已有镜像导入、应用克隆、资源写入、资源动作与应用漂移、GitHub Webhook、非生产自动部署、后台健康巡检、发布与资源操作人工核对、Secret 明文和 Pod 终端能力。下方各轮“未提交”等表述保留为当时的开发记录，当前提交范围以本段和文末记录为准。
+更新日期：2026-11-23。本文记录后端当前实现基线及剩余工作；首批后端已提交为 f9685e4，本次后端提交收录后续开发的多环境、晋级/回滚、构建取消/重试、已有镜像导入、应用克隆、资源写入、资源动作与应用漂移、GitHub Webhook、非生产自动部署、后台健康巡检、发布与资源操作人工核对、Secret 明文和 Pod 终端能力。下方各轮“未提交”等表述保留为当时的开发记录，当前提交范围以本段和文末记录为准。
 
 ## 当前基线
 
 - 技术栈：Go + chi、PostgreSQL + pgx/v5 + sqlc；CI 为 Kubernetes Job + BuildKit，CD 为 Helm SDK + 内置版本化 Chart。
-- HTTP 合同：OpenAPI V1.22.0，共 79 个操作，全部已实现。接口已实现不等同于真实集群或 CI/CD 验收完成。
-- 正式数据库迁移：v17，36 张业务表及 schema_migrations；`docs/data/schema.sql` 是包含后续能力的 36 表设计稿，不能代替正式迁移。
-- 默认 `PODRY_BUILD_ENABLED=false`、`PODRY_RELEASE_ENABLED=false`、`PODRY_RESOURCE_WRITES_ENABLED=false`；只读后台巡检同样默认 `PODRY_HEALTH_POLLING_ENABLED=false`。真实 CI/CD 按当前安排暂缓，保持配置、读取和发布离线预览可独立联调；资源 dry-run 需要集群可达。
+- HTTP 合同：OpenAPI V1.24.0，共 79 个操作，全部已实现；新增 GitHub/Gitea/GitLab/Gitee 四平台 Webhook，保留 Chart 1.1.0 的受控 IngressClass/TLS 配置。接口已实现不等同于真实集群或 CI/CD 验收完成。
+- 正式数据库迁移：v19，36 张业务表及 schema_migrations；新增构建/发布清理调度、错误与完成证据，`docs/data/schema.sql` 仍不能代替正式迁移。
+- 默认 `PODRY_BUILD_ENABLED=false`、`PODRY_RELEASE_ENABLED=false`、`PODRY_RESOURCE_WRITES_ENABLED=false`；只读后台巡检同样默认 `PODRY_HEALTH_POLLING_ENABLED=false`。2026-11-22 已在独立测试实例显式启用构建/发布，完成三轮 Deployment 链路、Helm TLS Ingress、运行中取消/重试、有限 Job 发布与历史快照重新执行，以及非生产自动部署和同 Artifact 跨环境绑定晋级；见 [基础验收](docs/backend/29-live-cicd-acceptance.md)、[Ingress](docs/backend/30-ingress-helm-release.md)、[Job 与构建动作](docs/backend/31-live-build-actions-and-job.md)、[自动部署与晋级](docs/backend/32-live-auto-deploy-and-promotion.md)。较早 Job 发布仍为 unknown 并保留目标占用；默认配置保持关闭。
+- 最新补充：[不同 digest/Chart/完整业务配置升级回滚](docs/backend/33-live-version-upgrade-and-rollback.md) 已通过，新目标 revision 3；单步 Discovery 缓存修复已验证。podry-job-live 和较早自动升级所在 podry-demo-auto 两个 unknown 继续占用各自目标。
+- 最新恢复验收：[两条真实 unknown 人工核对](docs/backend/34-live-release-reconciliation.md) 通过。四个后台开关关闭仍可显式核对；同证据续跑、幂等冲突、旧 revision 和目标占用保护通过，unknown 与成功指针保留，无新增构建/发布；原测试 API 已恢复。
+- 最新 Secret 验收：[业务 Secret 历史版本恢复](docs/backend/35-live-secret-history-rollback.md) 在新目标通过；SecretRef v1 → v2 → v1，当前凭据 v3、当前配置 v12/SecretRef v2 保留。同 output 续跑无重复。首个 Secret 目标升级仍 pending/unknown，根因未确定，目前三条 unknown 均保留占用。
+- 最新清理实现：`PODRY_RESOURCE_CLEANUP_ENABLED=false`，默认保留构建资源 24h、被替代发布资源 168h；校验日志、终态、UID/RV 和引用，持久重试与审计，不清理当前工作负载或 unknown，见 [构建/发布资源自动清理](docs/backend/39-resource-cleanup.md)。真实集群回收仍待验收。
 - 前端正在独立开发，本次不提交根目录 `web/`、其配套页面检查脚本及根 README 的前端改动。本文的状态仅代表后端，不代表前后端已完成联调。
 
 ## 已实现
@@ -17,40 +21,40 @@
 | B1 基础与身份 | 显式数据库迁移、CLI 建账、登录/退出/token 失效、团队/项目/成员、权限、审计、幂等事务 | [基础实施记录](docs/backend/05-implementation.md)；使用真实隔离 PostgreSQL 验证 |
 | B2 平台接入与资源读取 | 加密版本化凭据、Registry/集群/环境/grant、显式连接测试、Discovery、Namespace、资源列表/详情、事件、Pod 日志 | [管理配置](docs/backend/06-control-plane.md)、[Kubernetes 读取](docs/backend/08-kubernetes-resources.md)；Secret 脱敏、UID/权限重验 |
 | B3 应用与工作流 | 应用创建/查询/修改/归档、Git/Build/Base 分节配置与乐观锁、build_only/build_deploy 原子模板、一 CI 与实际 CD 集合、setup 派生状态 | [任务与分期](docs/backend/02-task-breakdown.md)、[接口矩阵](docs/backend/03-api-delivery-matrix.md)；保存配置不隐式执行 |
-| B4 Git 与持久构建 | 分支/提交查询与固定 SHA、持久任务/lease/revision、受控 runner、Job 创建/准备/启动恢复、Registry digest 复核、Artifact、历史、NDJSON 日志与七天归档 | [Git 选择](docs/backend/07-git-material.md)、[构建执行](docs/backend/09-build-execution.md)；真实远端 CI 尚未验收 |
+| B4 Git 与持久构建 | 分支/提交查询与固定 SHA、持久任务/lease/revision、受控 runner、Job 创建/准备/启动恢复、Registry digest 复核、Artifact、历史、NDJSON 日志与七天归档 | [构建执行](docs/backend/09-build-execution.md)、[真实 CI](docs/backend/29-live-cicd-acceptance.md)、[运行中取消与重试](docs/backend/31-live-build-actions-and-job.md) 通过；故障矩阵尚未完成 |
 | B4 示例项目 | `docs/example/podry-demo`，Go + chi + embed，最小 ping/pong、Dockerfile 和使用说明 | [示例与本地 CI 记录](docs/backend/10-ci-local-demo.md)；本地构建记录不代表远端流水线验收 |
-| B5 发布规划与执行 | 内置 Chart、离线预览、不可变快照、发布确认、请求与执行历史、持久 Helm Worker、物理目标占用/fencing、unknown 核对、成功后更新当前发布指针 | [发布规划](docs/backend/11-release-planning.md)、[执行与恢复](docs/backend/12-release-execution.md)；执行器默认关闭，恢复不重复 Submit |
+| B5 发布规划与执行 | 内置 Chart、离线预览、不可变快照、发布确认、请求与执行历史、持久 Helm Worker、物理目标占用/fencing、unknown 核对、成功后更新当前发布指针 | [执行与恢复](docs/backend/12-release-execution.md)；真实 Deployment revision 3/TLS Ingress、[有限 Job 发布及历史快照重新执行](docs/backend/31-live-build-actions-and-job.md) 通过；发布故障矩阵仍待验收 |
 | B5 应用观察 | 记录 UID 与控制器 OwnerReference 的资源归属、应用资源查询、期望快照与实时资源 Diff、查询时健康观察、60 秒缓存、setup 发布候选 | [应用资源与健康](docs/backend/13-application-observation.md)；现已补充默认关闭的后台巡检，见 [持续健康](docs/backend/25-background-health.md) |
 | 发布人工核对 | 显式只读 Observe、当前操作者权限、revision/lease/fencing 和凭据重验、原子状态/占用/审计/幂等；后台关闭时可用 | [实施合同](docs/backend/26-release-reconciliation.md)；证据不足继续 unknown，无强制解锁 |
-| B6 / T24 离线部分 | 停止领取与在途收尾分离、HTTP/Worker/连接池共用停机时限、强制退出保留提交意图、隔离数据库备份恢复演练与操作说明 | [进程启停与备份恢复](docs/backend/14-runtime-recovery.md)；未完成真实链路、生产恢复或外部资源清理验收 |
-| E03 提前业务实现 | 独立环境绑定、版本化受控覆盖、add_deploy 复用一 CI 新增 CD、预览冻结合并配置、权限/目标/版本保护 | [多环境绑定与覆盖](docs/backend/15-environment-bindings.md)；不改现有目标；E02 已增加显式非生产自动部署，真实跨环境发布尚未验收 |
-| E05 提前业务实现 | 成功发布的产物晋级、历史业务配置/Chart/Secret 回滚、不可变来源追溯、新 Job 身份、幂等/权限/占用重验 | [晋级与回滚](docs/backend/16-release-actions.md)；复用当前 Worker，默认关闭，真实旧镜像拉取与跨环境执行待验收 |
-| E01 提前业务实现 | 持久取消意图、Job 暂停与 Pod 退出核对、完成竞态、原输入重试、新 Attempt/Job/tag、幂等与权限重验 | [构建取消与重试](docs/backend/17-build-actions.md)；v10，真实 BuildKit 停止与推送中断待验收 |
+| B6 / T24 离线部分 | 停止领取与在途收尾分离、HTTP/Worker/连接池共用停机时限、强制退出保留提交意图、隔离数据库备份恢复演练与操作说明 | [进程启停与备份恢复](docs/backend/14-runtime-recovery.md)；已补充真实构建中的优雅重启观察恢复，生产恢复及外部资源清理仍待验收 |
+| E03 提前业务实现 | 独立环境绑定、版本化受控覆盖、add_deploy 复用一 CI 新增 CD、预览冻结合并配置、权限/目标/版本保护 | [多环境绑定与覆盖](docs/backend/15-environment-bindings.md)；[真实双环境绑定/覆盖](docs/backend/32-live-auto-deploy-and-promotion.md)通过，共用集群和 namespace，跨集群未验收 |
+| E05 提前业务实现 | 成功发布的产物晋级、历史业务配置/Chart/Secret 回滚、不可变来源追溯、新 Job 身份、幂等/权限/占用重验 | [真实历史 Job 重新执行](docs/backend/31-live-build-actions-and-job.md)、[跨环境绑定晋级](docs/backend/32-live-auto-deploy-and-promotion.md)及[不同 digest/Chart/完整业务配置回滚](docs/backend/33-live-version-upgrade-and-rollback.md)通过；业务 Secret 版本恢复与故障矩阵仍待验收 |
+| E01 提前业务实现 | 持久取消意图、Job 暂停与 Pod 退出核对、完成竞态、原输入重试、新 Attempt/Job/tag、幂等与权限重验 | [构建取消与重试](docs/backend/17-build-actions.md)；[真实暂停/Pod 退出与冻结输入重试](docs/backend/31-live-build-actions-and-job.md) 通过；远端 BuildKit 进程与推送中断边界仍待验收 |
 | E04 提前业务实现 | 已有镜像导入、Registry digest 验证、镜像应用与 external_image、无 CI 多环境、预览/确认/晋级/回滚复用、原子应用克隆 | [镜像导入](docs/backend/18-image-artifacts.md)、[克隆](docs/backend/19-application-cloning.md)；v11，真实镜像拉取待验收 |
 | 资源操作人工核对 | 当前拥有者完整权限、revision/lease、当前凭据、只读逐项证据、pending 跳过及原子审计/幂等 | [实施合同](docs/backend/27-resource-reconciliation.md)；后台关闭时可用，不重发写入或强制解除 unknown |
 | E06 提前业务实现 | 严格 Manifest 预览、UID/RV 检查、加密快照、幂等异步提交、逐项 partial、unknown 只读核对与审计 | [资源写入](docs/backend/20-resource-writes.md)；v12，执行器默认关闭，真实集群待验收 |
 | E07 提前业务实现 | UID/RV 删除、Deployment 重启/扩缩容、HPA 与平台发布冲突、持久意图/只读恢复 | [资源动作](docs/backend/21-resource-actions.md)；v13，执行器默认关闭，真实集群待验收 |
 | E08 提前业务实现 | 当前成功发布基线漂移、显式只读刷新、脱敏数量摘要、有限历史及版本/权限失效 | [应用漂移](docs/backend/22-application-drift.md)；v14，不回写配置、不自动修复，真实集群待验收 |
 
-| E02 业务实现 | GitHub Push 验签/去重、显式委托、构建准入冻结自动意图、精确产物发布、权限/版本重验、并发去重与恢复 | [Webhook](docs/backend/23-git-webhooks.md)、[非生产自动部署](docs/backend/24-ci-auto-deploy.md)；v16，生产手动，真实执行未验收 |
+| E02 业务实现 | GitHub/Gitea/GitLab/Gitee Push 认证/去重、显式委托、构建准入冻结自动意图、精确产物发布、权限/版本重验、并发去重与恢复 | [Webhook](docs/backend/23-git-webhooks.md)、[非生产自动部署](docs/backend/24-ci-auto-deploy.md)；v16，生产手动，[真实自动 CD](docs/backend/32-live-auto-deploy-and-promotion.md)通过；四平台 Push 真实供应商投递及在途故障仍待验收 |
 
 ## 剩余 P0 开发与验收
 
 | 优先顺序 | 工作 | 当前状态及完成要求 |
 | --- | --- | --- |
-| 1 | T23 真实 CI 全链路 | 等待可互通的 Git、BuildKit、Registry 与构建集群；验证固定 SHA 拉取、受控 runner、真实镜像推送与 digest 复核，不能用 fixture Artifact 替代 |
-| 2 | T23 真实 CD 全链路 | 在受控环境验证 Helm 提交、Deployment/Job 结果、应用资源/实时 Diff/健康，以及请求、部署、产物与快照的追溯链 |
-| 3 | T23 故障注入与权限验收 | 在真实执行端验证进程重启、提交响应丢失、部分写入、超时、凭据轮换、权限撤销、同名新 UID 和同物理目标互斥；按 BE-AC01–12 留证据 |
-| 4 | T24 生产恢复与安全清理 | 已有隔离 PG 演练；仍需真实部署的多实例停机/隔离、备份集合恢复及外部状态核对；Job/Secret/ConfigMap 安全 GC、业务记录保留期未实现 |
+| 1 | T23 真实 CI 全链路 | 固定 SHA、受控 runner、BuildKit 推送、Registry digest、Artifact、归档、运行中取消及同 Build 冻结输入重试、幂等续跑已通过，见 [31](docs/backend/31-live-build-actions-and-job.md)；推送中断等故障场景待验收 |
+| 2 | T23 真实 CD 全链路 | Deployment/TLS Ingress、有限 Job/历史快照重新执行、自动部署、双环境绑定晋级，以及不同 digest/Chart/副本/环境变量升级与历史回滚已通过；业务 Secret 版本恢复、跨集群及故障矩阵仍待验收 |
+| 3 | T23 故障注入与权限验收 | 已验证优雅重启观察恢复及 Job 回滚短暂 unknown 后只读收敛；podry-job-live、podry-demo-auto 两个 unknown 继续占用，见 [33](docs/backend/33-live-version-upgrade-and-rollback.md)。Discovery 超时已修复，新目标验收通过；强杀、响应丢失、部分写入、凭据轮换/撤权、新 UID 和目标并发等矩阵仍待完成 |
+| 4 | T24 生产恢复与安全清理 | 已实现默认关闭的构建/旧发布资源 GC，见 [清理合同](docs/backend/39-resource-cleanup.md)；真实集群清理、共享归档多实例、生产备份恢复及业务记录保留期仍待办 |
 | 5 | 持续健康实际验收 | 后台巡检已实现持久调度、租约恢复、权限重验和失效保护；默认关闭，真实部署、负载与持续新鲜度待验收 |
 
-T23 / B6 尚未验收，后续 P1 的真实执行验收进入条件保持原计划；按用户暂缓真实 CI/CD、继续业务开发的安排，E01/E03/E05 及 E04 镜像导入、应用克隆、E06 资源写入提前实现业务与模拟执行路径。不能把未知状态置为成功或直接清除目标占用；发布与资源 Apply/动作人工只读核对已补齐；无证据强制解锁仍未开放。Git SHA-256 仓库及多副本运行兼容性尚未完成验证/适配。
+T23 已完成普通 Deployment 链路与部分恢复验证，T23 故障矩阵 / B6 整体验收尚未完成，后续 P1 的真实执行验收进入条件保持原计划。此前按用户暂缓真实 CI/CD 的安排，E01/E03/E05 及 E04 镜像导入、应用克隆、E06 资源写入提前实现业务与模拟执行路径。不能把未知状态置为成功或直接清除目标占用；发布与资源 Apply/动作人工只读核对已补齐；无证据强制解锁仍未开放。Git SHA-256 仓库及多副本运行兼容性尚未完成验证/适配。
 
 ## HTTP 接口补齐
 
 原剩余的三个 E09/P2 接口已实现：Secret 指定 key 明文读取、Pod 终端会话创建、拥有者关闭。终端同时接入真实 WebSocket → client-go SPDY 通道；详细授权、票据、配额与进程回收合同见 [Secret 与终端](docs/backend/28-sensitive-resource-access.md)。全部 79 个 HTTP 操作已注册，真实集群和前后端联调仍待验收。
 
-已实现接口中的后续分支也需要开发：GitLab/Gitea Webhook；GitHub Push 和显式非生产 on_ci_success 已接入持久构建/发布。资源人工修改/漂移已复用 E06/E07 并补齐 E08 观察记录，不静默回写基础配置。E03 的额外 CD/环境覆盖已实现，真实跨环境执行及目标迁移未验收/未开放。P2 Secret/exec 已实现；真实终端与 Secret 操作仍需受控环境验收。
+GitHub/Gitea/GitLab/Gitee Push 已接入统一持久构建准入；协议差异与 v18 迁移见 [四平台 Webhook](docs/backend/38-git-webhook-providers.md)。显式非生产 on_ci_success 复用原持久构建/发布。资源人工修改/漂移已复用 E06/E07 并补齐 E08 观察记录，不静默回写基础配置。E03 的额外 CD/环境覆盖已实现并通过同集群双环境绑定真实晋级；跨集群未验收，目标迁移未开放。P2 Secret/exec 已实现；真实终端与 Secret 操作仍需受控环境验收。
 
 ## 2026-11-21 验证记录
 
@@ -288,3 +292,126 @@ T23 / B6 尚未验收，后续 P1 的真实执行验收进入条件保持原计�
 - 本次提交 `feat(backend): complete delivery workflows and resource APIs` 收录上述后端业务、v8–v17 迁移、sqlc 产物、79 个 HTTP 操作合同、测试及配套开发文档。
 - 验证沿用 E09 最终源码的分段回归证据：187 个顶层、160 个子用例通过，1 个真实集群用例跳过；首次完整运行超时，精确补跑 42 例退出码 0。本次仅补充提交状态记录并检查暂存范围及空白，不重复运行耗时集成测试。
 - `web/` 并行改动及无关图片保留在工作树，本次不收录；没有推送远端。真实集群、CI/CD、前后端联调和 B6 的待验收边界保持上述记录。
+
+## 2026-11-22 真实 CI/CD 恢复联调（未提交）
+
+- 使用用户更新的 Gitea、Registry 和 K3s 连接，在专用 `podry-cicd-live` namespace 部署 rootless BuildKit。独立 PostgreSQL 16.15 迁移至 v17，独立 API 显式启用构建/发布；开发数据库、默认四个开关及前端未修改。
+- 两轮真实 Git → Kubernetes Job → BuildKit → Registry → Helm Deployment 通过，均从 main 冻结同一完整 SHA。真实 manifest digest、受控 runner、Job/Pod UID、Artifact 来源、当前发布指针及 archived 日志核对通过；Helm 分别执行 install 与 upgrade，当前 revision 2，Deployment 1/1 Ready。Service port-forward 的 `/ping` 为 `200 pong`，embed 页面为 200；未验收公网应用 Ingress。
+- 第一轮构建运行中优雅 stop/start 独立后端容器，恢复使用原 Attempt/Job UID 后成功；只证明该观察恢复场景。第二轮成功后同证据文件续跑通过，数据库保持 2 Build / 2 Attempt / 2 Artifact / 2 Request / 2 Deployment，没有重复提交。
+- 新增 [可续跑验收器](scripts/test-cicd-live.mjs)、[BuildKit 清单](tools/cicd-live/buildkit.yaml)、[受控 runner Dockerfile](tools/cicd-live/runner.Dockerfile) 与 [CA 配置](tools/cicd-live/buildkitd.toml)。[详细复现与边界](docs/backend/29-live-cicd-acceptance.md)、[公开证据摘录](docs/backend/evidence/2026-11-22-cicd-live.json) 已补齐；秘密、完整日志及连接材料留在仓库外。
+- 为当前 K3s 节点新增 Registry 专用 CA/hosts.toml 后，真实镜像拉取成功；未关闭 Registry/Git TLS 校验或重启节点。节点 CA 重启持久性未验收。Docker daemon 直接 HTTPS push 仍因测试 CA 信任失败，runner 发布采用本机匿名暂存 Registry 与临时 blob/manifest 校验复制，不计为 docker push HTTPS 通过。
+- 针对本批验证：脚本语法与 help、BuildKit 清单 server dry-run、仓库 runner Dockerfile 实际构建及可执行权限/buildctl/git 检查通过；文档结构/链接、根进度链接、编码与改动空白检查通过。没有改 Go 业务源码或重跑 Go 全量回归。
+- 真实测试实例、构建 Jobs 和当前应用保留供检查。本轮未暂存、提交或推送。T23 故障矩阵、有限 Job 工作负载发布、取消/重试、自动部署、晋级/回滚、跨环境与 T24 生产恢复/安全 GC 仍待验收；Gitea/GitLab Webhook 仍待开发。
+- 随后曾直接增加独立测试应用 Ingress：app.podry.dev → 现有 Service，使用 Traefik 与现有测试 CA 签发 HTTPS 证书。直接域名访问首页为 200、`/ping` 为 `200 pong`；用户随后要求入口也必须通过 CI/CD 和 Helm 下发，已按下一节完成替换。
+
+## 2026-11-22 Ingress 随 CI/CD 与 Helm 发布（未提交）
+
+- 新增内置 Chart 1.1.0，支持受控 `ingress.className/tlsSecretName/clusterIssuer`；保留 Chart 1.0.0 原包与摘要，历史快照可继续复用。保存配置、环境覆盖、手动/自动发布、晋级及 setup 渲染均使用所选 Chart 版本，回滚使用历史归档；无数据库迁移，默认执行开关不变。
+- 测试应用保存为配置 v4，按 [发布配置样例](tools/cicd-live/app-release-values.json) 启用 app.podry.dev 的 HTTPS 入口；重新触发第三个真实 Build，完成 Git → BuildKit → Registry → Artifact → Helm upgrade，当前 release revision 3 / Chart 1.1.0 / deployed。
+- 从 Helm release 存储核对 TLS Ingress 清单与版本，真实 Ingress 带 Helm 所有权及本次 deployment-id，证书 Ready。撤掉原手工入口后，同域名只剩一个 Helm 管理的路由；直接域名 `/ping` 为 `200 pong`，首页为 200。详见 [完整记录](docs/backend/30-ingress-helm-release.md) 和 [公开证据](docs/backend/evidence/2026-11-22-ingress-helm.json)。
+- 验证：chart/application/release 单元测试通过；go vet/build/Linux 编译通过；隔离 PostgreSQL 中六个定向集成用例通过，覆盖 TLS 预览/确认、旧 Chart、环境覆盖、自动部署快照与晋级/历史 Job 回滚路径。第三轮真实链路及撤掉手工入口后的 HTTPS 访问另行通过。未重跑全量 Go 集成回归；上述晋级/自动部署/Job 回滚定向用例仍属于 fixture 验证。
+- 仅替换独立测试 API 的二进制并优雅重启；web 及开发数据库未修改，未暂存/提交/推送。前两轮证据保留为当时事实，T23 故障矩阵和生产恢复边界不变。
+
+## 2026-11-22 真实构建动作与有限 Job 发布（未提交）
+
+- 新增 [一次性 Job 程序](docs/example/podry-demo/cmd/podry-job/main.go)、[Dockerfile.job](docs/example/podry-demo/Dockerfile.job)、[Job 配置样例](tools/cicd-live/job-release-values.json) 和 [可续跑验收器](scripts/test-cicd-actions-live.mjs)。专用 Gitea 分支仅增加两个验收文件，main 未改动；原 app.podry.dev 保持 Helm revision 3。
+- 两轮真实运行中取消均在实际等待输出后发起，核对 Job 暂停、Pod 退出和无 Artifact；同 Build 重试保留 SHA/配置/凭据版本/runner 等输入，创建新 Attempt/Job/tag，成功产物与 Registry 原始 digest 一致。取消 Pod 已删除、日志 unavailable；成功重试日志 archived，不能声称取消日志全部保留或所有远端 BuildKit 副作用已撤销。
+- 修正两个验收器使用 resolvedRef 选择分支 HEAD。最初相同提交时间导致选中缺少 Dockerfile.job 的父提交，两条 source 失败 Build 留在历史，不计为通过。
+- Helm server dry-run 复现客户端 OpenAPI schema 下载超时；清单通过 Kubernetes server dry-run。install/upgrade 改为跳过重复客户端 schema 下载，保留业务 Values 校验及实际 API 服务端校验。原 unknown 发布保留 podry-job-live 目标占用；修复后在新目标 podry-job-verified 完成 Job 首次发布及同 digest 历史快照重新执行，revision 1 → 2，两次 Pod exit 0、日志 podry-job: pong，成功后推进当前发布指针。
+- 最终链路以同一证据文件续跑通过，应用历史总数保持 4 Build / 6 Attempt / 2 Artifact / 3 Request / 3 Deployment，包含上述失败与 unknown。原 Web 应用正常 HTTPS `/ping` 为 200 pong。见 [详细记录](docs/backend/31-live-build-actions-and-job.md)、[公开证据](docs/backend/evidence/2026-11-22-cicd-actions-job.json)。
+- 验证：release 单元测试、go vet/build/Linux 编译和 5 个隔离 PostgreSQL 定向集成用例通过；示例本地运行、两次真实取消/重试、最终两轮 Helm Job 及幂等续跑另行通过。未重跑全量集成回归。仅优雅更新独立测试 API；未修改主开发数据库、默认开关或根 web/，未暂存/提交/推送主仓库。
+- 剩余：保留的 unknown 恢复处置、自动部署、不同版本回退与跨环境晋级、推送中断/强杀/响应丢失/凭据轮换/撤权/UID 替换等故障矩阵，以及生产恢复/安全 GC；T23/B6 尚未整体结项。
+
+## 2026-11-22 真实自动部署与跨环境晋级（未提交）
+
+- 新建独立 podry-demo-auto 应用、显式允许自动部署的非生产开发环境和手动预发环境。在触发前完成两条 CD 配置；真实 CI 准入捕获 waiting 意图，成功后自动 dispatched → Helm succeeded，未调用手动预览/确认。数据库核对冻结配置/工作流/管线/绑定版本及委托身份一致。
+- 同 Artifact 经 promote 接口发布到第二环境，kind/sourceDeploymentId、两份 Helm Chart 1.1.0/revision 1、Pod imageID、环境覆盖 development/staging、各自当前发布指针及 Service HTTP 均核对通过，没有新建构建。两个环境共用集群和 namespace，不代表跨集群隔离；原 app.podry.dev 未改配置或重新发布。
+- 扩展 [验收器](scripts/test-cicd-live.mjs) 的 --auto-deploy 与 --promote-from，保存模式/来源/版本和幂等身份，自动路径只观察原请求，晋级复用既有 Build。两个发布成功后优雅重启独立 API，ready 后沿原证据顺序续跑均通过；本应用保持 1 Build / 1 Attempt / 1 Artifact / 1 Intent / 2 Preview / 2 Snapshot / 2 Request / 2 Deployment，无重复任务。启动过程中首次 fetch failed 保留为过程记录，不算通过。
+- [详细复现与限制](docs/backend/32-live-auto-deploy-and-promotion.md)、[公开证据](docs/backend/evidence/2026-11-22-auto-deploy-promotion.json) 已补齐。较早 podry-job-live 仍 unknown，activeDeploymentId 未变，无强制解锁或重提。
+- 本批仅修改验收工具和文档；脚本语法/help、真实链路/重启续跑、旧手动模式兼容性及文档/链接/秘密/空白检查通过。原 Ingress 验收沿旧证据文件续跑通过，revision 3 不变，公网 HTTPS `/ping` 仍为 200 pong。没有新增 Go 业务代码、数据库迁移或全量 Go 回归；未改根 web/、开发数据库或默认四个后台开关，未暂存/提交/推送。
+- 后续：不同 digest 升级及完整历史配置回退、T23 故障/权限矩阵与 unknown 核对、GitLab/Gitea Webhook、持续健康真实验收、T24 生产恢复和安全 GC。T23/B6 尚未整体结项。
+
+## 2026-11-22 不同镜像版本升级与历史回滚（未提交）
+
+- 示例新增 /version，Dockerfile 通过 APP_VERSION 注入标记；独立 Gitea 分支仅修改 router/Dockerfile，main 未改。新版真实 Build 生成不同 SHA/digest 的第二个 Artifact；未修改根 web/。
+- 较早向原自动目标升级进入 unknown。只读 Helm upgrade server dry-run 复现重复 Discovery 耗尽 20 秒 context；单步复用 Discovery/RESTMapper 后相同诊断通过。修复只缓存同一步，下一步重新发现；未延长超时、lease 或放松资源身份检查。原 unknown 不重提，继续占用。
+- 在新手动目标 podry-demo-rollback 复用两个既有 Artifact：旧版晋级、新版升级、历史回滚全部 succeeded，Helm revision 1 → 2 → 3，Chart 1.0.0 → 1.1.0 → 1.0.0。升级两个 Pod 均为新 digest、/version=live-v2；回滚恢复旧 digest、一个副本、全部历史 Values/环境变量，/version=404、/ping=200 pong。Chart 包摘要及内容与历史归档一致。
+- 新增 [可续跑验收器](scripts/test-cicd-rollback-live.mjs)，并修正通用手动验收器使用已有 Artifact 时按当前发布配置预览。同一回滚 output 第二次运行通过，应用总数保持 2 Build / 2 Attempt / 2 Artifact / 2 Intent / 6 Request / 6 Deployment；包含原自动发布/预发晋级、较早 unknown 和新目标三个成功发布，不将所有记录计为成功。
+- 当前应用配置仍 v8、绑定仍 v2，回滚发布使用历史配置 v7/绑定 v1；当前发布指针已指向回滚，没有修改配置编辑器或 Git 分支。较早 podry-job-live 与本次 podry-demo-auto 两条 unknown 均保留占用。原 app.podry.dev HTTPS /ping 仍正常。
+- 验证：release 单元测试（新增真实 Discovery/manifest Build 缓存边界用例）、vet/build/Linux 编译及 3 个隔离 PostgreSQL 定向集成通过；真实构建、三个发布步骤、逐 Pod/Service HTTP 和幂等续跑另行通过。脚本语法/help、文档/链接/编码/秘密/空白检查通过。未重跑全量 Go 集成；仅优雅更新独立 API 二进制，开发数据库、默认开关和前端未改，未暂存/提交/推送。
+- [完整记录](docs/backend/33-live-version-upgrade-and-rollback.md)、[公开证据](docs/backend/evidence/2026-11-22-version-upgrade-rollback.json) 已补齐。下一步：unknown 只读核对、T23 故障/权限矩阵、业务 Secret 历史版本恢复、持续健康实际验收；GitLab/Gitea Webhook、生产恢复与安全 GC 仍待开发或验收。T23/B6 尚未整体结项。
+
+## 2026-11-22 真实 unknown 人工核对与占用保护（未提交）
+
+- 新增 [可续跑核对验收器](scripts/test-cicd-reconciliation-live.mjs)，在 POST 前保存原 revision、幂等键及集群元数据。同 output 始终重放原操作；比较冻结身份、成功指针、Helm 存储元数据和 Deployment/Job/Service spec 摘要，不保存 Secret data 或 Values。
+- 优雅停止专用测试 API，在临时实例显式关闭四个后台开关；两条已有 unknown 的人工核对仍可执行。每条同 output 两次通过、响应字节一致；同键变更理由和新键旧 revision 分别返回 idempotency_conflict / revision_conflict。两条状态与占用仍保留，fencing/成功指针不变。
+- 向被占用的 podry-demo-auto 再次晋级返回 409 target_busy。有效验收前后独立数据库总数相同：9 Build / 11 Attempt / 7 Artifact / 2 Intent / 12 Preview / 12 Snapshot / 12 Request / 12 Deployment；每条仅新增一条核对审计，重放无重复。
+- 首轮脚本误读绑定目标字段，集群比较作废；修正为 binding.target、增加必需字段校验后以新 output 完整重验通过。首轮实际 Job 核对及审计保留，不删除历史；详细审计基线与增量保存在证据中。
+- 原测试 API 已恢复、临时实例已移除；原 API 仍可读取两条 unknown，app.podry.dev 正常 DNS/TLS 的 /ping 返回 200 pong。集群前后比较未观察到 Helm 记录或根配置变化，但不能替代集群审计证明没有短暂写入。
+- 本轮无 Go 业务变更，未重跑 Go 全量集成。脚本语法/help、真实 HTTP 与只读数据库/集群验证通过；文档结构与链接、编码、敏感值和空白检查通过。根 web/ 与并行文档未改，未暂存/提交/推送。
+- [完整记录](docs/backend/34-live-release-reconciliation.md)、[公开证据](docs/backend/evidence/2026-11-22-release-reconciliation.json)。下一步为业务 Secret 历史版本恢复、持续健康真实验收及在途崩溃/权限/凭据故障矩阵；unknown 最终收敛、生产恢复与安全 GC 仍未验收，T23/B6 未整体结项。
+
+## 2026-11-22 真实业务 Secret 历史恢复（未提交）
+
+- 扩展 [回滚验收器](scripts/test-cicd-rollback-live.mjs) 的可选 Secret 验证：随机测试值仅从环境注入，在内存比较归档 Helm Values、当前 Secret 和 Pod 引用，不打印/保存明文、Base64 或单值摘要。原无 Secret 模式保留，本轮未另跑旧夹具。
+- 首个 podry-demo-secret 目标 v1 发布成功，升级停在 Helm revision 2 / pending-upgrade，平台 unknown；原工作负载仍为 v1，目标占用保留。只读拦截诊断及强制 dryRun=All 的创建/更新诊断能在相同预算完成，但未确定原提交中断根因，未修改超时、重提或强制解锁。
+- 在新手动目标 podry-demo-secret-verified 复用既有两个 Artifact，完成旧版晋级、新版升级、凭据轮换至 v3 后的历史回滚。Helm revision 1 → 2 → 3、Chart 1.0.0 → 1.1.0 → 1.0.0、快照 SecretRef v1 → v2 → v1；真实 Secret 匹配历史 v1，与 v2/v3 不同，新执行 Secret 名称/UID 和 Pod 引用正确，旧镜像、一个副本、普通配置及 HTTP 恢复。
+- 当前应用配置仍 v12/SecretRef v2，凭据仍 v3、三个加密历史版本保留；绑定 v1、workflow v6，成功指针更新为回滚。未读取应用进程环境，不将 Secret 数据与 Pod 引用验收写成应用逻辑消费证明；Helm 存储仍包含运行时 Secret，未宣称集群静态加密。
+- 同 output 第二次运行通过，Request/Deployment 不变。全测试数据库续跑前后均为 9 Build / 11 Attempt / 7 Artifact / 2 Intent / 17 Preview / 17 Snapshot / 17 Request / 17 Deployment，无新增构建或重复任务；包含历史失败/unknown，非全成功。现有三条 unknown 均继续占用目标，原公网 HTTPS /ping 仍为 200 pong。
+- 只读 SQL、API 元数据/快照/审计及五份验收输出的随机值原文/Base64 扫描通过；脚本语法/help、真实运行/续跑、文档/链接/编码/空白检查通过。本轮无 Go 业务/迁移变更，未重跑 Go 全量集成；未重启服务或改默认开关，未改根 web/，未暂存/提交/推送。
+- [完整记录](docs/backend/35-live-secret-history-rollback.md)、[公开证据](docs/backend/evidence/2026-11-22-secret-history-rollback.json)。剩余：pending 升级根因与 unknown 有证据收敛、持续健康真实验收、集群凭据/Vault 密钥轮换与撤权/强杀/响应丢失/多实例矩阵、GitLab/Gitea Webhook、生产恢复和安全 GC。T23/B6 未整体结项。
+
+## 2026-11-22 发布请求取消与脱敏诊断（未提交）
+
+- 真实 HTTP 回归复现：Helm transport 覆盖原请求 context，取消请求后响应体仍阻塞。已改为保留原请求并绑定步骤取消，响应体完成/失败/关闭后释放绑定；原请求取消、步骤取消、客户端超时与响应生命周期用例通过。未延长 HTTP/步骤/Helm 时限，lease/fencing/占用保护不变。
+- 提交增加阶段/操作/结果/安全错误分类与总耗时，HTTP 仅输出固定 method/resource、状态及响应头耗时。日志不包含原始错误、URL、对象名、Header 或报文；泄漏标记测试通过。真实 SDK 配合内存存储/fake 写端模拟升级失败后仍 unknown，重放没有再次 Update 或新增历史。
+- 原 pending 仍未定位。补上真实 Helm 存储读取的隔离诊断在 16.047 秒内完成强制 dryRun 的 Secret 创建及 Service/Deployment 更新检查；存储写入仍在内存，DELETE 全拦截，不是完整真实提交。诊断前后原 UID/generation/旧执行身份保持，升级业务 Secret 未落地；三条 unknown 均继续占用。全测试库仍 9 Build / 11 Attempt / 7 Artifact / 2 Intent / 17 Preview / 17 Snapshot / 17 Request / 17 Deployment，公网 /ping 为 200 pong。
+- internal/cmd 测试、发布包 vet/build、新增 SDK 故障回归，以及独立 PostgreSQL 的 6 个顶层集成用例/关闭恢复两个子用例通过。首次通用后端脚本因 web/dist 文件在 embed 枚举后消失而停在 vet，随后独立编译/执行定向后端集成；通用脚本与全量集成不标为通过。
+- [完整记录](docs/backend/36-release-cancellation-diagnostics.md)、[公开证据](docs/backend/evidence/2026-11-22-release-cancellation-diagnostics.json)。未更新测试 API 二进制或重启/重新发布，修复后的真实提交验收仍待进行；未改根 web/、开发库或默认开关，未暂存/提交/推送。原 pending 根因、有证据收敛及 T23/B6 其余矩阵仍待处理。
+
+## 2026-11-22 修复后真实发布与后台健康验收（未提交）
+
+- 已编译并优雅更新独立测试 API，JSON /healthz 与鉴权应用读取通过。首轮验收等待未就绪后自动回退；修正验收路径/启动等待后完成更新，没有修改业务时限、lease 或身份保护。
+- 原成功 Secret 绑定复用已有 Artifact，完成新升级 revision 4 和历史回滚 revision 5；新/旧镜像、两/一副本、历史 Secret v2/v1、Pod/Service HTTP 通过，回滚同 output 续跑 passes=2。当前配置 v12/SecretRef v2、凭据 v3 保留。升级日志定位本次短暂 unknown 为提交成功后的观察预算到期，后续只读收敛 succeeded；不能据此解释原 pending 故障。
+- 新增 [后台健康只读验收器](scripts/test-health-live.mjs)。有效临时实例仅开启健康巡检，三个写 Worker 关闭；不调用资源刷新接口，两次自动观察间隔 51.953 秒，详情及 healthy 筛选正确。停用后观察年龄 62.002 秒时投影/详情/筛选回到 unknown，重启产生更新 healthy 观察并沿原 output 续跑通过。首轮重复环境变量配置的输出舍弃，最终证据使用四个唯一开关的实例。
+- 临时巡检实例已回收，主测试 API 的健康开关仍关闭，后续缓存会正常过期；公网 /ping 仍 200 pong。健康生命周期期间发布计数保持不变；全测试库最终为 9 Build / 11 Attempt / 7 Artifact / 2 Intent / 19 Preview / 19 Snapshot / 19 Request / 19 Deployment，仅新增上述两条成功发布。原三条 unknown 均保留占用，没有重发、删除历史或强制解锁。
+- [完整记录](docs/backend/37-live-release-and-background-health.md)、[公开证据](docs/backend/evidence/2026-11-22-live-release-background-health.json)。本轮无新的 Go 业务修改，未重跑全量 Go 测试；实际 Linux 编译/启动、真实链路与续跑、工具语法/help、文档/敏感值检查分别记录。未改根 web/、开发库或默认开关，未暂存/提交/推送。长期巡检容量、原 pending 根因、权限/轮换/强杀/响应丢失/多实例矩阵和 T23/B6 仍未整体完成。
+
+## 2026-11-23 Gitea、GitLab、Gitee Webhook（未提交）
+
+- 统一 `POST /api/webhooks/git/{provider}/{pipelineId}` 接入 github/gitea/gitlab/gitee；原 ReceiveGitHubWebhook 服务方法保留兼容包装。新增协议适配，不增加第二套构建执行器。
+- Gitea 使用原始 body HMAC-SHA256，PushPayload 支持省略 deleted。GitLab 支持旧版 Secret Token 与新版 whsec_ Standard Webhooks 签名，投递身份优先 webhook-id/Idempotency-Key，兼容旧 Event UUID。Gitee 支持毫秒时间戳签名及显式 Token 模式；认证模式从凭据读取，不接受请求诱导回退。
+- 独立 Secret 继续使用 data.webhookSecret，可选 data.webhookAuthMode=signature/token。Gitee 投递使用去除顶层 password/sign/timestamp 后的事件内容摘要，支持重签名重试；相同内容的独立事件会合并。Gitee 时间戳签名不覆盖 body，相关完整性依赖 HTTPS，未声称提供 raw-body HMAC。
+- 新 provider 复用原委托用户/项目/凭据授权、CI 与仓库/分支验证、固定 SHA、Build/Attempt、Delivery 与安全审计原子事务，并保留自动部署意图捕获。新建投递 503 不消费身份，重放重验当前权限、认证及凭据版本；并发相同投递只产生一个构建。
+- 正式迁移 v18 仅扩展 webhook_deliveries.provider 约束，仍为 36 张业务表。非 GitHub 投递历史（含 ignored）阻止降级，v17/dirty 被新二进制拒绝；没有修改历史迁移或 sqlc 查询。OpenAPI V1.24.0，仍为 79 个操作；生成模型无需变化。
+- 首轮定向集成失败于新测试夹具：仅挂载 Webhook 的重建路由缺少凭据管理接口，后续轮换返回 404；已修正为重建重放后恢复完整测试路由。该轮不记为通过，最终回归结果单独补记。原始日志 D:/Temp/podry-webhook-providers-20261123.log。
+- 本批未迁移开发库、重启现有测试 API、创建真实供应商 Webhook 或运行真实 CI/CD；四个默认 Worker 开关保持关闭，未修改根 web/，未暂存/提交/推送。实施与接入见 [四平台 Webhook](docs/backend/38-git-webhook-providers.md)。
+
+| 本批最终验证 | 结果 |
+| --- | --- |
+| `./scripts/test-backend.ps1` | 完整退出码 0；193 个顶层、168 个子用例通过，0 失败，1 个真实集群只读用例因未注入配置跳过。包含 go vet/build、Linux 集成/服务二进制编译、隔离 PostgreSQL、v18 与历史降级保护、最小服务角色、备份恢复及停机检查；测试容器已自动回收 |
+| `go test ./internal/... ./cmd/... -count=1` | 退出码 0，包含新协议单元测试和原有内部包回归 |
+| sqlc/OpenAPI | sqlc vet 通过；独立目录重生成的 17 个 sqlc Go 文件及 OpenAPI 逐字节一致。OpenAPI SHA-256：`86c2e5e10015c64ce23c92ebe839de7a703996d5b546719eda44c1190680c4db` |
+| 文档/格式 | 64 Markdown、617 本地链接、79 HTTP 操作、250 schema 引用、36 张设计表结构检查通过；本批 Go 格式、源码/文档编码与 diff 空白检查通过 |
+| 本地证据 | 完整回归 D:/Temp/podry-webhook-providers-full-20261123.log；内部回归 D:/Temp/podry-webhook-providers-units-20261123.log。首轮夹具失败日志单独保留，不混入通过结果 |
+
+后续验收：三家真实供应商 Webhook 配置/投递及完整自动 CI/CD；本批已完成业务和隔离集成实现，不等同于真实供应商投递成功。原有 unknown 根因、T23/B6 故障矩阵、生产恢复及安全 GC 仍保持既有待办。
+
+## 2026-11-23 构建与发布资源自动清理
+
+- 新增独立清理 Worker，默认 `PODRY_RESOURCE_CLEANUP_ENABLED=false`；构建保留 24h，被替代发布保留至少 168h。CI/CD 提交关闭时可以独立回收已安全结束的旧任务。
+- 构建校验冻结输入、原 Job UID、控制器和 Pod 终态；七天内必须有可验证归档，超过日志有效期允许到期回收。归档损坏/缺失保留运行时资源；归档到期先安全移除确切文件，再记录 expired，防止原回收游标漏删文件。
+- 发布只回收同一 binding/物理 target 被后续成功发布替代的旧 Job 与版本 Secret。当前工作负载、Helm 存储、快照/凭据版本、Artifact 和业务历史保留；旧 ReplicaSet、Pod 和 CronJob 等仍引用 Secret 时保留。Job 缺失也不能代替其原 Pod 已消失的证据。
+- UID/resourceVersion 条件 DELETE + 消失复查，处理 finalizer、响应丢失、同名新 UID；持久调度/重试/安全审计，多实例 SKIP LOCKED，有界事务接入统一 drain/work。原执行状态、租约、目标占用和 fencing 不被清理任务重写。
+- 正式迁移 v19，仍为 36 表；新增 cleanup_attempts/error_code/next_cleanup_at/resources_cleaned_at，存在清理历史拒绝降级。sqlc 查询及生成文件已更新；HTTP 仍为 V1.24.0/79 个操作。完整策略见 [清理合同](docs/backend/39-resource-cleanup.md)。
+- 首轮 10 个定向集成用例通过，随后补充归档损坏/缺失、保留期/租约、当前/unknown 发布与 drain/finalizer/分页用例。全量回归期间修正过期归档文件回收、补强缺失 Job 的孤立 Pod 保护，并补齐 Ingress TLS、ServiceAccount、CSI 的引用检查；最终源码专项与全量快照分开验证。
+- 未启用开发服务清理、迁移开发数据库或删除现有 K3s 资源；未修改 web/、未暂存/提交/推送。真实集群回收、CRD/外部控制器引用、共享日志存储多实例及生产恢复仍待验收；业务记录与 Registry blob 保留策略仍待开发。
+
+| 本批验证 | 结果与范围 |
+| --- | --- |
+| 全量 `./scripts/test-backend.ps1` | 退出码 0；200 个顶层、176 个子用例通过，0 失败，1 个真实集群只读用例未注入配置而跳过。含 go vet/build、隔离 PostgreSQL、迁移/历史保护、最小角色、备份恢复与停机；该编译快照早于随后几项清理边界补强 |
+| 最终源码清理专项 | `-TestPattern TestResourceCleanup` 退出码 0；9 个顶层、8 个子用例通过，覆盖最终归档文件回收、缺失 Job/孤立 Pod 和扩展后的引用列表；未把分层验证描述为最终源码的一次完整全量运行 |
+| 最终源码内部回归 | `go test ./internal/... ./cmd/... -count=1` 退出码 0；包括 Ingress/ServiceAccount 端点、CSI 引用、分页不完整、finalizer 及清理配置单元测试 |
+| SQL / 文档 / 配置 | sqlc vet 通过；独立目录重生成 18 个 Go 文件逐字节一致；65 Markdown、629 本地链接、79 HTTP 操作、250 schema 引用、36 张设计表结构检查通过；Compose 配置与本批 diff 空白检查通过 |
+| 复跑中断与恢复 | 一次专项复跑在 go vet 根包阶段被 PowerShell NativeCommandError 中断，仅捕获包头，没有足够诊断确认根因；独立 go vet 重跑退出码 0，随后最终专项复跑完整通过。未修改或重建 web/ 来绕过检查 |
+| 本地日志 | 全量 D:/Temp/podry-cleanup-full-20261123.log；最终内部回归 D:/Temp/podry-cleanup-final-units-20261123.log；最终清理专项 D:/Temp/podry-cleanup-verified-retry-20261123.log。测试容器由脚本自动回收 |

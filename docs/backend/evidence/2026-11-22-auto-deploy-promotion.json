@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-22T13:08:52.777Z",
+  "result": "passed",
+  "scope": "Dedicated live database, one application, two non-production environment bindings in the same K3s cluster and namespace",
+  "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+  "configVersion": 3,
+  "workflowVersion": 2,
+  "buildId": "d9af03c9-1af9-4531-91d3-a531293aa905",
+  "commitSha": "d63cda0d80dd31829b88b281fdc6a8362c06a6f0",
+  "artifact": {
+    "id": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+    "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+    "buildId": "d9af03c9-1af9-4531-91d3-a531293aa905",
+    "source": "build",
+    "imageRepository": "registry.podry.dev/podry-live/podry-demo-auto",
+    "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+    "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+    "createdAt": "2026-11-22T13:04:55.681974Z"
+  },
+  "automatic": {
+    "environmentId": "4d982b16-8d1f-47ac-a445-fad6c80a1a9d",
+    "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+    "admittedIntent": {
+      "id": "4cd4bedc-52f3-45dc-bec2-4294037e1c0c",
+      "pipelineId": "baa3d4b2-9df4-4f3d-8df1-516369e5272b",
+      "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+      "status": "waiting",
+      "errorCode": null,
+      "requestId": null,
+      "createdAt": "2026-11-22T13:04:33.993131Z",
+      "updatedAt": "2026-11-22T13:04:33.993131Z"
+    },
+    "finalIntent": {
+      "id": "4cd4bedc-52f3-45dc-bec2-4294037e1c0c",
+      "pipelineId": "baa3d4b2-9df4-4f3d-8df1-516369e5272b",
+      "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+      "status": "dispatched",
+      "errorCode": null,
+      "requestId": "e9cec4ba-6f62-498e-8279-39069c0fb9e5",
+      "createdAt": "2026-11-22T13:04:33.993131Z",
+      "updatedAt": "2026-11-22T13:04:57.46951Z"
+    },
+    "delegation": {
+      "intent": {
+        "id": "4cd4bedc-52f3-45dc-bec2-4294037e1c0c",
+        "build_id": "d9af03c9-1af9-4531-91d3-a531293aa905",
+        "pipeline_id": "baa3d4b2-9df4-4f3d-8df1-516369e5272b",
+        "binding_id": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+        "authorized_by": "740fbd81-fb88-4be9-b671-3796dd764c0b",
+        "config_version": 3,
+        "workflow_version": 2,
+        "pipeline_version": 1,
+        "ci_version": 1,
+        "binding_version": 1,
+        "status": "dispatched",
+        "error_code": null,
+        "request_id": "e9cec4ba-6f62-498e-8279-39069c0fb9e5",
+        "next_poll_at": "2026-11-22T13:05:27.46951+00:00",
+        "created_at": "2026-11-22T13:04:33.993131+00:00",
+        "updated_at": "2026-11-22T13:04:57.46951+00:00"
+      },
+      "delegationUserMatchesRequest": true,
+      "delegationUserMatchesWorkflow": true
+    },
+    "request": {
+      "requestId": "e9cec4ba-6f62-498e-8279-39069c0fb9e5",
+      "status": "succeeded",
+      "kind": "deploy",
+      "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+      "snapshotId": "3955dcfe-4d29-4b8d-924f-50cf3ba8f968",
+      "deploymentId": "d93568b2-a110-45b4-827b-163ed03954ca",
+      "createdAt": "2026-11-22T13:04:57.46951Z"
+    },
+    "deployment": {
+      "id": "d93568b2-a110-45b4-827b-163ed03954ca",
+      "requestId": "e9cec4ba-6f62-498e-8279-39069c0fb9e5",
+      "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+      "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+      "artifactId": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "configVersion": 3,
+      "status": "succeeded",
+      "revision": 1,
+      "kind": "deploy",
+      "sourceDeploymentId": null,
+      "helmRevision": 1,
+      "createdAt": "2026-11-22T13:04:57.46951Z",
+      "startedAt": "2026-11-22T13:04:59.455126Z",
+      "finishedAt": "2026-11-22T13:05:13.098823Z",
+      "errorCode": null
+    },
+    "buildReplay": {
+      "id": "d9af03c9-1af9-4531-91d3-a531293aa905",
+      "verified": true
+    },
+    "passes": 2,
+    "http": {
+      "transport": "kubectl port-forward to ClusterIP Service",
+      "pingStatus": 200,
+      "pingBody": "pong",
+      "embeddedPageStatus": 200
+    },
+    "logs": {
+      "bytes": 19319,
+      "sha256": "sha256:d252f5b8391af46ff7f5f1c86739dbe20b670da3434c6a617ede51af7580e391",
+      "lines": 47,
+      "availability": "archived"
+    },
+    "job": {
+      "name": "podry-build-5904c1a8-2cf5-4dc2-bc13-f8b356a58645",
+      "uid": "4bee7b96-a704-40b1-b68e-d0ac651597e8",
+      "complete": true
+    },
+    "buildPod": {
+      "name": "podry-build-5904c1a8-2cf5-4dc2-bc13-f8b356a58645-hqw9c",
+      "uid": "98cc6ba6-7101-4bcd-9696-5a211f162b80",
+      "runner": "registry.podry.dev/podry-live/runner@sha256:fecc5d048bd3d2041a67d156ed27719cbaa55b4b28ff20d84ee483dc46342309",
+      "result": {
+        "version": 1,
+        "attemptId": "5904c1a8-2cf5-4dc2-bc13-f8b356a58645",
+        "imageRepository": "registry.podry.dev/podry-live/podry-demo-auto",
+        "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+      }
+    },
+    "registry": {
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "manifests": [
+        "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+      ],
+      "verifiedAt": "2026-11-22T13:07:59.634Z"
+    }
+  },
+  "promotion": {
+    "environmentId": "41a3012f-36d5-43b6-8fc9-74888d143970",
+    "bindingId": "95466e1a-ede7-43de-900f-b759ee162c72",
+    "sourceDeploymentId": "d93568b2-a110-45b4-827b-163ed03954ca",
+    "request": {
+      "kind": "promote",
+      "status": "queued",
+      "bindingId": "95466e1a-ede7-43de-900f-b759ee162c72",
+      "createdAt": "2026-11-22T13:06:16.109207Z",
+      "requestId": "e1db1c3f-668e-440c-99c5-f8b87d3164e3",
+      "snapshotId": "350d2a93-9e68-411a-84f3-5884d4b14fdc",
+      "deploymentId": "09d02d2a-26d5-4652-8e30-15ceabe34b8a"
+    },
+    "deployment": {
+      "id": "09d02d2a-26d5-4652-8e30-15ceabe34b8a",
+      "requestId": "e1db1c3f-668e-440c-99c5-f8b87d3164e3",
+      "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+      "bindingId": "95466e1a-ede7-43de-900f-b759ee162c72",
+      "artifactId": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "configVersion": 3,
+      "status": "succeeded",
+      "revision": 1,
+      "kind": "promote",
+      "sourceDeploymentId": "d93568b2-a110-45b4-827b-163ed03954ca",
+      "helmRevision": 1,
+      "createdAt": "2026-11-22T13:06:16.109207Z",
+      "startedAt": "2026-11-22T13:06:17.452867Z",
+      "finishedAt": "2026-11-22T13:06:34.617823Z",
+      "errorCode": null
+    },
+    "passes": 2,
+    "http": {
+      "transport": "kubectl port-forward to ClusterIP Service",
+      "pingStatus": 200,
+      "pingBody": "pong",
+      "embeddedPageStatus": 200
+    }
+  },
+  "helm": [
+    {
+      "bindingId": "f2352d05-9d87-4d9d-a6ae-94e9de7859b5",
+      "releaseName": "podry-demo-auto",
+      "revision": 1,
+      "status": "deployed",
+      "chartVersion": "1.1.0",
+      "environment": "development",
+      "deploymentUid": "baa5210b-b4dc-4903-873f-95ae7adb1949",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "ready": true
+    },
+    {
+      "bindingId": "95466e1a-ede7-43de-900f-b759ee162c72",
+      "releaseName": "podry-demo-staging",
+      "revision": 1,
+      "status": "deployed",
+      "chartVersion": "1.1.0",
+      "environment": "staging",
+      "deploymentUid": "2db95cb8-6ab3-463b-b0f4-c49dca3ab436",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "ready": true
+    }
+  ],
+  "restart": {
+    "kind": "graceful docker stop/start of the isolated API after both releases succeeded",
+    "before": {
+      "at": "2026-11-22T13:07:16.881Z",
+      "counts": {
+        "builds": 1,
+        "attempts": 1,
+        "artifacts": 1,
+        "intents": 1,
+        "previews": 2,
+        "snapshots": 2,
+        "requests": 2,
+        "deployments": 2
+      }
+    },
+    "after": {
+      "at": "2026-11-22T13:08:52.779Z",
+      "counts": {
+        "builds": 1,
+        "attempts": 1,
+        "artifacts": 1,
+        "intents": 1,
+        "previews": 2,
+        "snapshots": 2,
+        "requests": 2,
+        "deployments": 2
+      }
+    },
+    "sameOutputResumed": true,
+    "duplicateTasks": 0
+  },
+  "preservedUnknown": {
+    "deploymentId": "ab649289-cfbe-4b2d-b9f4-7a30a1f36ae2",
+    "status": "unknown",
+    "releaseName": "podry-job-live",
+    "activeDeploymentId": "ab649289-cfbe-4b2d-b9f4-7a30a1f36ae2"
+  },
+  "limitations": [
+    "Single API instance; post-success restart does not prove crash recovery during admission or submission",
+    "Two environment bindings share a cluster and namespace; this is not cross-cluster isolation",
+    "Same Git SHA and image digest; different-version rollback not covered",
+    "No GitHub/Gitea Push Webhook live acceptance",
+    "Build and release enabled only in isolated test API; other default switches remain disabled",
+    "Unknown release retains its target; no forced unlock or resubmission"
+  ],
+  "manualCompatibility": {
+    "previousEvidenceHadNoModeField": true,
+    "mode": false,
+    "appId": "d6b36233-d481-4465-b918-c822a7346d54",
+    "buildId": "ac8bf0ec-c916-4c89-89db-019c40775cdb",
+    "deploymentId": "62eef8aa-03c0-4c23-b4f2-af2cdea513bc",
+    "helmRevision": 3,
+    "result": "passed",
+    "http": {
+      "transport": "kubectl port-forward to ClusterIP Service",
+      "pingStatus": 200,
+      "pingBody": "pong",
+      "embeddedPageStatus": 200
+    },
+    "publicPing": {
+      "url": "https://app.podry.dev/ping",
+      "status": 200,
+      "body": "pong",
+      "tlsVerification": true,
+      "dnsOverride": false
+    }
+  }
+}

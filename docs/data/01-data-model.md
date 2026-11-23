@@ -43,13 +43,13 @@ erDiagram
 | app_environment_bindings | app_id, environment_id, target_id, override_values, version, auto_deploy | 每应用每环境唯一，目标只绑定一个应用 |
 | pipelines | app_id, binding_id, kind, definition, version, enabled | 每应用一条 CI，每绑定一条 CD |
 | builds | app_id, pipeline_id, config_version, commit_sha, status, attempt_no | 固定输入，状态是当前 attempt 投影 |
-| build_attempts | build_id, attempt_no, job_name, job_uid, status, lease_*, cancel_requested_at/by | attempt 唯一，任务名唯一，租约独立于外部状态；取消意图不可变 |
+| build_attempts | build_id, attempt_no, job_name, job_uid, status, lease_*, cancel_requested_at/by, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at | attempt 唯一，任务名唯一，租约独立于外部状态；取消意图不可变；v19 清理不删除执行历史 |
 | artifacts | app_id, build_id, attempt_id, image_repository, digest, source, registry_id, registry_credential_id/version, imported_by | build 固定 Build/Attempt；external 无构建，冻结 Registry/准确凭据/导入者；digest 格式及不可变约束 |
 | secret_versions | credential_id, version, encrypted_payload | 只允许显式保留的历史密文版本 |
 | deployment_previews | app_id, binding_id, config_version, snapshot, expires_at | 短期预览，消费时校验版本与授权 |
 | release_snapshots | app_id, binding_id, artifact_id, config_version, chart_*, values_redacted, secret_refs, manifest_redacted | 不可变、不得保存敏感明文 |
 | release_requests | snapshot_id, kind, source_deployment_id, reason, status, requested_by | deploy/promote/rollback；由快照确定目标；回滚理由 1–1000 字，来源与身份不可变 |
-| deployments | request_id, target_id, status, helm_revision, lease_*, fencing_token | 每请求一个执行记录；外部状态与请求状态区分 |
+| deployments | request_id, target_id, status, helm_revision, lease_*, fencing_token, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at | 每请求一个执行记录；外部状态与请求状态区分；v19 只回收被替代且无人引用的执行资源 |
 | deployment_resources | deployment_id, group_name, version, resource, kind, namespace, name, uid, manifest_hash | 保存资源身份，UID 不是名称别名 |
 | resource_previews | cluster_id, requested_by, encrypted_documents, key_id, items_redacted, expires_at, consumed_at | v12；身份与密文不可变，10 分钟有效且仅消费一次；重验授权/凭据/UID/RV |
 | resource_operations | preview_id, cluster_id, requested_by, kind, status, encrypted_payload, payload_redacted, result_redacted, stop_on_error, lease_owner, lease_expires_at, revision, retry_at | v13 支持 apply/delete/restart/scale；仅 apply 必须有唯一且同集群/用户的 preview，动作无 preview；lease/revision CAS，unknown 只读核对 |
@@ -58,7 +58,7 @@ erDiagram
 | pipeline_deploy_authorizations | pipeline_id, authorized_by, pipeline_version | v16；保存者显式委托 deploy，当前权限持续重验 |
 | binding_health_polls | binding_id, next_poll_at, lease_token, lease_until, started_at, last_error_code | v17；每绑定一行、45 秒 lease 与 token fencing、30 秒重试；只存可重建调度元数据 |
 | auto_deploy_intents | build_id, pipeline_id, binding_id, authorized_by, config/workflow/CI/CD/binding versions, status, request_id, next_poll_at | v16；构建准入同事务捕获，不追历史；每 Build/CD 唯一；身份/终态不可变、历史不可删；恢复重验策略 |
-| webhook_deliveries | provider, pipeline_id, delivery_id, request_hash, build_id, status | 唯一 provider+pipeline+deliveryId |
+| webhook_deliveries | provider, pipeline_id, delivery_id, request_hash, build_id, status | 唯一 provider+pipeline+deliveryId；v18 支持 github/gitea/gitlab/gitee，仍为 36 表 |
 | idempotency_records | user_id, operation_id, key, request_hash, response_status, response_body, expires_at | 相同键不同 hash 拒绝 |
 | exec_sessions | user_id, cluster_id, pod_uid, ticket_hash, expires_at, closed_at | 只存 ticket hash，不存输入内容 |
 | audit_events | actor_id, action, target, request_id, result, diff_redacted | 追加写入，按归属过滤读取 |
@@ -139,7 +139,7 @@ v14 新增 application_drift_observations，正式业务表为 31 张、完整�
 
 ## 6. 当前实现边界
 
-此目录不是 `internal/database/migrations/`，不会在应用启动执行。000004 的历史批次为 22 张业务表；当前正式迁移为 000017，共 36 张业务表，已包括发布/恢复、环境覆盖及发布来源。v10 增加不可变取消意图、Build 身份保护和 canceling 索引；v11 支持镜像应用及外部产物来源/准确凭据引用，仍不新增表。v12 新增 resource_previews/resource_operations，资源写入见 [实施记录](../backend/20-resource-writes.md)。v13 扩展动作/preview 约束，仍为 30 张表，见 [资源动作](../backend/21-resource-actions.md)。v15 新增 Push 授权与不可变 Delivery，见 [GitHub Webhook](../backend/23-git-webhooks.md)。v16 新增自动发布委托与构建准入意图，见 [自动部署](../backend/24-ci-auto-deploy.md)。v17 新增绑定健康调度，见 [后台巡检](../backend/25-background-health.md)。本设计稿为完整 36 张表；终端仍未落地。正式查询由 sqlc 生成 pgx/v5 代码，现有 Mock DTO 和内存原型不作为数据库持久化实现。取消与重试见 [实施记录](../backend/17-build-actions.md)，镜像导入见 [实施记录](../backend/18-image-artifacts.md)。
+此目录不是 `internal/database/migrations/`，不会在应用启动执行。000004 的历史批次为 22 张业务表；当前正式迁移为 000018，共 36 张业务表，已包括发布/恢复、环境覆盖及发布来源。v10 增加不可变取消意图、Build 身份保护和 canceling 索引；v11 支持镜像应用及外部产物来源/准确凭据引用，仍不新增表。v12 新增 resource_previews/resource_operations，资源写入见 [实施记录](../backend/20-resource-writes.md)。v13 扩展动作/preview 约束，仍为 30 张表，见 [资源动作](../backend/21-resource-actions.md)。v15 新增 Push 授权与不可变 Delivery，见 [GitHub Webhook](../backend/23-git-webhooks.md)。v16 新增自动发布委托与构建准入意图，见 [自动部署](../backend/24-ci-auto-deploy.md)。v17 新增绑定健康调度，见 [后台巡检](../backend/25-background-health.md)。本设计稿为完整 36 张表；终端仍未落地。正式查询由 sqlc 生成 pgx/v5 代码，现有 Mock DTO 和内存原型不作为数据库持久化实现。取消与重试见 [实施记录](../backend/17-build-actions.md)，镜像导入见 [实施记录](../backend/18-image-artifacts.md)。
 
 当前 build_attempts 实际保存冻结 execution_spec/hash、stage、lease_owner/expires_at、revision、next_poll_at 和 log_availability；数据库触发器保护输入及已确立 Job UID，Artifact 不可变。日志在持久目录保存 NDJSON，数据库记录大小、校验值与 expires_at；本批保留七天，区别于上文的完整产品保留期建议。具体迁移、恢复与实施限制见 [构建执行](../backend/09-build-execution.md)。
 
@@ -160,3 +160,6 @@ v14 新增 application_drift_observations，正式业务表为 31 张、完整�
 分支与提交列表为服务端 Git 适配器的只读投影，响应见 [接口补充](../api/01-api-spec.md)。不把全部仓库历史导入 PostgreSQL；如后续加缓存，按仓库配置版本和权限划分，缓存不成为构建来源真实性的唯一依据。
 
 原型使用短提交、合成时间与压平字段便于阅读；正式持久化仍使用完整提交 ID、业务 UUID、目标绑定与不可变快照。原型数据不能作为 SQL 导入样本或真实接口返回样例。
+
+
+v18 仅扩展 webhook_deliveries.provider 约束，非 GitHub 投递历史阻止降级至 v17；认证模式与 Gitee 内容摘要身份见 [四平台 Webhook](../backend/38-git-webhook-providers.md)。

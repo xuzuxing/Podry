@@ -1,4 +1,6 @@
-# GitHub Push Webhook 与构建准入
+# Git Push Webhook 与构建准入
+
+2026-11-23 更新：GitHub、Gitea、GitLab、Gitee 四个 provider 均已接入同一持久构建准入流程，正式迁移 v18、36 张业务表，OpenAPI V1.24.0。当前认证方式、投递身份与接入步骤见 [多平台 Webhook 合同](38-git-webhook-providers.md)。下文保留 v15 首批 GitHub 的实现与验证记录；其中“仅 GitHub”和“其余 provider 未开放”仅指当时批次。
 
 日期：2026-11-21。E02 第一批业务实现，新增 `POST /api/webhooks/git/github/{pipelineId}`，正式迁移 v15、33 张业务表；OpenAPI V1.17.0 为 74 implemented / 3 planned。仅接入 GitHub Push 到现有持久 Build/Attempt；该首批未开放 `on_ci_success`、`autoDeploy=true`；后续已由 [v16 自动部署](24-ci-auto-deploy.md) 补齐，GitLab/Gitea 仍未开放，生产环境继续手动发布。真实 Git、BuildKit、Registry、Kubernetes 和 B6 验收按用户安排暂缓。
 

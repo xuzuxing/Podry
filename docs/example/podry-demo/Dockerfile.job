@@ -1,0 +1,19 @@
+ARG GO_IMAGE=golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18
+FROM ${GO_IMAGE} AS build
+ARG GOPROXY=https://proxy.golang.org,direct
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# A bounded, explicit barrier for live cancellation acceptance; normal builds use 0.
+ARG BUILD_HOLD_SECONDS=0
+RUN case "$BUILD_HOLD_SECONDS" in ''|*[!0-9]*) exit 2 ;; esac \
+    && test "$BUILD_HOLD_SECONDS" -le 300 \
+    && printf 'podry-live-build-hold:%s\n' "$BUILD_HOLD_SECONDS" \
+    && sleep "$BUILD_HOLD_SECONDS"
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/podry-job ./cmd/podry-job
+
+FROM scratch
+COPY --from=build /out/podry-job /podry-job
+USER 65532:65532
+ENTRYPOINT ["/podry-job"]

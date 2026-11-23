@@ -15,6 +15,7 @@ import (
 	"github.com/xuzuxing/podry/internal/audit"
 	"github.com/xuzuxing/podry/internal/auth"
 	"github.com/xuzuxing/podry/internal/build"
+	"github.com/xuzuxing/podry/internal/cleanup"
 	"github.com/xuzuxing/podry/internal/config"
 	"github.com/xuzuxing/podry/internal/credential"
 	"github.com/xuzuxing/podry/internal/database"
@@ -32,6 +33,7 @@ type Runtime struct {
 	Builds       *build.Service
 	Releases     *release.Service
 	Resources    *resource.Service
+	Cleanup      *cleanup.Service
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
@@ -59,7 +61,7 @@ func Open(ctx context.Context, cfg config.Config) (*Runtime, error) {
 	resources.PublicOrigin = cfg.PublicOrigin
 	apps := application.New(pool, vault, reader, cfg.JWTSecret).UseBuilds(builds).UseReleases(releases).WithURLPolicy(cfg.URLPolicy)
 	apps.HealthPollingEnabled = cfg.HealthPollingEnabled
-	return &Runtime{Pool: pool, Builds: builds, Releases: releases, Resources: resources, Dependencies: server.Dependencies{Auth: auth.New(pool, cfg.JWTSecret, ttl), Project: project.New(pool), Audit: audit.New(pool), Platform: platform.New(pool, vault).WithURLPolicy(cfg.URLPolicy), Application: apps, Resource: resources}}, nil
+	return &Runtime{Pool: pool, Builds: builds, Releases: releases, Resources: resources, Cleanup: cleanup.New(pool, builds, releases, cfg.Cleanup), Dependencies: server.Dependencies{Auth: auth.New(pool, cfg.JWTSecret, ttl), Project: project.New(pool), Audit: audit.New(pool), Platform: platform.New(pool, vault).WithURLPolicy(cfg.URLPolicy), Application: apps, Resource: resources}}, nil
 }
 
 const Usage = `Usage:

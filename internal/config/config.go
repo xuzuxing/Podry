@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"github.com/xuzuxing/podry/internal/build"
+	"github.com/xuzuxing/podry/internal/cleanup"
 	"github.com/xuzuxing/podry/internal/credential"
 	"github.com/xuzuxing/podry/internal/release"
 	"net"
@@ -33,6 +34,8 @@ type Config struct {
 	Build build.Settings
 	// Release is opt-in; disabled workers perform no cluster I/O.
 	Release release.Settings
+	// Cleanup is independent of submission workers and disabled by default.
+	Cleanup cleanup.Settings
 	// ResourceWritesEnabled opts into the durable manifest-write worker.
 	ResourceWritesEnabled bool
 	// HealthPollingEnabled opts into background read-only Kubernetes observations.
@@ -58,6 +61,8 @@ type Config struct {
 func Load() Config {
 	concurrency, _ := strconv.Atoi(getenv("PODRY_BUILD_CONCURRENCY", "1"))
 	releaseConcurrency, _ := strconv.Atoi(getenv("PODRY_RELEASE_CONCURRENCY", "1"))
+	buildRetention, _ := time.ParseDuration(getenv("PODRY_BUILD_RESOURCE_RETENTION", "24h"))
+	releaseRetention, _ := time.ParseDuration(getenv("PODRY_RELEASE_RESOURCE_RETENTION", "168h"))
 	httpHosts := []string{}
 	for _, host := range strings.Split(getenv("PODRY_HTTP_ALLOWED_HOSTS", ""), ",") {
 		if host = strings.TrimSpace(host); host != "" {
@@ -74,6 +79,7 @@ func Load() Config {
 		CredentialKey:         getenv("PODRY_CREDENTIAL_KEY", ""),
 		URLPolicy:             credential.URLPolicy{AllowedHTTPHosts: httpHosts},
 		Release:               release.Settings{Enabled: getenv("PODRY_RELEASE_ENABLED", "false") == "true", Concurrency: releaseConcurrency},
+		Cleanup:               cleanup.Settings{Enabled: getenv("PODRY_RESOURCE_CLEANUP_ENABLED", "false") == "true", BuildRetention: buildRetention, ReleaseRetention: releaseRetention},
 		ResourceWritesEnabled: getenv("PODRY_RESOURCE_WRITES_ENABLED", "false") == "true",
 		HealthPollingEnabled:  getenv("PODRY_HEALTH_POLLING_ENABLED", "false") == "true",
 		PublicOrigin:          getenv("PODRY_PUBLIC_ORIGIN", ""),
@@ -116,6 +122,12 @@ func (c Config) ValidateServer() error {
 	}
 	if err := c.Release.Validate(); err != nil {
 		return err
+	}
+	if err := c.Cleanup.Validate(); err != nil {
+		return err
+	}
+	if c.Cleanup.Enabled && (c.CredentialKey == "" || c.Build.DataDir == "") {
+		return errors.New("PODRY_CREDENTIAL_KEY and PODRY_DATA_DIR are required when resource cleanup is enabled")
 	}
 	if c.Release.Enabled && c.CredentialKey == "" {
 		return errors.New("PODRY_CREDENTIAL_KEY is required when releases are enabled")

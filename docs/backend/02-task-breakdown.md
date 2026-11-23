@@ -1,5 +1,23 @@
 # 后端开发任务清单
 
+2026-11-23 T24 清理更新：v19 增加构建 Job/Secret/ConfigMap 与已被替代发布的 Job/版本 Secret 自动清理，默认关闭，保留日志门槛、精确 UID/RV、引用检查、目标占用与持久重试审计。见 [资源清理合同](39-resource-cleanup.md)。业务记录保留期、真实集群清理和生产恢复验收继续待办。
+
+2026-11-23 Webhook 更新：GitHub/Gitea/GitLab/Gitee Push 业务均已实现，统一持久构建准入；v18 扩展投递 provider 约束，仍为 36 表及 79 个 HTTP 操作，合同见 [四平台 Webhook](38-git-webhook-providers.md)。真实供应商投递独立待验收，下方保留此前批次记录。
+
+2026-11-22 Secret 历史恢复：新目标完成真实 v1 → v2 → v1 回滚，当前凭据 v3、配置 v12/引用 v2 保留；两次同 output 续跑无重复。首个 Secret 目标停在 pending/unknown，其根因未确定且占用保留，目前共三条 unknown。见 [证据与限制](35-live-secret-history-rollback.md)，T23/B6 尚未整体结项。
+
+2026-11-22 unknown 人工核对更新：在四个后台开关关闭的独立实例上，两条真实 unknown 保留状态与占用，字节一致重放、旧 revision/变更输入拒绝、占用目标晋级 target_busy 均通过；没有新增构建或发布，原 API 已恢复。见 [真实核对与边界](34-live-release-reconciliation.md)。T23/B6 故障矩阵尚未整体结项。
+
+2026-11-22 版本升级与回滚更新：新测试目标完成不同 Git SHA/digest、Chart 1.0.0 → 1.1.0 → 1.0.0、两个副本 → 一个副本及完整历史 Values 回滚，真实 Pod/HTTP 和同证据续跑通过。修复 Helm 单步重复 Discovery 超时；原两个 unknown 继续占用，详见 [验收与边界](33-live-version-upgrade-and-rollback.md)。
+
+2026-11-22 自动部署与晋级更新：真实构建成功后自动发布、同 Artifact 跨环境绑定晋级、环境覆盖与 HTTP 验收通过；独立 API 成功后重启并同证据续跑，保持 1 Build / 1 Artifact / 2 Deployment。见 [验收与范围](32-live-auto-deploy-and-promotion.md)。在途崩溃、多实例、跨集群和不同版本回退不在本次证据范围；旧 unknown 继续占用原目标。
+
+2026-11-22 构建动作与 Job 更新：真实运行中取消、冻结输入重试、Helm 有限 Job 发布及历史快照重新执行通过，新测试目标 revision 2；同证据文件续跑无新增记录。修正验收器使用 resolvedRef 选择 HEAD，并避免 Helm 重复下载 OpenAPI；较早 unknown 发布继续占用原目标，详见 [验收与边界](31-live-build-actions-and-job.md)。
+
+2026-11-22 入口更新：测试应用已完成第三轮完整 CI/CD，Ingress/TLS 随 Chart 1.1.0 经 Helm upgrade 下发，revision 3；原手工入口已撤掉，见 [Ingress 随 Helm 发布](30-ingress-helm-release.md)。
+
+2026-11-22 验收更新：独立数据库与专用命名空间内，两轮真实 Git → BuildKit → Registry → Helm Deployment 链路通过，包含安装/升级、归档日志、Pod digest 与 HTTP 响应核对；优雅重启后端观察恢复、同证据文件续跑无重复已验证。T23 故障矩阵、Job 工作负载发布及 T24 生产恢复/清理仍待验收；详见 [真实 CI/CD 验收与复现](29-live-cicd-acceptance.md)。下文日期与状态保留为此前批次记录。
+
 日期：2026-11-21 · 状态：T02–T06、T08–T10、T11/T12 管理配置、T14 Git 及 T15–T18 构建范围已实现。T19 内置 Chart/预览/快照、T20 确认/持久 Helm 提交/占用及 T15 发布恢复已实现并通过隔离测试；T21 增加应用资源及 ReplicaSet/Pod 控制器链归属，T22 增加实时差异、查询时健康观察和 setup 候选。提前实现 T24 的统一停机 deadline 与 Worker drain，补充隔离数据库备份恢复演练；T23 真实 CI/CD、T24 生产恢复与外部清理仍未验收，P1 进入条件不变。健康缓存 60 秒，后台持续轮询已实现持久调度、当前请求者权限及租约 fencing，见 [持续健康巡检](25-background-health.md)；巡检和构建/发布 Worker 默认关闭。当前边界见 [进程启停与备份恢复](14-runtime-recovery.md)、[应用资源与健康观察](13-application-observation.md)、[发布执行与恢复](12-release-execution.md)、[发布规划](11-release-planning.md) 与 [构建执行](09-build-execution.md)。Git SHA-256 仓库尚未适配，fixture 通过不代表真实 CI/CD 验收。
 
 T15/T24 补充显式发布人工核对接口，复用 v17 历史与事务；后台执行关闭时可只读核对已提交状态，不强制释放 unknown，见 [合同](26-release-reconciliation.md)。E06/E07 的资源 Apply/动作人工只读核对也已补齐，包含当前拥有者授权、revision/lease、当前连接凭据、逐项证据、pending 跳过及原子审计/幂等，见 [资源核对](27-resource-reconciliation.md)。通用 Apply/Helm 排他及无证据强制解锁仍未开放。
@@ -42,11 +60,11 @@ T15/T24 补充显式发布人工核对接口，复用 v17 历史与事务；后�
 
 | ID | 范围 | 进入条件与重点 |
 | --- | --- | --- |
-| E01 / P1-A | 用户取消与重试 | 提前实现业务：持久意图、退出核对、竞态、固定输入新增 Attempt；B6/真实执行仍待验收，见 [记录](17-build-actions.md) |
-| E02 / P1-A | Push Webhook 与开发环境自动部署 | 首批 GitHub Push 验签、Delivery 去重和冻结构建准入已实现（v15），见 [记录](23-git-webhooks.md)；on_ci_success 与显式非生产自动部署业务已补齐（v16），见 [记录](24-ci-auto-deploy.md)；生产只能手动，真实 CI/CD/B6 待验收 |
+| E01 / P1-A | 用户取消与重试 | 业务已实现；真实运行中取消、Pod 退出与冻结输入重试通过，见 [记录](17-build-actions.md)、[实测](31-live-build-actions-and-job.md)；推送中断及完整故障矩阵仍待验收 |
+| E02 / P1-A | Push Webhook 与开发环境自动部署 | GitHub Push 业务已实现（v15）；显式非生产 on_ci_success（v16）已通过[真实自动 CD](32-live-auto-deploy-and-promotion.md)，生产手动；Push 真实执行及 B6 故障矩阵待验收 |
 | E03 / P1-A | 额外环境、环境覆盖、独立 Binding 管理 | B6；固定一 CI、多 CD；版本冲突/目标唯一性/跨环境权限；已有目标占用不可改绑 |
 | E04 / P1-A | 现有镜像导入、镜像应用、其他模板与克隆 | 提前实现镜像导入/镜像应用/external_image；v11，见 [记录](18-image-artifacts.md)。克隆已补齐，见 [克隆记录](19-application-cloning.md)；真实执行验收仍需 B6 |
-| E05 / P1-A | 晋级与回滚 | E03；晋级只复用 Artifact，回滚复用完整历史快照；Chart/Secret/digest 缺失明确拒绝；Job 会重新执行 |
+| E05 / P1-A | 晋级与回滚 | E03；[真实 Job 重新执行](31-live-build-actions-and-job.md)、[跨环境绑定晋级](32-live-auto-deploy-and-promotion.md)、[不同 digest/Chart/业务配置历史回滚](33-live-version-upgrade-and-rollback.md)通过；业务 Secret 版本恢复、跨集群与故障矩阵仍待验收 |
 | E06 / P1-B | ConfigMap 与 Manifest Dry Run/Apply | 已提前实现三条接口、v12 加密快照、UID/RV、持久逐对象执行与 unknown 只读核对；默认关闭，真实验收仍需 B6，见 [资源写入](20-resource-writes.md) |
 | E07 / P1-B | 删除、Deployment 重启/扩缩容 | 已提前实现 UID/RV 删除、Deployment 重启/扩缩容、HPA 与发布冲突、持久意图/只读恢复及审计；v13、默认关闭，见 [资源动作](21-resource-actions.md) |
 | E08 / P1-B | 应用资源人工修改与漂移 | 已提前实现当前成功发布基线、显式只读刷新、脱敏摘要/有限历史及版本/权限失效；v14，不静默回写配置或宣称收敛，见 [应用漂移](22-application-drift.md)；真实验收仍需 B6 |

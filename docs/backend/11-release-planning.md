@@ -1,5 +1,7 @@
 # 离线发布预览与发布事务
 
+后续更新：Chart 1.1.0 增加 IngressClass、TLS Secret 与可选 cert-manager ClusterIssuer 配置，保留 1.0.0；真实 CI/CD 下发记录见 [Ingress 随 Helm 发布](30-ingress-helm-release.md)。下文为 v5 历史批次记录。
+
 > 本页保留 v5 批次的范围和验证记录。后续已接入默认关闭的持久 Helm 执行器、目标占用与观察恢复，当前要求迁移 v6，接口为 59 implemented / 17 planned；详见 [发布执行与恢复](12-release-execution.md)。下文“执行器未接入”是本页历史状态。
 
 日期：2026-11-20。用户确认 Gitea、Registry 容器暂不可用，要求跳过 CI/CD 实际执行。本批交付 B5 的发布规划与查询业务，不启动、修复这些容器，也不向真实 Kubernetes 提交资源。

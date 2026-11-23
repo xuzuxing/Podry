@@ -143,27 +143,31 @@ type Build struct {
 }
 
 type BuildAttempt struct {
-	ID                string
-	BuildID           string
-	AttemptNo         int32
-	Status            string
-	BuildClusterID    string
-	Namespace         string
-	JobName           string
-	JobUid            *string
-	ExecutionSpec     []byte
-	ExecutionHash     string
-	Stage             string
-	LeaseOwner        *string
-	LeaseExpiresAt    *time.Time
-	Revision          int64
-	NextPollAt        time.Time
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
-	ErrorCode         *string
-	LogAvailability   string
-	CancelRequestedAt *time.Time
-	CancelRequestedBy *string
+	ID                 string
+	BuildID            string
+	AttemptNo          int32
+	Status             string
+	BuildClusterID     string
+	Namespace          string
+	JobName            string
+	JobUid             *string
+	ExecutionSpec      []byte
+	ExecutionHash      string
+	Stage              string
+	LeaseOwner         *string
+	LeaseExpiresAt     *time.Time
+	Revision           int64
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	LogAvailability    string
+	CancelRequestedAt  *time.Time
+	CancelRequestedBy  *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
 }
 
 type Cluster struct {
@@ -187,20 +191,24 @@ type Credential struct {
 }
 
 type Deployment struct {
-	ID           string
-	RequestID    string
-	TargetID     string
-	Status       string
-	HelmRevision *int32
-	CreatedAt    time.Time
-	Revision     int64
-	FencingToken int64
-	LeaseOwner   *string
-	LeaseUntil   *time.Time
-	NextPollAt   time.Time
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
-	ErrorCode    *string
+	ID                 string
+	RequestID          string
+	TargetID           string
+	Status             string
+	HelmRevision       *int32
+	CreatedAt          time.Time
+	Revision           int64
+	FencingToken       int64
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
 }
 
 type DeploymentPreview struct {

@@ -1,0 +1,5 @@
+[worker.oci]
+  max-parallelism = 1
+
+[registry."registry.podry.dev"]
+  ca = ["/etc/buildkit/podry-test-ca.crt"]

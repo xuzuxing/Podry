@@ -1,6 +1,8 @@
 # HTTP 接口与流协议
 
-版本 V1.22，设计合同；身份、管理、应用配置、工作流、Git 查询、Kubernetes 资源/日志、构建/产物/日志、发布预览/确认与历史、应用资源和实时 Diff、独立环境绑定与覆盖、晋级/回滚、构建取消/重试、镜像导入及资源预览/提交/操作查询及删除/Deployment 重启/扩缩容及应用漂移及 GitHub Webhook 及发布和资源操作人工核对及 Secret 明文与 Pod 终端共 79 个 HTTP 操作已实现。当前增量见 [Secret 与终端](../backend/28-sensitive-resource-access.md)、[资源操作人工核对](../backend/27-resource-reconciliation.md)、[发布人工核对](../backend/26-release-reconciliation.md)、[非生产自动部署](../backend/24-ci-auto-deploy.md)、[GitHub Webhook](../backend/23-git-webhooks.md)、[资源动作](../backend/21-resource-actions.md)、[资源写入](../backend/20-resource-writes.md)、[应用克隆](../backend/19-application-cloning.md)、[镜像导入](../backend/18-image-artifacts.md)、[构建取消与重试](../backend/17-build-actions.md)、[晋级与回滚](../backend/16-release-actions.md)，前批见 [多环境绑定与覆盖](../backend/15-environment-bindings.md)、[应用资源与健康观察](../backend/13-application-observation.md)、[发布执行与恢复](../backend/12-release-execution.md)、[发布规划](../backend/11-release-planning.md)、[构建执行](../backend/09-build-execution.md) 与 [Kubernetes 读取](../backend/08-kubernetes-resources.md)。机器合同：[OpenAPI 3.1](openapi.json)，设计源：[build-openapi.mjs](../tools/build-openapi.mjs)。隔离数据库及模拟执行测试不等于真实 CI/CD 验收，构建/发布/资源写入 Worker 默认关闭。数据字段以 OpenAPI Schema 与 [数据模型](../data/01-data-model.md) 为准。新增合同来自[新应用实际操作](../references/devtron-onboarding/README.md)，不能当作 Devtron 原生接口抓包结果。
+版本 V1.24，设计合同；身份、管理、应用配置、工作流、Git 查询、Kubernetes 资源/日志、构建/产物/日志、发布预览/确认与历史、应用资源和实时 Diff、独立环境绑定与覆盖、晋级/回滚、构建取消/重试、镜像导入及资源预览/提交/操作查询及删除/Deployment 重启/扩缩容及应用漂移及四平台 Git Webhook 及发布和资源操作人工核对及 Secret 明文与 Pod 终端共 79 个 HTTP 操作已实现。当前增量见 [Secret 与终端](../backend/28-sensitive-resource-access.md)、[资源操作人工核对](../backend/27-resource-reconciliation.md)、[发布人工核对](../backend/26-release-reconciliation.md)、[非生产自动部署](../backend/24-ci-auto-deploy.md)、[GitHub Webhook](../backend/23-git-webhooks.md)、[资源动作](../backend/21-resource-actions.md)、[资源写入](../backend/20-resource-writes.md)、[应用克隆](../backend/19-application-cloning.md)、[镜像导入](../backend/18-image-artifacts.md)、[构建取消与重试](../backend/17-build-actions.md)、[晋级与回滚](../backend/16-release-actions.md)，前批见 [多环境绑定与覆盖](../backend/15-environment-bindings.md)、[应用资源与健康观察](../backend/13-application-observation.md)、[发布执行与恢复](../backend/12-release-execution.md)、[发布规划](../backend/11-release-planning.md)、[构建执行](../backend/09-build-execution.md) 与 [Kubernetes 读取](../backend/08-kubernetes-resources.md)。机器合同：[OpenAPI 3.1](openapi.json)，设计源：[build-openapi.mjs](../tools/build-openapi.mjs)。隔离数据库及模拟执行测试不等于真实 CI/CD 验收，构建/发布/资源写入 Worker 默认关闭。数据字段以 OpenAPI Schema 与 [数据模型](../data/01-data-model.md) 为准。新增合同来自[新应用实际操作](../references/devtron-onboarding/README.md)，不能当作 Devtron 原生接口抓包结果。
+
+新增 Chart 1.1.0 的受控 IngressClass/TLS/ClusterIssuer 配置，保留 Chart 1.0.0 与历史发布快照；真实 CI/CD 下发证据见 [Ingress 随 Helm 发布](../backend/30-ingress-helm-release.md)。
 
 ## 1. 通用约定
 
@@ -8,7 +10,7 @@ V1.21 新增 `POST /resource-operations/{operationId}/reconcile` 与操作 DTO �
 
 V1.20 新增 `POST /deployments/{deploymentId}/reconcile` 与部署详情/列表的 `revision`。以 expectedRevision、理由和幂等键同步只读核对 submitting/observing/unknown，全部后台开关关闭时仍可用；有有效租约或身份变化拒绝，只有证据明确才收敛状态和目标占用。200 不保证发布成功；同键重放重验权限，无需执行器/密钥/网络。详见 [调用与恢复合同](../backend/26-release-reconciliation.md)。
 
-V1.17 新增 GitHub Push 验签/Delivery 去重和持久构建准入，见 [调用及恢复合同](../backend/23-git-webhooks.md)。仅 provider=github；GitLab/Gitea 尚未开放。V1.18 增加显式非生产 on_ci_success 与 autoDeploy=true，见 [自动部署合同](../backend/24-ci-auto-deploy.md)。Push 的有效授权用户来自最后一次保存该 CI 的用户，不来自供应商 sender。
+V1.17 新增 GitHub Push 验签/Delivery 去重和持久构建准入，见 [调用及恢复合同](../backend/23-git-webhooks.md)。V1.24 扩展 provider=github/gitea/gitlab/gitee，认证方式、投递身份与去重差异见 [四平台 Webhook](../backend/38-git-webhook-providers.md)；正式迁移 v18，无新增操作或表。V1.18 增加显式非生产 on_ci_success 与 autoDeploy=true，见 [自动部署合同](../backend/24-ci-auto-deploy.md)。Push 的有效授权用户来自最后一次保存该 CI 的用户，不来自供应商 sender。
 
 V1.16 新增 `GET /apps/{appId}/drift?bindingId=<uuid>`：默认本地缓存/历史，显式 `refresh=true` 只读刷新并记录脱敏数量；以当前成功发布为基线，Secret 值不参与比较，60 秒过期、身份失效及未完成平台操作投影 unknown。返回当前基线最近 20 条，每绑定保留 100 条，不回写基础配置、不自动纠正。详见 [应用漂移](../backend/22-application-drift.md)。
 
@@ -63,7 +65,7 @@ Git/Registry 默认要求 HTTPS；开发环境 HTTP 服务需通过 `PODRY_HTTP_
 | Secret | `POST .../secrets/reveal` | 单独授权获取指定 key 明文，审计且禁止缓存 |
 | 流 | `GET /builds/{buildId}/logs`、`GET .../pod-logs` | 认证 Fetch 流 |
 | 终端 | `POST .../exec-sessions`、`DELETE /exec-sessions/{sessionId}` | 创建短期会话及关闭 |
-| Webhook | `POST /webhooks/git/{provider}/{pipelineId}` | provider-specific 验签，不使用用户 Bearer |
+| Webhook | `POST /webhooks/git/{provider}/{pipelineId}` | provider-specific 认证，不使用用户 Bearer |
 | 审计 | `GET /audit-events` | 按授权范围过滤，不返回敏感原文 |
 
 平台配置 POST/PATCH 由管理员调用；凭据字段只写入、不回传。Namespace 创建/删除通过通用资源接口进行，权限独立。首版不提供进行中的发布取消和节点 Drain 接口。

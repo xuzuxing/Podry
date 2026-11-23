@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -43,22 +44,25 @@ func (h *Helm) config(ctx context.Context, in Input) (*action.Configuration, err
 type getter struct {
 	config    *rest.Config
 	namespace string
+	discovery discovery.CachedDiscoveryInterface
+	mapper    meta.RESTMapper
+}
+
+func newGetter(config *rest.Config, namespace string) (getter, error) {
+	client, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return getter{}, err
+	}
+	cache := memory.NewMemCacheClient(client)
+	return getter{config: config, namespace: namespace, discovery: cache, mapper: restmapper.NewDeferredDiscoveryRESTMapper(cache)}, nil
 }
 
 func (g getter) ToRESTConfig() (*rest.Config, error) { return rest.CopyConfig(g.config), nil }
 func (g getter) ToDiscoveryClient() (discovery.CachedDiscoveryInterface, error) {
-	c, err := discovery.NewDiscoveryClientForConfig(g.config)
-	if err != nil {
-		return nil, err
-	}
-	return memory.NewMemCacheClient(c), nil
+	return g.discovery, nil
 }
 func (g getter) ToRESTMapper() (meta.RESTMapper, error) {
-	c, err := g.ToDiscoveryClient()
-	if err != nil {
-		return nil, err
-	}
-	return restmapper.NewDeferredDiscoveryRESTMapper(c), nil
+	return g.mapper, nil
 }
 func (g getter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	// Namespace is the only value Helm reads through this accessor. REST clients
@@ -67,19 +71,6 @@ func (g getter) ToRawKubeConfigLoader() clientcmd.ClientConfig {
 	return clientcmd.NewNonInteractiveClientConfig(raw, "podry", &clientcmd.ConfigOverrides{Context: clientapi.Context{Namespace: g.namespace}}, nil)
 }
 
-type boundTransport struct {
-	context context.Context
-	base    http.RoundTripper
-}
-
-func (t boundTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if err := t.context.Err(); err != nil {
-		return nil, err
-	}
-	// Helm's action goroutines may outlive RunWithContext. Bind every request to
-	// the step context so they cannot start later writes after lease expiry.
-	return t.base.RoundTrip(r.Clone(t.context))
-}
 func configuration(ctx context.Context, in Input) (*action.Configuration, error) {
 	p, err := credential.ParseKubernetes(in.Cluster)
 	if err != nil {
@@ -97,9 +88,17 @@ func configuration(ctx context.Context, in Input) (*action.Configuration, error)
 		ca = nil
 	}
 	cfg := &rest.Config{Host: p.APIServer, BearerToken: p.Token, Timeout: 8 * time.Second, TLSClientConfig: rest.TLSClientConfig{Insecure: p.InsecureSkipTLSVerify, CAData: ca, CertData: decode("clientCertificateData"), KeyData: decode("clientKeyData")}, UserAgent: "Podry/release"}
-	cfg.WrapTransport = func(base http.RoundTripper) http.RoundTripper { return boundTransport{ctx, base} }
+	cfg.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
+		return tracedTransport{base: boundTransport{ctx, base}, deploymentID: in.Plan.DeploymentID}
+	}
+	// Share discovery and mappings across Helm's repeated manifest builds in this
+	// fenced step. A later step gets a fresh cache and its own bound context.
+	g, err := newGetter(cfg, in.Plan.Target.Namespace)
+	if err != nil {
+		return nil, err
+	}
 	a := new(action.Configuration)
-	err = a.Init(getter{cfg, in.Plan.Target.Namespace}, in.Plan.Target.Namespace, "secret", func(string, ...interface{}) {})
+	err = a.Init(g, in.Plan.Target.Namespace, "secret", func(string, ...interface{}) {})
 	return a, err
 }
 func marker(in Input) string { return "podry:" + in.Plan.DeploymentID + ":" + in.Hash }
@@ -119,25 +118,45 @@ func priorRelease(r *helmrelease.Release, in Input) bool {
 	podry, _ := r.Config["podry"].(map[string]any)
 	return podry["appId"] == in.Plan.AppID && podry["bindingId"] == in.Plan.BindingID
 }
-func (h *Helm) Submit(ctx context.Context, in Input) (Observation, error) {
+func (h *Helm) Submit(ctx context.Context, in Input) (result Observation, resultErr error) {
+	start, phase, operation := time.Now(), "validation", "none"
+	var actionErr error
+	defer func() {
+		level := slog.LevelInfo
+		if result.State == "unknown" || resultErr != nil {
+			level = slog.LevelWarn
+		}
+		// Raw Helm errors can contain rendered Secret data. Persist only bounded
+		// classifications; the phase identifies which part needs investigation.
+		slog.Log(ctx, level, "release submission finished", "deployment_id", in.Plan.DeploymentID,
+			"phase", phase, "operation", operation, "state", result.State, "code", result.Code,
+			"action_error", safeErrorClass(actionErr), "returned_error", safeErrorClass(resultErr),
+			"context_error", safeErrorClass(ctx.Err()), "duration_ms", time.Since(start).Milliseconds())
+	}()
 	unknown := Observation{State: "unknown", Code: "release_outcome_unknown"}
 	if _, err := Objects(in.Plan); err != nil {
 		return Observation{State: "failed", Code: "release_snapshot_invalid"}, nil
 	}
+	phase = "configuration"
 	cfg, err := h.config(ctx, in)
 	if err != nil {
+		actionErr = err
 		return unknown, err
 	}
+	phase = "history"
 	prior, err := cfg.Releases.Last(in.Plan.Target.ReleaseName)
 	if err != nil && !errors.Is(err, driver.ErrReleaseNotFound) {
+		actionErr = err
 		return unknown, err
 	}
 	if prior != nil && ownedRelease(prior, in) {
+		phase = "observe"
 		return h.Observe(ctx, in)
 	}
 	if prior != nil && !priorRelease(prior, in) {
 		return Observation{State: "failed", Code: "release_target_conflict"}, nil
 	}
+	phase = "chart"
 	ch, err := loader.LoadArchive(bytes.NewReader(in.Plan.Chart.Package))
 	if err != nil {
 		return Observation{State: "failed", Code: "release_snapshot_invalid"}, nil
@@ -150,10 +169,15 @@ func (h *Helm) Submit(ctx context.Context, in Input) (Observation, error) {
 	// Hooks and dependency downloads are disabled. Wait=false separates Helm
 	// submission from controller readiness and Job completion observation.
 	if prior == nil {
+		phase, operation = "action", "install"
 		install := action.NewInstall(cfg)
 		install.ReleaseName = in.Plan.Target.ReleaseName
 		install.Namespace = in.Plan.Target.Namespace
 		install.DisableHooks = true
+		// Only approved built-in charts and validated Values reach this point.
+		// Downloading cluster OpenAPI can exceed a fenced step before any write;
+		// Kubernetes still validates every object on the actual create/update.
+		install.DisableOpenAPIValidation = true
 		install.Wait = false
 		install.CreateNamespace = false
 		install.Atomic = false
@@ -161,9 +185,11 @@ func (h *Helm) Submit(ctx context.Context, in Input) (Observation, error) {
 		install.Description = marker(in)
 		_, err = install.RunWithContext(ctx, ch, in.Values)
 	} else {
+		phase, operation = "action", "upgrade"
 		upgrade := action.NewUpgrade(cfg)
 		upgrade.Namespace = in.Plan.Target.Namespace
 		upgrade.DisableHooks = true
+		upgrade.DisableOpenAPIValidation = true
 		upgrade.Wait = false
 		upgrade.Atomic = false
 		upgrade.CleanupOnFail = false
@@ -172,8 +198,10 @@ func (h *Helm) Submit(ctx context.Context, in Input) (Observation, error) {
 		upgrade.MaxHistory = 10
 		_, err = upgrade.RunWithContext(ctx, in.Plan.Target.ReleaseName, ch, in.Values)
 	}
+	actionErr = err
 	// Even a returned error may follow a partial write. Observe identities before
 	// recording anything; never persist Helm's raw error or decrypted manifest.
+	phase = "observe"
 	o, observeErr := h.Observe(ctx, in)
 	if err != nil {
 		o.State = "unknown"

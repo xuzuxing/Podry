@@ -1,5 +1,9 @@
 # E02 构建成功后的自动部署
 
+2026-11-23 更新：GitHub/Gitea/GitLab/Gitee Push 已复用相同 Build 准入与自动部署意图捕获；认证与幂等合同见 [四平台 Webhook](38-git-webhook-providers.md)。本次协议/隔离测试不替代真实供应商投递验收，下文保留此前批次记录。
+
+最新验证（2026-11-22）：真实 Gitea 构建准入捕获 waiting 意图，成功后自动派发并由 Helm 完成发布；同 Artifact 晋级另一非生产环境成功，API 成功后重启并续跑无重复记录。见 [真实验收与复现](32-live-auto-deploy-and-promotion.md)。这是手动触发 CI 后的真实自动 CD；不代表 Push Webhook、多实例或在途崩溃恢复已验收。下文保留最初 fixture 交付记录。
+
 日期：2026-11-21。业务已接入；使用隔离 PostgreSQL、本机 HTTP/HTTPS fixture 和发布 SDK fake 验证。没有访问真实 Git、BuildKit、Registry 或 Kubernetes，不能作为真实 CI/CD、工作负载健康或 B6 验收。
 
 本批不新增 HTTP 操作。OpenAPI V1.18.0 仍为 77 个操作、74 implemented / 3 planned；扩展环境策略、绑定、工作流和构建详情合同。正式迁移 v16，35 张业务表。新二进制要求显式迁移到干净 v16；开发数据库未迁移。

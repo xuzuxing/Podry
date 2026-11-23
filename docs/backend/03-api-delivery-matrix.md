@@ -94,7 +94,7 @@
 | 72 | `GET /clusters/{clusterId}/pod-logs` | `streamPodLogs` | P0 | B2 | NDJSON；UID/容器/tail/previous/follow；断流不判任务失败 |
 | 73 | `POST /clusters/{clusterId}/exec-sessions` | `createExecSession` | P2 | E09 | 已实现：单次票据、同源 WebSocket/SPDY、用户/权限/Pod UID 持续检查 |
 | 74 | `DELETE /exec-sessions/{sessionId}` | `closeExecSession` | P2 | E09 | 已实现：拥有者审计关闭、上游取消、配额回收与停机回收 |
-| 75 | `POST /webhooks/git/{provider}/{pipelineId}` | `receiveGitWebhook` | P1 | E02 | 已实现 GitHub HMAC、持久 Delivery 去重、显式用户授权与构建入队；非生产 on_ci_success 复用构建准入捕获与持久发布协调器 |
+| 75 | `POST /webhooks/git/{provider}/{pipelineId}` | `receiveGitWebhook` | P1 | E02 | 已实现 GitHub/Gitea/GitLab/Gitee 认证、持久投递去重、显式用户授权与构建入队，见 [四平台合同](38-git-webhook-providers.md)；非生产 on_ci_success 复用构建准入捕获与持久发布协调器 |
 | 76 | `GET /audit-events` | `listAuditEvents` | P0 | B1 | 按项目/集群授权过滤；无敏感原文 |
 | 77 | `GET /apps/{appId}/drift` | `getApplicationDrift` | P1 | E08 | 已实现：绑定必选，默认本地缓存/最近历史；显式 refresh=true 只读刷新；脱敏数量、60 秒失效、不自动修复 |
 | 78 | `POST /deployments/{deploymentId}/reconcile` | `reconcileDeployment` | P1 | T15/T24 补充 | 已实现：当前操作者完整授权、只读 Helm 核对、revision/lease/fencing、事务审计与幂等；证据不足保留 unknown，见 [合同](26-release-reconciliation.md) |

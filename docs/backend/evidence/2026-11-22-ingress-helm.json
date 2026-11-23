@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-22T11:14:56.800Z",
+  "result": "passed",
+  "configVersion": 4,
+  "buildId": "ac8bf0ec-c916-4c89-89db-019c40775cdb",
+  "attemptId": "90d38668-efc0-41d0-aae0-cea89b770354",
+  "job": {
+    "name": "podry-build-90d38668-efc0-41d0-aae0-cea89b770354",
+    "uid": "c4e13a50-82b4-434c-b06a-f652bb7fff93",
+    "complete": true
+  },
+  "artifact": {
+    "id": "7dc308b9-fd17-4ecb-a957-6725cde8208c",
+    "appId": "d6b36233-d481-4465-b918-c822a7346d54",
+    "buildId": "ac8bf0ec-c916-4c89-89db-019c40775cdb",
+    "source": "build",
+    "imageRepository": "registry.podry.dev/podry-live/podry-demo",
+    "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+    "imageRef": "registry.podry.dev/podry-live/podry-demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+    "createdAt": "2026-11-22T11:13:42.511552Z"
+  },
+  "deploymentId": "62eef8aa-03c0-4c23-b4f2-af2cdea513bc",
+  "requestId": "1e664e87-47c1-4929-bf73-ac4d1ed488c1",
+  "helm": {
+    "releaseName": "podry-demo-live",
+    "namespace": "podry-cicd-live",
+    "revision": 3,
+    "chartVersion": "1.1.0",
+    "status": "deployed",
+    "manifestContainsTLSIngress": true
+  },
+  "ingress": {
+    "name": "podry-demo-live",
+    "uid": "dd498a43-713a-4807-9776-4780550e0997",
+    "managedBy": "Helm",
+    "host": "app.podry.dev",
+    "className": "traefik",
+    "tlsSecretName": "podry-demo-live-tls",
+    "remainingHostRoutes": 1
+  },
+  "certificate": {
+    "name": "podry-demo-live-tls",
+    "uid": "0061b3aa-eaf6-4460-b782-6362f8042f31",
+    "ready": true,
+    "ownerIngressUID": "dd498a43-713a-4807-9776-4780550e0997"
+  },
+  "manualIngressRemoved": true,
+  "http": {
+    "origin": "https://app.podry.dev",
+    "pingStatus": 200,
+    "pingBody": "pong",
+    "embeddedPageStatus": 200,
+    "usesNormalDNS": true,
+    "verifiesTLS": true
+  },
+  "logs": {
+    "availability": "archived",
+    "lines": 47
+  }
+}

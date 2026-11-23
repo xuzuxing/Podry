@@ -13,7 +13,7 @@ import (
 const claimRelease = `-- name: ClaimRelease :one
 UPDATE deployments SET revision=revision+1,lease_owner=$1,lease_until=clock_timestamp()+interval '60 seconds',
  fencing_token=$2,started_at=COALESCE(started_at,clock_timestamp())
-WHERE id=$3 RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+WHERE id=$3 RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at
 `
 
 type ClaimReleaseParams struct {
@@ -40,6 +40,10 @@ func (q *Queries) ClaimRelease(ctx context.Context, arg ClaimReleaseParams) (Dep
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }
@@ -79,28 +83,32 @@ func (q *Queries) ListDeploymentResources(ctx context.Context, deploymentID stri
 }
 
 const lockReleaseReconciliation = `-- name: LockReleaseReconciliation :one
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,clock_timestamp()::timestamptz AS checked_at,
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code, d.next_cleanup_at, d.cleanup_attempts, d.cleanup_error_code, d.resources_cleaned_at,clock_timestamp()::timestamptz AS checked_at,
  COALESCE(d.lease_until>clock_timestamp(),false)::boolean AS worker_active
 FROM deployments d WHERE d.id=$1 FOR UPDATE OF d SKIP LOCKED
 `
 
 type LockReleaseReconciliationRow struct {
-	ID           string
-	RequestID    string
-	TargetID     string
-	Status       string
-	HelmRevision *int32
-	CreatedAt    time.Time
-	Revision     int64
-	FencingToken int64
-	LeaseOwner   *string
-	LeaseUntil   *time.Time
-	NextPollAt   time.Time
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
-	ErrorCode    *string
-	CheckedAt    time.Time
-	WorkerActive bool
+	ID                 string
+	RequestID          string
+	TargetID           string
+	Status             string
+	HelmRevision       *int32
+	CreatedAt          time.Time
+	Revision           int64
+	FencingToken       int64
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
+	CheckedAt          time.Time
+	WorkerActive       bool
 }
 
 func (q *Queries) LockReleaseReconciliation(ctx context.Context, id string) (LockReleaseReconciliationRow, error) {
@@ -121,6 +129,10 @@ func (q *Queries) LockReleaseReconciliation(ctx context.Context, id string) (Loc
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 		&i.CheckedAt,
 		&i.WorkerActive,
 	)
@@ -129,7 +141,7 @@ func (q *Queries) LockReleaseReconciliation(ctx context.Context, id string) (Loc
 
 const markReleaseIntent = `-- name: MarkReleaseIntent :one
 UPDATE deployments SET status='submitting'
-WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_until>clock_timestamp() AND status='queued' RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+WHERE id=$1 AND revision=$2 AND lease_owner=$3 AND lease_until>clock_timestamp() AND status='queued' RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at
 `
 
 type MarkReleaseIntentParams struct {
@@ -156,12 +168,16 @@ func (q *Queries) MarkReleaseIntent(ctx context.Context, arg MarkReleaseIntentPa
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }
 
 const nextRelease = `-- name: NextRelease :one
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.requested_by,s.snapshot,s.snapshot_sha256,s.app_id,s.binding_id FROM deployments d
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code, d.next_cleanup_at, d.cleanup_attempts, d.cleanup_error_code, d.resources_cleaned_at,r.requested_by,s.snapshot,s.snapshot_sha256,s.app_id,s.binding_id FROM deployments d
 JOIN deployment_targets t ON t.id=d.target_id
 JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id
 WHERE d.status IN ('queued','submitting','observing','unknown') AND d.next_poll_at<=clock_timestamp()
@@ -171,25 +187,29 @@ ORDER BY d.next_poll_at,d.created_at,d.id FOR UPDATE OF d,t SKIP LOCKED LIMIT 1
 `
 
 type NextReleaseRow struct {
-	ID             string
-	RequestID      string
-	TargetID       string
-	Status         string
-	HelmRevision   *int32
-	CreatedAt      time.Time
-	Revision       int64
-	FencingToken   int64
-	LeaseOwner     *string
-	LeaseUntil     *time.Time
-	NextPollAt     time.Time
-	StartedAt      *time.Time
-	FinishedAt     *time.Time
-	ErrorCode      *string
-	RequestedBy    string
-	Snapshot       []byte
-	SnapshotSha256 string
-	AppID          string
-	BindingID      string
+	ID                 string
+	RequestID          string
+	TargetID           string
+	Status             string
+	HelmRevision       *int32
+	CreatedAt          time.Time
+	Revision           int64
+	FencingToken       int64
+	LeaseOwner         *string
+	LeaseUntil         *time.Time
+	NextPollAt         time.Time
+	StartedAt          *time.Time
+	FinishedAt         *time.Time
+	ErrorCode          *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
+	RequestedBy        string
+	Snapshot           []byte
+	SnapshotSha256     string
+	AppID              string
+	BindingID          string
 }
 
 func (q *Queries) NextRelease(ctx context.Context) (NextReleaseRow, error) {
@@ -210,6 +230,10 @@ func (q *Queries) NextRelease(ctx context.Context) (NextReleaseRow, error) {
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 		&i.RequestedBy,
 		&i.Snapshot,
 		&i.SnapshotSha256,
@@ -247,7 +271,7 @@ WHERE deployments.id=$4 AND deployments.revision=$5
  AND (deployments.lease_until IS NULL OR deployments.lease_until<=clock_timestamp())
  AND EXISTS(SELECT 1 FROM deployment_targets t WHERE t.id=deployments.target_id
   AND t.active_deployment_id=deployments.id AND t.fencing_token=deployments.fencing_token)
-RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at
 `
 
 type ReconcileReleaseParams struct {
@@ -282,6 +306,10 @@ func (q *Queries) ReconcileRelease(ctx context.Context, arg ReconcileReleasePara
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }
@@ -396,7 +424,7 @@ UPDATE deployments SET status=$1,helm_revision=COALESCE(helm_revision,$2),
  finished_at=CASE WHEN $1::text IN ('succeeded','failed') THEN clock_timestamp() ELSE NULL END
 WHERE deployments.id=$4 AND deployments.revision=$5 AND deployments.lease_owner=$6 AND deployments.lease_until>clock_timestamp()
  AND EXISTS(SELECT 1 FROM deployment_targets t WHERE t.id=deployments.target_id AND t.active_deployment_id=deployments.id AND t.fencing_token=deployments.fencing_token)
-RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at
 `
 
 type TransitionReleaseParams struct {
@@ -433,6 +461,10 @@ func (q *Queries) TransitionRelease(ctx context.Context, arg TransitionReleasePa
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }

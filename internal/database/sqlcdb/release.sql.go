@@ -40,7 +40,7 @@ func (q *Queries) CountDeployments(ctx context.Context, arg CountDeploymentsPara
 }
 
 const createDeployment = `-- name: CreateDeployment :one
-INSERT INTO deployments(id,request_id,target_id) VALUES($1,$2,$3) RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code
+INSERT INTO deployments(id,request_id,target_id) VALUES($1,$2,$3) RETURNING id, request_id, target_id, status, helm_revision, created_at, revision, fencing_token, lease_owner, lease_until, next_poll_at, started_at, finished_at, error_code, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at
 `
 
 type CreateDeploymentParams struct {
@@ -67,6 +67,10 @@ func (q *Queries) CreateDeployment(ctx context.Context, arg CreateDeploymentPara
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 	)
 	return i, err
 }
@@ -253,7 +257,7 @@ func (q *Queries) GetArtifact(ctx context.Context, id string) (Artifact, error) 
 }
 
 const getDeployment = `-- name: GetDeployment :one
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code, d.next_cleanup_at, d.cleanup_attempts, d.cleanup_error_code, d.resources_cleaned_at,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
 JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id WHERE d.id=$1
 `
 
@@ -272,6 +276,10 @@ type GetDeploymentRow struct {
 	StartedAt          *time.Time
 	FinishedAt         *time.Time
 	ErrorCode          *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
 	SnapshotID         string
 	Kind               string
 	SourceDeploymentID *string
@@ -300,6 +308,10 @@ func (q *Queries) GetDeployment(ctx context.Context, id string) (GetDeploymentRo
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.ErrorCode,
+		&i.NextCleanupAt,
+		&i.CleanupAttempts,
+		&i.CleanupErrorCode,
+		&i.ResourcesCleanedAt,
 		&i.SnapshotID,
 		&i.Kind,
 		&i.SourceDeploymentID,
@@ -428,7 +440,7 @@ func (q *Queries) HasActiveDeployments(ctx context.Context, appID string) (bool,
 }
 
 const listDeployments = `-- name: ListDeployments :many
-SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
+SELECT d.id, d.request_id, d.target_id, d.status, d.helm_revision, d.created_at, d.revision, d.fencing_token, d.lease_owner, d.lease_until, d.next_poll_at, d.started_at, d.finished_at, d.error_code, d.next_cleanup_at, d.cleanup_attempts, d.cleanup_error_code, d.resources_cleaned_at,r.snapshot_id,r.kind,r.source_deployment_id,s.app_id,s.binding_id,s.artifact_id,s.config_version,s.snapshot FROM deployments d
 JOIN release_requests r ON r.id=d.request_id JOIN release_snapshots s ON s.id=r.snapshot_id
 WHERE s.app_id=$1 AND ($2::uuid IS NULL OR s.binding_id=$2)
 ORDER BY d.created_at DESC,d.id LIMIT $4 OFFSET $3
@@ -456,6 +468,10 @@ type ListDeploymentsRow struct {
 	StartedAt          *time.Time
 	FinishedAt         *time.Time
 	ErrorCode          *string
+	NextCleanupAt      time.Time
+	CleanupAttempts    int32
+	CleanupErrorCode   *string
+	ResourcesCleanedAt *time.Time
 	SnapshotID         string
 	Kind               string
 	SourceDeploymentID *string
@@ -495,6 +511,10 @@ func (q *Queries) ListDeployments(ctx context.Context, arg ListDeploymentsParams
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.ErrorCode,
+			&i.NextCleanupAt,
+			&i.CleanupAttempts,
+			&i.CleanupErrorCode,
+			&i.ResourcesCleanedAt,
 			&i.SnapshotID,
 			&i.Kind,
 			&i.SourceDeploymentID,

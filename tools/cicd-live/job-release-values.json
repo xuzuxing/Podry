@@ -1,0 +1,21 @@
+{
+  "section": "base",
+  "chartConfig": {
+    "workloadKind": "Job",
+    "chartVersion": "1.1.0"
+  },
+  "deployValues": {
+    "job": {
+      "completions": 1,
+      "parallelism": 1,
+      "restartPolicy": "Never",
+      "backoffLimit": 0,
+      "activeDeadlineSeconds": 120
+    },
+    "resources": {
+      "requests": { "cpu": "10m", "memory": "16Mi" },
+      "limits": { "cpu": "100m", "memory": "64Mi" }
+    }
+  },
+  "secretRefs": []
+}

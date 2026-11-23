@@ -1,0 +1,165 @@
+{
+  "date": "2026-11-22",
+  "scope": "Deployed cancellation fix, live upgrade and historical Secret rollback, repeated background health, expiry and restart recovery",
+  "binaryUpdate": {
+    "updated": true,
+    "ready": true,
+    "previousBinarySHA256": "e24dfbc0d9c275c5485758f4726a4bdf23bfd3d74430090013a523816ffd18a3",
+    "candidateBinarySHA256": "da36338b604ec8715d76fe4a8422eff3b48cc39ca956c0b09836fdb4ba08100d",
+    "existingContainerPreserved": true,
+    "at": "2026-11-22T14:59:54.635Z"
+  },
+  "release": {
+    "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+    "bindingId": "59b6d2bf-534a-4071-94ca-7b3d3b45ec05",
+    "upgrade": {
+      "requestId": "ca3d9524-5020-4fba-993f-c7de835a3abe",
+      "deploymentId": "756a087b-a0e5-4657-ac9f-7f5dcfcc0a41",
+      "status": "succeeded",
+      "helmRevision": 4,
+      "submission": {
+        "phase": "observe",
+        "operation": "upgrade",
+        "state": "unknown",
+        "action_error": "none",
+        "returned_error": "none",
+        "context_error": "deadline",
+        "duration_ms": "20135"
+      },
+      "readOnlyRecoveryFromTransientUnknown": true
+    },
+    "rollback": {
+      "requestId": "52e8d6a9-5c0d-4838-8a4c-8468bd1d93bd",
+      "deploymentId": "49048895-b606-4763-a60a-ca59317096f3",
+      "status": "succeeded",
+      "helmRevision": 5,
+      "passes": 2,
+      "submission": {
+        "phase": "observe",
+        "operation": "upgrade",
+        "state": "succeeded",
+        "action_error": "none",
+        "returned_error": "none",
+        "context_error": "none",
+        "duration_ms": "18520"
+      },
+      "restoredSecret": {
+        "name": "podry-demo-secr-s-49048895b6064763a60aca59317096f3",
+        "uid": "32a59b3d-1bac-4898-b724-b1accc80f885",
+        "key": "PODRY_LIVE_SECRET",
+        "version": 1,
+        "valueMatched": true
+      },
+      "restoredReplicas": 1,
+      "pingStatus": 200,
+      "versionStatus": 404
+    },
+    "currentSourceConfigVersion": 12,
+    "currentCredentialVersion": 3,
+    "currentConfigSecretVersion": 2
+  },
+  "health": {
+    "appId": "d6b36233-d481-4465-b918-c822a7346d54",
+    "bindingId": "17af250b-3e4a-4631-96c3-6f5ce1ab5fab",
+    "samples": [
+      {
+        "observedAt": "2026-11-22T15:06:30.441875+00:00",
+        "ageSeconds": 17.652335,
+        "health": "healthy",
+        "pollStartedAt": "2026-11-22T15:06:30.423521+00:00",
+        "leaseCompleted": true,
+        "lastErrorCode": null,
+        "apiDetailHealth": "healthy",
+        "apiListHealthy": true
+      },
+      {
+        "observedAt": "2026-11-22T15:07:22.394486+00:00",
+        "ageSeconds": 14.070798,
+        "health": "healthy",
+        "pollStartedAt": "2026-11-22T15:07:22.372505+00:00",
+        "leaseCompleted": true,
+        "lastErrorCode": null,
+        "apiDetailHealth": "healthy",
+        "apiListHealthy": true
+      }
+    ],
+    "refreshGapSeconds": 51.953,
+    "passes": 2,
+    "expiry": {
+      "observedAt": "2026-11-22T15:08:55.86549+00:00",
+      "ageSeconds": 62.002314,
+      "projectedHealth": "unknown",
+      "apiDetailHealth": "unknown",
+      "apiUnknownFilter": true
+    },
+    "recovery": {
+      "result": "passed",
+      "expiredObservedAt": "2026-11-22T15:08:55.86549+00:00",
+      "recoveredObservedAt": "2026-11-22T15:11:25.536885+00:00",
+      "recoveredProjection": "healthy",
+      "apiDetailHealth": "healthy",
+      "apiListHealthy": true,
+      "flags": [
+        "PODRY_BUILD_ENABLED=false",
+        "PODRY_HEALTH_POLLING_ENABLED=true",
+        "PODRY_RELEASE_ENABLED=false",
+        "PODRY_RESOURCE_WRITES_ENABLED=false"
+      ],
+      "at": "2026-11-22T15:11:37.681Z"
+    },
+    "resourceRefreshEndpointUsed": false,
+    "deliveryCountsUnchangedDuringHealth": true,
+    "temporaryAPICollected": true,
+    "mainAPIHealthFlagEnabled": false,
+    "scopeLimit": "One single-binding application checked; worker used existing schedules in the dedicated test database; not production capacity or multi-instance proof"
+  },
+  "database": {
+    "counts": {
+      "builds": 9,
+      "attempts": 11,
+      "artifacts": 7,
+      "intents": 2,
+      "previews": 19,
+      "snapshots": 19,
+      "requests": 19,
+      "deployments": 19
+    },
+    "unknowns": [
+      {
+        "id": "6ab5a26c-80aa-4782-b792-0410abbc8051",
+        "status": "unknown",
+        "code": "release_resource_identity_conflict",
+        "helmRevision": null,
+        "occupied": true
+      },
+      {
+        "id": "ab649289-cfbe-4b2d-b9f4-7a30a1f36ae2",
+        "status": "unknown",
+        "code": "release_outcome_unknown",
+        "helmRevision": null,
+        "occupied": true
+      },
+      {
+        "id": "1cffcba3-4523-4c94-8eb2-ce9b4943b78e",
+        "status": "unknown",
+        "code": "release_resource_identity_conflict",
+        "helmRevision": 2,
+        "occupied": true
+      }
+    ]
+  },
+  "publicPing": {
+    "normalDNSAndTLS": true,
+    "status": 200,
+    "pong": true
+  },
+  "firstSetupIssues": {
+    "binaryUpdate": "Initial startup check did not reach readiness; previous binary restored. Final update verified JSON /healthz and authenticated database-backed app read.",
+    "healthWorker": "Inherited duplicate environment entries discarded; verified replacement used exactly one value for each worker flag."
+  },
+  "originalPendingRootCauseConfirmed": false,
+  "resubmittedOriginalUnknown": false,
+  "clearedOccupancy": false,
+  "defaultFlagsChanged": false,
+  "b6Complete": false
+}

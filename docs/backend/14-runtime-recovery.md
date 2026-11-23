@@ -81,7 +81,7 @@ pg_dump --format=custom --no-owner --no-acl --file=podry.dump
 
 已有日志保留任务仍只按服务生成的确切 storage key 清理过期归档，受 DataDir 的安全文件访问约束。只有 build worker 启用并正常运行时才执行该任务。
 
-本批没有 Job/Secret/ConfigMap 自动 GC、目标强制解锁、备份 CLI、自动数据库恢复、业务记录保留期或 unknown 人工处置接口。T24 外部清理仍需确认精确 UID/执行身份、终态结果与日志留存，任何活动/unknown 或归属不明资源都不能当作安全清理候选。
+本段最初批次没有 Job/Secret/ConfigMap 自动 GC；现已在 v19 增加默认关闭的资源清理 Worker，具体范围、日志门槛与恢复规则见 [构建与发布资源自动清理](39-resource-cleanup.md)。没有目标强制解锁、备份 CLI、自动数据库恢复或业务记录保留期。活动/unknown 或归属不明资源不能作为安全清理候选；人工只读核对见本文后续补充。
 
 ## 验证记录
 
@@ -126,11 +126,11 @@ pg_dump --format=custom --no-owner --no-acl --file=podry.dump
 
 ## v14 应用漂移恢复补充
 
-E08 批次二进制要求匹配干净 v14；当前版本要求 v17。备份包含 application_drift_observations 的身份摘要、状态、数量和观察时间；恢复后的旧观察仍需通过当前身份及 60 秒有效期检查，不能将历史 aligned 当作集群已收敛。没有观察时允许 v14→v13，有历史时拒绝降级。只读刷新不需要开启任何 Worker，也不触发外部修复。详见 [应用漂移](22-application-drift.md)。
+E08 批次二进制要求匹配干净 v14；当前版本要求 v19。备份包含 application_drift_observations 的身份摘要、状态、数量和观察时间；恢复后的旧观察仍需通过当前身份及 60 秒有效期检查，不能将历史 aligned 当作集群已收敛。没有观察时允许 v14→v13，有历史时拒绝降级。只读刷新不需要开启任何 Worker，也不触发外部修复。详见 [应用漂移](22-application-drift.md)。
 
 ## GitHub Webhook 恢复补充
 
-GitHub Push 批次要求干净 v15；当前二进制要求干净 v17。备份 pipeline_push_authorizations、webhook_deliveries、Build/Attempt 和审计；恢复保持三个 Worker 关闭。同 Delivery 读取持久结果，有投递历史或 Push 配置拒绝 v15 降级。不得删除去重记录后重投制造新任务。on_ci_success 的后续 v16 恢复合同见 [自动部署](24-ci-auto-deploy.md)，Push 签名/去重见 [Webhook 合同](23-git-webhooks.md)。
+GitHub Push 批次要求干净 v15；当前二进制要求干净 v19。备份 pipeline_push_authorizations、webhook_deliveries、Build/Attempt 和审计；恢复保持全部后台开关关闭。同 Delivery 读取持久结果，有投递历史或 Push 配置拒绝 v15 降级。不得删除去重记录后重投制造新任务。on_ci_success 的后续 v16 恢复合同见 [自动部署](24-ci-auto-deploy.md)，四平台签名/去重见 [Webhook 合同](38-git-webhook-providers.md)。
 
 ## v16 自动部署恢复补充
 

@@ -1,0 +1,94 @@
+# Dedicated, trusted single-tenant acceptance environment.
+# Create buildkit-config from buildkitd.toml and the PUBLIC test CA first.
+# Rootless setup follows moby/buildkit examples/kubernetes/deployment+service.rootless.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: podry-cicd-live
+  labels:
+    podry.io/purpose: cicd-live
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkit
+  namespace: podry-cicd-live
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: podry-live-buildkit
+  template:
+    metadata:
+      labels:
+        app: podry-live-buildkit
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: buildkit
+          image: moby/buildkit@sha256:7d02292556e66feea6d2d89b7ec143503b57e4f59a4efc6b7ece8547e4d3e5be
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --oci-worker-no-process-sandbox
+            - --config
+            - /etc/buildkit/buildkitd.toml
+          ports:
+            - containerPort: 1234
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: Unconfined
+            appArmorProfile:
+              type: Unconfined
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 1500m
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/buildkit
+              readOnly: true
+            - name: data
+              mountPath: /home/user/.local/share/buildkit
+      volumes:
+        - name: config
+          configMap:
+            name: buildkit-config
+        - name: data
+          emptyDir:
+            sizeLimit: 6Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkit
+  namespace: podry-cicd-live
+spec:
+  selector:
+    app: podry-live-buildkit
+  ports:
+    - port: 1234
+      targetPort: 1234
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: buildkit-internal
+  namespace: podry-cicd-live
+spec:
+  podSelector:
+    matchLabels:
+      app: podry-live-buildkit
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 1234

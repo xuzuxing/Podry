@@ -160,7 +160,7 @@ func (s *Service) ProcessAutoDeployOne(ctx context.Context) (bool, error) {
 	for _, r := range p.SecretRefs {
 		keys = append(keys, r.TargetKey)
 	}
-	p.Chart, err = chart.Render(chart.Input{AppID: p.AppID, BindingID: p.BindingID, DeploymentID: p.DeploymentID, Namespace: p.Target.Namespace, ReleaseName: p.Target.ReleaseName, WorkloadKind: p.WorkloadKind, ImageRef: p.ImageRef, Values: planned.values, SecretKeys: keys})
+	p.Chart, err = chart.Render(chart.Input{Version: planned.chartVersion, AppID: p.AppID, BindingID: p.BindingID, DeploymentID: p.DeploymentID, Namespace: p.Target.Namespace, ReleaseName: p.Target.ReleaseName, WorkloadKind: p.WorkloadKind, ImageRef: p.ImageRef, Values: planned.values, SecretKeys: keys})
 	if err != nil {
 		return true, s.autoDeployFailure(ctx, i, httpx.Fail(422, "chart_render_failed", "自动发布渲染失败"))
 	}

@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/xuzuxing/podry/internal/chart"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/kube"
 	"helm.sh/helm/v3/pkg/kube/fake"
 	helmrelease "helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/storage"
@@ -26,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/rest"
 )
 
 type helmFixture struct {
@@ -34,6 +38,54 @@ type helmFixture struct {
 	objects map[string]*unstructured.Unstructured
 	pods    []unstructured.Unstructured
 	writes  atomic.Int32
+}
+
+func TestHelmReusesDiscoveryWithinStepAndRefreshesNextStep(t *testing.T) {
+	var coreRequests, groupRequests, writes atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var value any
+		switch r.URL.Path {
+		case "/api":
+			coreRequests.Add(1)
+			value = metav1.APIVersions{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIVersions"}, Versions: []string{"v1"}}
+		case "/apis":
+			groupRequests.Add(1)
+			version := metav1.GroupVersionForDiscovery{GroupVersion: "apps/v1", Version: "v1"}
+			value = metav1.APIGroupList{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "APIGroupList"}, Groups: []metav1.APIGroup{{Name: "apps", Versions: []metav1.GroupVersionForDiscovery{version}, PreferredVersion: version}}}
+		case "/api/v1":
+			value = metav1.APIResourceList{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "services", Kind: "Service", Namespaced: true}}}
+		case "/apis/apps/v1":
+			value = metav1.APIResourceList{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment", Namespaced: true}}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(value)
+	}))
+	defer api.Close()
+	manifest := "apiVersion: v1\nkind: Service\nmetadata:\n  name: demo\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: demo\n"
+	for step := int32(1); step <= 2; step++ {
+		g, err := newGetter(&rest.Config{Host: api.URL}, "demo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := kube.New(g)
+		for build := 0; build < 3; build++ {
+			resources, err := client.Build(strings.NewReader(manifest), false)
+			if err != nil || len(resources) != 2 {
+				t.Fatalf("step %d build %d: resources=%d err=%v", step, build, len(resources), err)
+			}
+		}
+		if coreRequests.Load() != step || groupRequests.Load() != step || writes.Load() != 0 {
+			t.Fatalf("discovery cache boundary: core=%d groups=%d writes=%d step=%d", coreRequests.Load(), groupRequests.Load(), writes.Load(), step)
+		}
+	}
 }
 
 func newHelmFixture(t *testing.T, kind string) *helmFixture {
@@ -234,29 +286,111 @@ func TestHelmTransportStopsWritesAfterContextCancellation(t *testing.T) {
 	}
 }
 
+// Model an unavailable schema endpoint while exercising SDK render and storage.
+type schemaUnavailableKubeClient struct {
+	*fake.PrintingKubeClient
+	builds int
+}
+
+func (c *schemaUnavailableKubeClient) Build(r io.Reader, validate bool) (kube.ResourceList, error) {
+	c.builds++
+	if validate {
+		return nil, errors.New("cluster OpenAPI download unavailable")
+	}
+	return c.PrintingKubeClient.Build(r, false)
+}
+
 func TestHelmSDKInstallAndUpgradeUseArchivedChartAndResolvedValues(t *testing.T) {
 	// Exercise the actual SDK action/render/storage paths with an in-memory Helm
 	// driver and a fake Kubernetes writer. Live resources still come from TLS HTTP.
-	cfg := &action.Configuration{Releases: storage.Init(driver.NewMemory()), KubeClient: &fake.PrintingKubeClient{Out: io.Discard}, Capabilities: chartutil.DefaultCapabilities, Log: func(string, ...interface{}) {}}
+	for _, kind := range []string{"Deployment", "Job"} {
+		t.Run(kind, func(t *testing.T) {
+			writer := &schemaUnavailableKubeClient{PrintingKubeClient: &fake.PrintingKubeClient{Out: io.Discard}}
+			cfg := &action.Configuration{Releases: storage.Init(driver.NewMemory()), KubeClient: writer, Capabilities: chartutil.DefaultCapabilities, Log: func(string, ...interface{}) {}}
+			h := &Helm{configure: func(context.Context, Input) (*action.Configuration, error) { return cfg, nil }}
+			for i, id := range []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"} {
+				f := newHelmFixtureID(t, kind, id)
+				raw, _ := json.Marshal(f.input.Plan.Chart.Values)
+				if err := json.Unmarshal(raw, &f.input.Values); err != nil {
+					t.Fatal(err)
+				}
+				reserved := f.input.Values["podry"].(map[string]any)
+				reserved["secretData"] = map[string]string{"PASSWORD": base64.StdEncoding.EncodeToString([]byte("runtime-only-secret"))}
+				o, err := h.Submit(context.Background(), f.input)
+				if err != nil || o.State != "succeeded" || o.Revision == nil || *o.Revision != int32(i+1) {
+					t.Fatalf("SDK submit state=%s code=%s revision=%v err=%v", o.State, o.Code, o.Revision, err)
+				}
+				r, err := cfg.Releases.Last("demo")
+				if err != nil || !ownedRelease(r, f.input) || !strings.Contains(r.Manifest, base64.StdEncoding.EncodeToString([]byte("runtime-only-secret"))) || strings.Contains(r.Manifest, base64.StdEncoding.EncodeToString([]byte("<redacted>"))) {
+					t.Fatal("SDK submitted redacted values or lost immutable identity", err)
+				}
+				if r.Chart.Metadata.Version != f.input.Plan.Chart.Version {
+					t.Fatal("SDK ignored archived chart")
+				}
+			}
+			if writer.builds < 2 {
+				t.Fatal("SDK did not build submitted resources")
+			}
+		})
+	}
+}
+
+type failingUpgradeKubeClient struct {
+	*fake.PrintingKubeClient
+	updates int
+}
+
+func (c *failingUpgradeKubeClient) Update(_, _ kube.ResourceList, _ bool) (*kube.Result, error) {
+	c.updates++
+	return &kube.Result{}, errors.New("rendered Secret contains sensitive-upgrade-fixture")
+}
+
+func TestHelmFailedUpgradeDiagnosticsAndReplayRemainReadOnly(t *testing.T) {
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	writer := &failingUpgradeKubeClient{PrintingKubeClient: &fake.PrintingKubeClient{Out: io.Discard}}
+	cfg := &action.Configuration{Releases: storage.Init(driver.NewMemory()), KubeClient: writer,
+		Capabilities: chartutil.DefaultCapabilities, Log: func(string, ...interface{}) {}}
 	h := &Helm{configure: func(context.Context, Input) (*action.Configuration, error) { return cfg, nil }}
+	var upgrade Input
 	for i, id := range []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"} {
 		f := newHelmFixtureID(t, "Deployment", id)
 		raw, _ := json.Marshal(f.input.Plan.Chart.Values)
 		if err := json.Unmarshal(raw, &f.input.Values); err != nil {
 			t.Fatal(err)
 		}
-		reserved := f.input.Values["podry"].(map[string]any)
-		reserved["secretData"] = map[string]string{"PASSWORD": base64.StdEncoding.EncodeToString([]byte("runtime-only-secret"))}
 		o, err := h.Submit(context.Background(), f.input)
-		if err != nil || o.State != "succeeded" || o.Revision == nil || *o.Revision != int32(i+1) {
-			t.Fatalf("SDK submit state=%s code=%s revision=%v err=%v", o.State, o.Code, o.Revision, err)
+		if err != nil {
+			t.Fatal(err)
 		}
-		r, err := cfg.Releases.Last("demo")
-		if err != nil || !ownedRelease(r, f.input) || !strings.Contains(r.Manifest, base64.StdEncoding.EncodeToString([]byte("runtime-only-secret"))) || strings.Contains(r.Manifest, base64.StdEncoding.EncodeToString([]byte("<redacted>"))) {
-			t.Fatal("SDK submitted redacted values or lost immutable identity", err)
+		if i == 0 && o.State != "succeeded" {
+			t.Fatal("baseline install failed")
 		}
-		if r.Chart.Metadata.Version != f.input.Plan.Chart.Version {
-			t.Fatal("SDK ignored archived chart")
+		if i == 1 && (o.State != "unknown" || o.Code != "release_outcome_unknown") {
+			t.Fatal("failed upgrade was incorrectly settled")
 		}
+		upgrade = f.input
+	}
+	if strings.Contains(output.String(), "sensitive-upgrade-fixture") {
+		t.Fatal("submission diagnostics exposed raw Helm error contents")
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["operation"] != "upgrade" || record["phase"] != "observe" || record["action_error"] != "error" || record["state"] != "unknown" {
+		t.Fatalf("missing upgrade diagnostic classification: %v", record)
+	}
+	// A retry of this execution observes its existing failed/pending revision.
+	// It must not invoke Update again, even though the public state is unknown.
+	if _, err := h.Submit(context.Background(), upgrade); err != nil {
+		t.Fatal(err)
+	}
+	history, err := cfg.Releases.History(upgrade.Plan.Target.ReleaseName)
+	if err != nil || len(history) != 2 || writer.updates != 1 {
+		t.Fatal("unknown upgrade was submitted again", err)
 	}
 }

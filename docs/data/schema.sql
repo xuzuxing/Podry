@@ -138,6 +138,9 @@ CREATE TABLE build_attempts (
     lease_owner text, lease_expires_at timestamptz, revision bigint NOT NULL DEFAULT 1,
     started_at timestamptz, finished_at timestamptz, error_code text,
     cancel_requested_at timestamptz, cancel_requested_by uuid REFERENCES users(id),
+    -- v19 runtime cleanup metadata; execution inputs and history remain immutable.
+    next_cleanup_at timestamptz NOT NULL DEFAULT now(), cleanup_attempts integer NOT NULL DEFAULT 0 CHECK(cleanup_attempts>=0),
+    cleanup_error_code text, resources_cleaned_at timestamptz,
     CHECK((cancel_requested_at IS NULL)=(cancel_requested_by IS NULL)),
     UNIQUE(build_id,attempt_no), UNIQUE(build_cluster_id,namespace,job_name), UNIQUE(id,build_id)
 );
@@ -194,6 +197,8 @@ CREATE TABLE deployments (
     target_id uuid NOT NULL REFERENCES deployment_targets(id),
     status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','submitting','observing','succeeded','failed','unknown')),
     helm_revision integer, fencing_token bigint,
+    next_cleanup_at timestamptz NOT NULL DEFAULT now(), cleanup_attempts integer NOT NULL DEFAULT 0 CHECK(cleanup_attempts>=0),
+    cleanup_error_code text, resources_cleaned_at timestamptz,
     lease_owner text, lease_expires_at timestamptz, revision bigint NOT NULL DEFAULT 1,
     started_at timestamptz, finished_at timestamptz, error_code text,
     created_at timestamptz NOT NULL DEFAULT now()
@@ -261,7 +266,7 @@ CREATE TABLE pipeline_push_authorizations (
 );
 CREATE TABLE webhook_deliveries (
  id uuid PRIMARY KEY,
- provider text NOT NULL CHECK(provider='github'),
+ provider text NOT NULL CHECK(provider IN ('github','gitea','gitlab','gitee')),
  pipeline_id uuid NOT NULL REFERENCES pipelines(id),
  delivery_id text NOT NULL CHECK(length(delivery_id) BETWEEN 1 AND 100),
  request_hash text NOT NULL CHECK(request_hash ~ '^[0-9a-f]{64}$'),

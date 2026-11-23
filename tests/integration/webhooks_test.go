@@ -162,7 +162,7 @@ func TestGitWebhookSignatureBoundariesAndNoPayloadPersistence(t *testing.T) {
 		{"invalid delivery", body, webhookTestSecret, func(r *http.Request) { r.Header.Set("X-GitHub-Delivery", "not-a-guid") }, 422},
 		{"no event", body, webhookTestSecret, func(r *http.Request) { r.Header.Del("X-GitHub-Event") }, 422},
 		{"wrong type", body, webhookTestSecret, func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }, 415},
-		{"unsupported provider", body, webhookTestSecret, func(r *http.Request) { r.URL.Path = strings.Replace(r.URL.Path, "/github/", "/gitlab/", 1) }, 422},
+		{"unsupported provider", body, webhookTestSecret, func(r *http.Request) { r.URL.Path = strings.Replace(r.URL.Path, "/github/", "/unsupported/", 1) }, 422},
 		{"invalid JSON", []byte(`{"ref":`), webhookTestSecret, nil, 422},
 		{"duplicate JSON key", []byte(`{"ref":"main","ref":"other"}`), webhookTestSecret, nil, 422},
 		{"oversize", bytes.Repeat([]byte("x"), (1<<20)+1), webhookTestSecret, nil, 413},

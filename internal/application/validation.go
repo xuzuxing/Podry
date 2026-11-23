@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/xuzuxing/podry/internal/auth"
+	"github.com/xuzuxing/podry/internal/chart"
 	"github.com/xuzuxing/podry/internal/database/sqlcdb"
 	"github.com/xuzuxing/podry/internal/httpx"
 	"github.com/xuzuxing/podry/internal/platform"
@@ -107,10 +108,7 @@ func (s *Service) validateConfig(ctx context.Context, q *sqlcdb.Queries, a auth.
 		if ch.WorkloadKind != "Deployment" && ch.WorkloadKind != "Job" {
 			return httpx.Invalid("workloadKind 仅支持 Deployment/Job")
 		}
-		if ch.ChartVersion != "1.0.0" {
-			return httpx.Fail(422, "unsupported_chart_version", "当前内置 Chart 配置版本为 1.0.0")
-		}
-		if err := validateValues(ch.WorkloadKind, c.DeployValues); err != nil {
+		if err := validateChartValues(c); err != nil {
 			return err
 		}
 		seen := map[string]bool{}
@@ -134,6 +132,41 @@ func (s *Service) validateConfig(ctx context.Context, q *sqlcdb.Queries, a auth.
 	}
 	return nil
 }
+
+func validateChartValues(c Config) error {
+	if !chart.SupportsVersion(c.ChartConfig.ChartVersion) {
+		return httpx.Fail(422, "unsupported_chart_version", "内置 Chart 支持 1.0.0 和 1.1.0")
+	}
+	if err := validateValues(c.ChartConfig.WorkloadKind, c.DeployValues); err != nil {
+		return err
+	}
+	if ingress, ok := c.DeployValues["ingress"].(map[string]any); ok {
+		for _, key := range []string{"className", "tlsSecretName", "clusterIssuer"} {
+			if _, exists := ingress[key]; exists && c.ChartConfig.ChartVersion == "1.0.0" {
+				return httpx.Invalid("Ingress className/TLS 配置需要 Chart 1.1.0")
+			}
+		}
+		if issuer, _ := ingress["clusterIssuer"].(string); issuer != "" {
+			if secret, _ := ingress["tlsSecretName"].(string); secret == "" {
+				return httpx.Invalid("Ingress clusterIssuer 需要 tlsSecretName")
+			}
+		}
+	}
+	return nil
+}
+
+func dnsSubdomain(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, segment := range strings.Split(s, ".") {
+		if !platform.DNSName(segment, 63) {
+			return false
+		}
+	}
+	return true
+}
+
 func integer(v any, min, max int) bool {
 	n, ok := v.(float64)
 	return ok && n == float64(int64(n)) && n >= float64(min) && n <= float64(max)
@@ -219,7 +252,7 @@ func validateValues(kind string, v map[string]any) error {
 			}
 		case "ingress":
 			m, ok := val.(map[string]any)
-			if kind == "Job" || !ok || !fields(m, "enabled", "host") {
+			if kind == "Job" || !ok || !fields(m, "enabled", "host", "className", "tlsSecretName", "clusterIssuer") {
 				return invalid
 			}
 			for name, x := range m {
@@ -227,15 +260,15 @@ func validateValues(kind string, v map[string]any) error {
 					if _, ok := x.(bool); !ok {
 						return invalid
 					}
-				} else {
+				} else if name == "host" {
 					s, ok := x.(string)
-					if !ok || len(s) > 253 || strings.ContainsAny(s, "/:* \r\n") || s == "" {
+					if !ok || !dnsSubdomain(s) {
 						return invalid
 					}
-					for _, seg := range strings.Split(s, ".") {
-						if !platform.DNSName(seg, 63) {
-							return invalid
-						}
+				} else {
+					s, ok := x.(string)
+					if !ok || (s != "" && !dnsSubdomain(s)) {
+						return invalid
 					}
 				}
 			}

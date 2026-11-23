@@ -1,0 +1,400 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-22T13:31:08.222Z",
+  "result": "passed",
+  "scope": "Live versioned Deployment upgrade and full historical configuration rollback on a new manual target; existing ambiguous targets retained",
+  "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+  "bindingId": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+  "target": {
+    "clusterId": "acef2c04-23bf-418f-bb7c-e51fe99ad193",
+    "namespace": "podry-cicd-live",
+    "releaseName": "podry-demo-rollback"
+  },
+  "sourceBranch": "podry-live-upgrade-20261122",
+  "mainUnchanged": {
+    "sha": "d63cda0d80dd31829b88b281fdc6a8362c06a6f0",
+    "verified": true
+  },
+  "oldBuild": {
+    "id": "d9af03c9-1af9-4531-91d3-a531293aa905",
+    "sha": "d63cda0d80dd31829b88b281fdc6a8362c06a6f0",
+    "artifact": {
+      "id": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+      "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+      "buildId": "d9af03c9-1af9-4531-91d3-a531293aa905",
+      "source": "build",
+      "imageRepository": "registry.podry.dev/podry-live/podry-demo-auto",
+      "digest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "createdAt": "2026-11-22T13:04:55.681974Z"
+    },
+    "registry": {
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "manifests": [
+        "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+      ],
+      "verifiedAt": "2026-11-22T13:26:07.385Z"
+    }
+  },
+  "newBuild": {
+    "id": "2a8b34ec-372d-4e71-bba7-3c069bc43654",
+    "sha": "6b67938cce173480758eb117ae8c65492a6ce0a8",
+    "artifact": {
+      "id": "570602ee-ca55-4352-a3cd-5e19d0f530d3",
+      "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+      "buildId": "2a8b34ec-372d-4e71-bba7-3c069bc43654",
+      "source": "build",
+      "imageRepository": "registry.podry.dev/podry-live/podry-demo-auto",
+      "digest": "sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+      "createdAt": "2026-11-22T13:17:49.361156Z"
+    },
+    "registry": {
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+      "manifests": [
+        "sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c"
+      ],
+      "verifiedAt": "2026-11-22T13:27:08.706Z"
+    }
+  },
+  "history": [
+    {
+      "deploymentId": "fae6e208-523a-4b54-a6dc-5a5578392ff0",
+      "status": "succeeded",
+      "helmRevision": 1,
+      "kind": "promote",
+      "sourceDeploymentId": "d93568b2-a110-45b4-827b-163ed03954ca",
+      "configVersion": 7,
+      "bindingVersion": 1,
+      "snapshotSHA256": "930adb6d8cd000dc5b83e17464def1cb7a15d12fa8e52403744268b077cf191e",
+      "chartVersion": "1.0.0",
+      "chartPackageSHA256": "ec64a72850fb0eba6408e24703ba31331f9e34172a5163b58b2badb469452228"
+    },
+    {
+      "deploymentId": "cd4f7ba0-01af-4902-922a-96f8492793b1",
+      "status": "succeeded",
+      "helmRevision": 2,
+      "kind": "deploy",
+      "sourceDeploymentId": null,
+      "configVersion": 8,
+      "bindingVersion": 2,
+      "snapshotSHA256": "51d2f13cff32d3e24c719eb2ada90a82a8ded7287d96575a50975151a145f209",
+      "chartVersion": "1.1.0",
+      "chartPackageSHA256": "5f523eda5a704e8c757246206a0ac5469ee03822813d69b50ba8341314a84cd5"
+    },
+    {
+      "deploymentId": "2b008fa0-d75c-42a3-9cc6-8677189609eb",
+      "status": "succeeded",
+      "helmRevision": 3,
+      "kind": "rollback",
+      "sourceDeploymentId": "fae6e208-523a-4b54-a6dc-5a5578392ff0",
+      "configVersion": 7,
+      "bindingVersion": 1,
+      "snapshotSHA256": "8bdffc21ed65b5c506e8adb45d30b5fa9ae45fb561d38b8929532bbcd5bafe22",
+      "chartVersion": "1.0.0",
+      "chartPackageSHA256": "ec64a72850fb0eba6408e24703ba31331f9e34172a5163b58b2badb469452228"
+    }
+  ],
+  "rollback": {
+    "schemaVersion": 1,
+    "runId": "7357c8a5-f542-4ac5-9877-cf91b70a0a02",
+    "api": "http://127.0.0.1:15000",
+    "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+    "bindingId": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+    "baselineId": "fae6e208-523a-4b54-a6dc-5a5578392ff0",
+    "upgradeId": "cd4f7ba0-01af-4902-922a-96f8492793b1",
+    "upgradeVersion": "live-v2",
+    "startedAt": "2026-11-22T13:28:16.059Z",
+    "events": [
+      {
+        "at": "2026-11-22T13:28:35.482Z",
+        "phase": "upgrade",
+        "value": "different image and business configuration verified"
+      },
+      {
+        "at": "2026-11-22T13:28:35.573Z",
+        "phase": "rollback",
+        "value": "queued"
+      },
+      {
+        "at": "2026-11-22T13:28:38.594Z",
+        "phase": "rollback",
+        "value": "submitting"
+      },
+      {
+        "at": "2026-11-22T13:28:50.671Z",
+        "phase": "rollback",
+        "value": "succeeded"
+      },
+      {
+        "at": "2026-11-22T13:29:05.488Z",
+        "phase": "acceptance",
+        "value": "passed"
+      },
+      {
+        "at": "2026-11-22T13:29:32.160Z",
+        "phase": "rollback",
+        "value": "succeeded"
+      },
+      {
+        "at": "2026-11-22T13:29:44.347Z",
+        "phase": "acceptance",
+        "value": "passed"
+      }
+    ],
+    "upgradeWorkload": {
+      "uid": "0881e7fe-d9d7-46f1-9760-00e5c29fc7ff",
+      "replicas": 2,
+      "environmentNames": [
+        "APP_RELEASE",
+        "PODRY_TEST_ENV"
+      ],
+      "pods": [
+        {
+          "name": "podry-demo-rollback-5f5487b66-h9ppp",
+          "uid": "d9ecb5c9-68af-41f7-9886-7ef561b189fb",
+          "imageID": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+          "http": {
+            "resource": "pod/podry-demo-rollback-5f5487b66-h9ppp",
+            "pingStatus": 200,
+            "pingBody": "pong",
+            "versionStatus": 200,
+            "version": "live-v2"
+          }
+        },
+        {
+          "name": "podry-demo-rollback-5f5487b66-kbrt5",
+          "uid": "c3e7557e-c571-46d4-b1e9-a7d0db5198ff",
+          "imageID": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+          "http": {
+            "resource": "pod/podry-demo-rollback-5f5487b66-kbrt5",
+            "pingStatus": 200,
+            "pingBody": "pong",
+            "versionStatus": 200,
+            "version": "live-v2"
+          }
+        }
+      ],
+      "service": {
+        "resource": "service/podry-demo-rollback",
+        "pingStatus": 200,
+        "pingBody": "pong",
+        "versionStatus": 200,
+        "version": "live-v2"
+      }
+    },
+    "baseline": {
+      "deployment": {
+        "id": "fae6e208-523a-4b54-a6dc-5a5578392ff0",
+        "requestId": "2f6becfa-0094-439e-9f60-af905e18835c",
+        "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+        "bindingId": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+        "artifactId": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+        "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+        "configVersion": 7,
+        "status": "succeeded",
+        "revision": 1,
+        "kind": "promote",
+        "sourceDeploymentId": "d93568b2-a110-45b4-827b-163ed03954ca",
+        "helmRevision": 1,
+        "createdAt": "2026-11-22T13:26:07.476449Z",
+        "startedAt": "2026-11-22T13:26:09.365985Z",
+        "finishedAt": "2026-11-22T13:26:16.949652Z",
+        "errorCode": null
+      },
+      "chart": {
+        "revision": 1,
+        "chartVersion": "1.0.0",
+        "chartContentsSHA256": "sha256:23eb31b1b8e7c09356bca080208c67dc1ec65de74ea109121f5960d755df0274",
+        "businessValuesSHA256": "sha256:95adbf82e62bae34c9ae6754a7bb56b234c2fb300135d4196b66b07e4138c4cc",
+        "replicas": 1,
+        "environmentNames": [
+          "APP_RELEASE",
+          "PODRY_TEST_ENV"
+        ],
+        "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+      },
+      "commitSha": "d63cda0d80dd31829b88b281fdc6a8362c06a6f0",
+      "buildId": "d9af03c9-1af9-4531-91d3-a531293aa905"
+    },
+    "upgrade": {
+      "deployment": {
+        "id": "cd4f7ba0-01af-4902-922a-96f8492793b1",
+        "requestId": "f4abaa50-31a8-4a1e-931a-d9014a68d0d2",
+        "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+        "bindingId": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+        "artifactId": "570602ee-ca55-4352-a3cd-5e19d0f530d3",
+        "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c",
+        "configVersion": 8,
+        "status": "succeeded",
+        "revision": 1,
+        "kind": "deploy",
+        "sourceDeploymentId": null,
+        "helmRevision": 2,
+        "createdAt": "2026-11-22T13:27:08.75338Z",
+        "startedAt": "2026-11-22T13:27:10.239525Z",
+        "finishedAt": "2026-11-22T13:27:26.211382Z",
+        "errorCode": null
+      },
+      "chart": {
+        "revision": 2,
+        "chartVersion": "1.1.0",
+        "chartContentsSHA256": "sha256:ad5d4220fd481b8c0d313a1e8cd5b02c0cbfffefb1507ae8a0804e0b1a622244",
+        "businessValuesSHA256": "sha256:5bf49078c57a3a956bb16ed1c1653316bbfbf7792d466245a370340688ae6f77",
+        "replicas": 2,
+        "environmentNames": [
+          "APP_RELEASE",
+          "PODRY_TEST_ENV"
+        ],
+        "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:0854f257cde81a5d0f8e84a2d2135e02e88a5df54ffea5cb6f3a7ccbde0f0b4c"
+      },
+      "commitSha": "6b67938cce173480758eb117ae8c65492a6ce0a8",
+      "buildId": "2a8b34ec-372d-4e71-bba7-3c069bc43654"
+    },
+    "currentConfig": {
+      "version": 8,
+      "sha256": "sha256:980311cdbc88fadac490754d087afc0de3543c01ac9ef4b3a874728049a7fd2c",
+      "bindingVersion": 2,
+      "overrideSHA256": "sha256:688466b8f5ced5001caaaddfb893a230b8f7bdf11c13aa8be4458464edd9f574",
+      "autoDeploy": false
+    },
+    "prepared": true,
+    "requestId": "1669bc91-25e9-4671-8940-20e2ad821f78",
+    "deploymentId": "2b008fa0-d75c-42a3-9cc6-8677189609eb",
+    "deployment": {
+      "id": "2b008fa0-d75c-42a3-9cc6-8677189609eb",
+      "requestId": "1669bc91-25e9-4671-8940-20e2ad821f78",
+      "appId": "ab5637b3-a81a-483f-906e-37c304178c63",
+      "bindingId": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+      "artifactId": "9e82f21c-b65d-4d9f-915e-2ddd65770a46",
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "configVersion": 7,
+      "status": "succeeded",
+      "revision": 1,
+      "kind": "rollback",
+      "sourceDeploymentId": "fae6e208-523a-4b54-a6dc-5a5578392ff0",
+      "helmRevision": 3,
+      "createdAt": "2026-11-22T13:28:35.523246Z",
+      "startedAt": "2026-11-22T13:28:36.24014Z",
+      "finishedAt": "2026-11-22T13:28:50.342806Z",
+      "errorCode": null
+    },
+    "restoredChart": {
+      "revision": 3,
+      "chartVersion": "1.0.0",
+      "chartContentsSHA256": "sha256:23eb31b1b8e7c09356bca080208c67dc1ec65de74ea109121f5960d755df0274",
+      "businessValuesSHA256": "sha256:95adbf82e62bae34c9ae6754a7bb56b234c2fb300135d4196b66b07e4138c4cc",
+      "replicas": 1,
+      "environmentNames": [
+        "APP_RELEASE",
+        "PODRY_TEST_ENV"
+      ],
+      "imageRef": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+    },
+    "restoredWorkload": {
+      "uid": "0881e7fe-d9d7-46f1-9760-00e5c29fc7ff",
+      "replicas": 1,
+      "environmentNames": [
+        "APP_RELEASE",
+        "PODRY_TEST_ENV"
+      ],
+      "pods": [
+        {
+          "name": "podry-demo-rollback-6cf764b666-8pq6r",
+          "uid": "1de80cd6-e52d-4614-84f2-e8a1b640df53",
+          "imageID": "registry.podry.dev/podry-live/podry-demo-auto@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+          "http": {
+            "resource": "pod/podry-demo-rollback-6cf764b666-8pq6r",
+            "pingStatus": 200,
+            "pingBody": "pong",
+            "versionStatus": 404
+          }
+        }
+      ],
+      "service": {
+        "resource": "service/podry-demo-rollback",
+        "pingStatus": 200,
+        "pingBody": "pong",
+        "versionStatus": 404
+      }
+    },
+    "finalBinding": {
+      "id": "72dbfd37-d36e-4e39-ab40-c460bacc858d",
+      "version": 2,
+      "currentDeploymentId": "2b008fa0-d75c-42a3-9cc6-8677189609eb",
+      "autoDeploy": false
+    },
+    "result": "passed",
+    "passes": 2,
+    "finishedAt": "2026-11-22T13:29:44.347Z"
+  },
+  "earlyAmbiguousUpgrade": {
+    "buildId": "2a8b34ec-372d-4e71-bba7-3c069bc43654",
+    "deploymentId": "6ab5a26c-80aa-4782-b792-0410abbc8051",
+    "errorCode": "release_resource_identity_conflict",
+    "helmRevision": null,
+    "result": "unknown; retained; no automatic resubmit",
+    "readOnlyDiagnostic": "20s Helm server upgrade dry-run with a transport rejecting writes timed out while repeatedly fetching /api and /apis; identical input with one per-step Discovery cache succeeded"
+  },
+  "preservedUnknown": [
+    {
+      "deploymentId": "ab649289-cfbe-4b2d-b9f4-7a30a1f36ae2",
+      "status": "unknown",
+      "errorCode": "release_outcome_unknown",
+      "releaseName": "podry-job-live",
+      "activeDeploymentId": "ab649289-cfbe-4b2d-b9f4-7a30a1f36ae2"
+    },
+    {
+      "deploymentId": "6ab5a26c-80aa-4782-b792-0410abbc8051",
+      "status": "unknown",
+      "errorCode": "release_resource_identity_conflict",
+      "releaseName": "podry-demo-auto",
+      "activeDeploymentId": "6ab5a26c-80aa-4782-b792-0410abbc8051"
+    }
+  ],
+  "resume": {
+    "before": {
+      "at": "2026-11-22T13:29:28.581Z",
+      "counts": {
+        "builds": 2,
+        "attempts": 2,
+        "artifacts": 2,
+        "intents": 2,
+        "requests": 6,
+        "deployments": 6
+      }
+    },
+    "after": {
+      "at": "2026-11-22T13:31:08.224Z",
+      "counts": {
+        "builds": 2,
+        "attempts": 2,
+        "artifacts": 2,
+        "intents": 2,
+        "requests": 6,
+        "deployments": 6
+      }
+    },
+    "sameOutput": true,
+    "duplicateTasks": 0
+  },
+  "originalPublicEndpoint": {
+    "url": "https://app.podry.dev/ping",
+    "status": 200,
+    "body": "pong",
+    "tlsVerification": true,
+    "dnsOverride": false
+  },
+  "validation": {
+    "releaseUnitTests": "passed; includes real REST discovery mapping across repeated Build calls and fresh next-step cache",
+    "targetedIntegration": "3 passed in isolated PostgreSQL; vet/build/Linux compilation included",
+    "fullGoSuite": "not rerun"
+  },
+  "limitations": [
+    "No business Secret references in this fixture; secret-version restoration not live verified",
+    "New manual target used after an early ambiguous upgrade; both ambiguous targets retain occupancy",
+    "Current application config v8, binding v2 and Git branch/build arguments remain unchanged by rollback; rollback restores the historical release snapshot only",
+    "Single API and one K3s cluster; crash/response-loss/multi-instance/credential-rotation matrix remains unverified",
+    "No production backup recovery, safe GC or frontend integration acceptance"
+  ]
+}

@@ -17,8 +17,15 @@ import (
 
 // Older migration tests must still reach their original version and assert
 // the same history guards. v17 contains disposable scheduling metadata only.
+// First remove v18's provider constraint expansion (these older fixtures only use GitHub).
 func downgradeHealthSchedule(t *testing.T, dsn string) {
 	t.Helper()
+	if err := database.Migrate(dsn, true); err != nil {
+		t.Fatal("v19 to v18 cleanup metadata downgrade", err)
+	}
+	if err := database.Migrate(dsn, true); err != nil {
+		t.Fatal("v18 to v17 provider constraint downgrade", err)
+	}
 	if err := database.Migrate(dsn, true); err != nil {
 		t.Fatal("v17 to v16 scheduling metadata downgrade", err)
 	}
@@ -311,7 +318,7 @@ func TestHealthPollingMigrationBackfillAndReadOnlyMetadata(t *testing.T) {
 	pollStep(t, f.apps, true)
 	downgradeHealthSchedule(t, f.c.f.dsn)
 	if database.CheckSchema(context.Background(), f.c.f.pool) == nil {
-		t.Fatal("v17 binary accepted v16")
+		t.Fatal("current binary accepted v16")
 	}
 	if err := database.Migrate(f.c.f.dsn, false); err != nil {
 		t.Fatal(err)

@@ -1,5 +1,13 @@
 # 晋级与历史快照回滚
 
+2026-11-22 Secret 补充：新目标真实验证 SecretRef v1 → v2 → v1，回滚时凭据当前版本为 v3；历史值、Pod 引用和旧镜像/Chart 恢复，当前配置 v12/SecretRef v2 与凭据 v3 保留，同 output 续跑无重复。首个目标升级仍 pending/unknown，未强制处置，见 [Secret 历史恢复与边界](35-live-secret-history-rollback.md)。
+
+2026-11-22 最新验证：新目标真实不同 digest 升级后，通过历史发布接口恢复旧 digest、Chart 1.0.0、一个副本和全部历史业务 Values；原当前配置 v8/绑定 v2 保留，执行快照为历史 v7/v1，幂等续跑无重复。见 [版本升级与回滚](33-live-version-upgrade-and-rollback.md)。业务 Secret 历史版本恢复及故障矩阵仍待验收。
+
+2026-11-22 后续验证：同一真实构建 Artifact 从自动开发环境晋级到另一手动非生产环境，kind/sourceDeploymentId、独立环境覆盖、Pod digest 和 HTTP 均核对通过；没有重新构建，见 [自动部署与晋级实测](32-live-auto-deploy-and-promotion.md)。两个绑定共用集群和 namespace；不同版本回退仍待验证。
+
+最新验证（2026-11-22）：真实 Helm Job 首次发布后，通过 rollback 接口使用相同 digest/归档 Chart 创建新身份并再次完成，revision 1 → 2；见 [实测与边界](31-live-build-actions-and-job.md)。这是历史 Job 重新执行验收，不代表不同版本回退或跨环境晋级已通过；下文保留最初业务交付记录。
+
 日期：2026-11-21。按暂缓真实 CI/CD、继续业务开发的安排，提前实现 E05；依赖 [多环境绑定与覆盖](15-environment-bindings.md)，复用已有发布 Worker。真实链路与 B6 验收仍待基础设施恢复。
 
 ## 接口与行为

@@ -1,5 +1,11 @@
 # 持久发布执行与恢复
 
+2026-11-22 后续：修复单次 Helm Configuration 重复 Discovery/RESTMapper 导致的升级超时；同一步共享缓存，下一步重新发现，不延长 context/lease。新目标已完成不同 digest、Chart 及业务配置的升级/历史回滚；两个较早 unknown 保留占用。见 [实测与边界](33-live-version-upgrade-and-rollback.md)。
+
+历史记录：下文描述 v6 批次交付时点；2026-11-22 已完成真实 Helm Deployment 安装与升级，最新证据和发布故障/Job 工作负载边界见 [真实 CI/CD 验收](29-live-cicd-acceptance.md)。
+
+后续已完成 [Helm TLS Ingress](30-ingress-helm-release.md) 和 [有限 Job 发布/历史快照重新执行](31-live-build-actions-and-job.md)。内置受控 Chart 在 install/upgrade 时跳过重复的客户端 OpenAPI schema 下载，实际 Kubernetes create/update 仍由服务端校验；不延长步骤/租约、不放宽 unknown 恢复。较早 schema 下载问题对应的 unknown 任务保留原目标占用，没有自动重提或强制解锁。
+
 日期：2026-11-20。继续 B5 的后端业务开发。Gitea、Registry 不可用期间，本批只在隔离 PostgreSQL、内存 Helm 存储及本机 TLS 模拟 API 上验证；没有连接用户的 Git/Registry，也没有向真实集群提交资源。
 
 本文件保留 v6 批次交付时点；后续 v7、应用资源与实时差异、查询时健康观察见 [下一批实施记录](13-application-observation.md)。
@@ -53,7 +59,7 @@ Worker 在短事务中锁定候选执行和物理目标，取得 60 秒租约与
 | 观察到成功 | succeeded，同事务移动当前成功指针并释放占用 |
 | Job Failed 或 Deployment ProgressDeadlineExceeded | 在 Helm 已确定 deployed 且资源读取完整时 failed；保留资源身份，释放占用 |
 
-unknown 没有自动解锁、重试或“强制成功”入口；需要后续受控人工核对能力。Worker 关闭或进程退出不会取消/删除已经运行的工作负载。失败资源清理与持续健康观察留待后续开发。
+unknown 没有自动解锁、重试或“强制成功”入口；已补充 [受控人工只读核对](26-release-reconciliation.md)。提交 Worker 关闭或进程退出不会取消已经运行的工作负载。[持续健康](25-background-health.md) 和 v19 [旧发布资源清理](39-resource-cleanup.md) 使用独立开关；清理只处理已被替代且满足终态与引用检查的 Job/版本 Secret，不把失败状态视为任意资源可删除的证据。
 
 ## 配置与迁移
 
@@ -89,3 +95,7 @@ PODRY_RELEASE_CONCURRENCY=1
 ## 后续人工核对补充
 
 显式只读核对现已接入，见 [发布人工核对](26-release-reconciliation.md)。当前操作者可在 Worker 关闭时核对已提交状态，需完整权限、expectedRevision 和幂等键；不重复 Submit，不提供无证据强制成功或清除占用。前文未提供人工接口的描述是本批初始边界，当前入口以上述合同为准。
+
+## 请求取消与诊断补充
+
+Helm transport 同时保留原 HTTP 请求的 deadline/取消和 Worker 步骤取消，绑定持续到响应体读取结束或关闭。提交摘要和 HTTP 边界只记录固定分类及耗时，不记录原始错误、URL、Header 或报文。已复现并修复原请求取消被步骤 context 覆盖的问题，回归与隔离诊断见 [发布请求取消与脱敏诊断](36-release-cancellation-diagnostics.md)。修复随后已部署至独立测试 API 并通过新升级/回滚，见 [真实发布与后台健康验收](37-live-release-and-background-health.md)；原 pending 升级根因仍未确定。

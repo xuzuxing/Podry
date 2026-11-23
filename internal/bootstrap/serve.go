@@ -16,6 +16,9 @@ import (
 // which itself waits for borrowed connections; the caller must exit the process.
 func (r *Runtime) Serve(ctx context.Context, srv *http.Server, timeout time.Duration) error {
 	workers := []func(context.Context, context.Context){r.Builds.RunDraining, r.Releases.RunDraining}
+	if r.Cleanup != nil {
+		workers = append(workers, r.Cleanup.RunDraining)
+	}
 	if r.Dependencies.Application != nil {
 		workers = append(workers, r.Dependencies.Application.RunAutoDeployDraining)
 		workers = append(workers, r.Dependencies.Application.RunHealthPollingDraining)

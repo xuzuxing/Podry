@@ -21,13 +21,31 @@ import (
 	"helm.sh/helm/v3/pkg/engine"
 )
 
-//go:embed charts/podry/Chart.yaml charts/podry/values.yaml charts/podry/templates/*
+//go:embed charts/podry/Chart.yaml charts/podry/values.yaml charts/podry/templates/* charts/podry-tls/Chart.yaml charts/podry-tls/values.yaml charts/podry-tls/templates/*
 var source embed.FS
 
 // Chart content changes require a new version and an explicitly reviewed hash.
 const PackageSHA256 = "ec64a72850fb0eba6408e24703ba31331f9e34172a5163b58b2badb469452228"
+const TLSPackageSHA256 = "5f523eda5a704e8c757246206a0ac5469ee03822813d69b50ba8341314a84cd5"
+
+func packageVersion(version string) (string, string) {
+	switch version {
+	case "1.0.0":
+		return "charts/podry", PackageSHA256
+	case "1.1.0":
+		return "charts/podry-tls", TLSPackageSHA256
+	default:
+		return "", ""
+	}
+}
+
+func SupportsVersion(version string) bool {
+	root, _ := packageVersion(version)
+	return root != ""
+}
 
 type Input struct {
+	Version                                                                        string
 	AppID, BindingID, DeploymentID, Namespace, ReleaseName, WorkloadKind, ImageRef string
 	Values                                                                         map[string]any
 	SecretKeys                                                                     []string
@@ -46,6 +64,13 @@ func Hash(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(
 
 func Render(in Input) (Result, error) {
 	var out Result
+	if in.Version == "" {
+		in.Version = "1.0.0"
+	}
+	root, checksum := packageVersion(in.Version)
+	if root == "" {
+		return out, fmt.Errorf("unsupported chart version")
+	}
 	if in.WorkloadKind != "Deployment" && in.WorkloadKind != "Job" {
 		return out, fmt.Errorf("unsupported workload")
 	}
@@ -53,7 +78,7 @@ func Render(in Input) (Result, error) {
 	var archive bytes.Buffer
 	zip := gzip.NewWriter(&archive)
 	tarball := tar.NewWriter(zip)
-	err := fs.WalkDir(source, "charts/podry", func(path string, d fs.DirEntry, e error) error {
+	err := fs.WalkDir(source, root, func(path string, d fs.DirEntry, e error) error {
 		if e != nil || d.IsDir() {
 			return e
 		}
@@ -61,7 +86,7 @@ func Render(in Input) (Result, error) {
 		if e != nil {
 			return e
 		}
-		name := strings.TrimPrefix(path, "charts/podry/")
+		name := strings.TrimPrefix(path, root+"/")
 		files = append(files, &loader.BufferedFile{Name: name, Data: data})
 		if e = tarball.WriteHeader(&tar.Header{Name: "podry/" + name, Mode: 0644, Size: int64(len(data))}); e != nil {
 			return e
@@ -78,7 +103,7 @@ func Render(in Input) (Result, error) {
 	if err = zip.Close(); err != nil {
 		return out, err
 	}
-	if Hash(archive.Bytes()) != PackageSHA256 {
+	if Hash(archive.Bytes()) != checksum {
 		return out, fmt.Errorf("built-in chart checksum mismatch")
 	}
 	ch, err := loader.LoadFiles(files)
@@ -91,7 +116,8 @@ func Render(in Input) (Result, error) {
 // RenderArchived uses the exact approved historical package. Missing, altered or
 // unsupported packages fail instead of falling back to the current built-in Chart.
 func RenderArchived(in Input, archived Result) (Result, error) {
-	if archived.Name != "podry" || archived.Version != "1.0.0" || archived.SHA256 != PackageSHA256 || Hash(archived.Package) != archived.SHA256 {
+	root, checksum := packageVersion(archived.Version)
+	if root == "" || archived.Name != "podry" || archived.SHA256 != checksum || Hash(archived.Package) != archived.SHA256 || (in.Version != "" && in.Version != archived.Version) {
 		return Result{}, fmt.Errorf("historical chart unavailable")
 	}
 	ch, err := loader.LoadArchive(bytes.NewReader(archived.Package))

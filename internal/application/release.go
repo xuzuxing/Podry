@@ -79,7 +79,8 @@ type releasePlan = release.Plan
 // Plan until Chart rendering freezes them. Preserve historical snapshot hashes.
 type previewPlan struct {
 	releasePlan
-	values map[string]any
+	values       map[string]any
+	chartVersion string
 }
 
 func decodeReleasePlan(raw []byte, hash string) (releasePlan, error) {
@@ -209,7 +210,7 @@ func (s *Service) CreateDeploymentPreview(ctx context.Context, a auth.Actor, id 
 	for _, ref := range plan.SecretRefs {
 		keys = append(keys, ref.TargetKey)
 	}
-	plan.Chart, e = chart.Render(chart.Input{AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: planned.values, SecretKeys: keys})
+	plan.Chart, e = chart.Render(chart.Input{Version: planned.chartVersion, AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: planned.values, SecretKeys: keys})
 	if e != nil {
 		return DeploymentPreview{}, httpx.Fail(422, "chart_render_failed", "内置 Chart 无法渲染，请检查基础配置")
 	}
@@ -300,7 +301,7 @@ func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	if e != nil {
 		return out, e
 	}
-	return previewPlan{releasePlan: releasePlan{SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, values: c.DeployValues}, nil
+	return previewPlan{releasePlan: releasePlan{SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, values: c.DeployValues, chartVersion: c.ChartConfig.ChartVersion}, nil
 }
 func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string, p releasePlan) (sqlcdb.Application, error) {
 	app, e := deployAccess(ctx, q, a, id)

@@ -1,5 +1,7 @@
 # 构建取消与重试
 
+最新验证（2026-11-22）：真实 BuildKit 等待步骤执行后请求取消，核对 Job 暂停与 Pod 退出，再以同 Build 新 Attempt 重试成功；SHA、配置、凭据版本、runner 与输入保持一致，成功重试日志 archived，幂等续跑无新增记录。取消的 Pod 已删除，日志 unavailable；尚无所有远端 BuildKit 进程退出或推送中断的完整证据。见 [真实验收](31-live-build-actions-and-job.md)；下文保留 E01 最初交付记录。
+
 日期：2026-11-21 · E01 提前业务实现。真实 CI/CD 仍暂缓，构建与发布 Worker 默认关闭；隔离 PostgreSQL 和模拟 Kubernetes/Registry 结果不代表真实 BuildKit、推送或跨集群执行验收。
 
 ## 接口
