@@ -21,6 +21,9 @@ import (
 func downgradeHealthSchedule(t *testing.T, dsn string) {
 	t.Helper()
 	if err := database.Migrate(dsn, true); err != nil {
+		t.Fatal("v20 lifecycle downgrade", err)
+	}
+	if err := database.Migrate(dsn, true); err != nil {
 		t.Fatal("v19 to v18 cleanup metadata downgrade", err)
 	}
 	if err := database.Migrate(dsn, true); err != nil {

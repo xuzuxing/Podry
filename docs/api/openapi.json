@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Podry V1 API Design",
-    "version": "1.24.0",
-    "description": "All 79 HTTP operations implemented. GitHub, Gitea, GitLab and Gitee Push Webhook providers share persistent build admission. Database v18 expands the delivery provider constraint without adding tables; non-GitHub history prevents downgrade. Built-in Chart 1.1.0 preserves Chart 1.0.0 and historical snapshots. Build, release, resource write and health polling workers default disabled. Provider protocol/isolated integration tests are separate from real provider delivery and CI/CD acceptance. See docs/backend/38-git-webhook-providers.md and docs/backend/29-live-cicd-acceptance.md."
+    "version": "1.25.0",
+    "description": "All 81 HTTP operations implemented. Database v20 adds safe environment offline/detach with retained history. Chart 1.2.0 adds private image pull credentials, probes, config files, mounts and startup arguments. Build check scripts run in an isolated init container. GitHub, Gitea, GitLab and Gitee Push Webhook providers share persistent build admission. Database v18 expands the delivery provider constraint without adding tables; non-GitHub history prevents downgrade. Built-in Chart 1.1.0 preserves Chart 1.0.0 and historical snapshots. Build, release, resource write and health polling workers default disabled. Provider protocol/isolated integration tests are separate from real provider delivery and CI/CD acceptance. See docs/backend/38-git-webhook-providers.md and docs/backend/29-live-cicd-acceptance.md."
   },
   "servers": [
     {
@@ -1681,6 +1681,154 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        },
+        "x-implementation": "implemented"
+      }
+    },
+    "/apps/{appId}/environments/{bindingId}/offline": {
+      "post": {
+        "operationId": "offlineApplicationBinding",
+        "summary": "下线环境当前发布",
+        "tags": [
+          "apps"
+        ],
+        "description": "Requires current successful deployment with captured resource UIDs and Helm revision, matching binding version and no active/unknown target or resource operations. Atomically disables binding auto delivery and CD, bumps workflow/binding revisions and queues a durable offline release. Worker reauthorizes before every UID/RV-conditional foreground delete; borrowed mounts/PVC/TLS Secrets are retained. Missing evidence, replaced UID, remaining Pods or incomplete inventories retain unknown/occupancy. Explicit deployment reconcile is read-only. Success clears current deployment and preserves source snapshots/Helm history. Same binding can redeploy after re-enabling CD; shared physical target remains reserved. See docs/backend/40-application-deployment-capabilities.md.",
+        "x-permission": "app.deploy + frozen target resource.write/resource.delete + Pod view",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted; poll returned task identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseRequest"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Includes validation/auth/permission/conflict/unavailable responses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingLifecycleInput"
+              }
+            }
+          }
+        },
+        "x-implementation": "implemented"
+      }
+    },
+    "/apps/{appId}/environments/{bindingId}/detach": {
+      "post": {
+        "operationId": "detachApplicationBinding",
+        "summary": "解除已下线的环境绑定",
+        "tags": [
+          "apps"
+        ],
+        "description": "Versioned soft detach. Never-deployed bindings may detach directly; any release history requires a successful latest offline and an empty current pointer. Active/unknown target and unresolved resource operations block detach. Disables CD and automatic delivery; hides binding and CD from current queries. Historical provenance and physical target reservations are retained. Same logical environment can bind a different target. Does not contact Kubernetes or delete application/history rows.",
+        "x-permission": "app.configure + app.deploy",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingDetachResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error. Includes validation/auth/permission/conflict/unavailable responses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingLifecycleInput"
               }
             }
           }
@@ -5888,7 +6036,10 @@
             }
           },
           "checkScript": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "description": "Optional nonblank shell script, at most 16384 UTF-8 bytes. Frozen in the build attempt. Runs after source checkout in the configured build context, before BuildKit, with sh -eu. Check container receives no authentication volume or SA token. Uses tools available in the pinned runner image; no automatic language toolchain installation. Failure prevents the image phase."
           }
         },
         "required": [
@@ -5916,9 +6067,10 @@
             "type": "string",
             "enum": [
               "1.0.0",
-              "1.1.0"
+              "1.1.0",
+              "1.2.0"
             ],
-            "description": "Built-in immutable Chart version. 1.1.0 adds Ingress className, TLS secret reference and optional cert-manager ClusterIssuer. Existing 1.0.0 snapshots remain supported. Live execution requires the release worker."
+            "description": "Immutable built-in Chart. 1.1.0 adds Ingress TLS/class. 1.2.0 adds command/args, HTTP/TCP probes, config files, namespace-local ConfigMap/Secret/PVC mounts and private image pull Secrets. Historical packages remain unchanged."
           }
         },
         "required": [
@@ -5951,7 +6103,7 @@
       },
       "DeployValues": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "replicaCount": {
             "type": "integer",
@@ -6004,9 +6156,9 @@
           "volumes": {
             "type": "array",
             "items": {
-              "type": "object",
-              "additionalProperties": true
-            }
+              "$ref": "#/components/schemas/ApplicationVolume"
+            },
+            "maxItems": 16
           },
           "job": {
             "type": "object",
@@ -6039,9 +6191,46 @@
               "activeDeadlineSeconds"
             ],
             "additionalProperties": false
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "maxItems": 64
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "maxItems": 64
+          },
+          "readinessProbe": {
+            "$ref": "#/components/schemas/HealthProbe"
+          },
+          "livenessProbe": {
+            "$ref": "#/components/schemas/HealthProbe"
+          },
+          "startupProbe": {
+            "$ref": "#/components/schemas/HealthProbe"
+          },
+          "configFiles": {
+            "type": "object",
+            "maxProperties": 50,
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Non-sensitive UTF-8 file contents, safe filenames, total at most 128 KiB. Generated readonly ConfigMap; sensitive files use external Secret mounts."
+          },
+          "configMountPath": {
+            "type": "string",
+            "description": "Absolute clean non-system path; defaults to /etc/podry/config."
           }
         },
-        "description": "Current subset: replicaCount, containerPort, resources.requests/limits.cpu/memory, non-sensitive literal env, service.enabled/port/type=ClusterIP, ingress.enabled/host, and Job single-run fields. Chart 1.1.0 additionally permits ingress.className/tlsSecretName/clusterIssuer as DNS subdomain names; empty optional strings omit the setting. A nonempty clusterIssuer requires tlsSecretName and cert-manager installed on the cluster. Enabled Ingress requires an enabled Service and host. Volumes and all unknown/reserved image/ownership fields are rejected. Sensitive values use versioned secretRefs; targetKey must not duplicate literal env. Job rejects Deployment/service/ingress fields."
+        "description": "Validated built-in Chart subset. Existing replicaCount/containerPort/resources/env/service/ingress/Job fields remain versioned. Chart 1.2.0 additionally supports command, args, HTTP/TCP probes, config files and explicit existing mounts. Job rejects probes and Deployment/service/ingress fields. Reserved image/ownership/pull authentication fields cannot be supplied. Base and environment overrides use the same checks. Private pull auth automatically freezes the verified artifact origin credential version; only worker runtime values contain plaintext."
       },
       "AppConfig": {
         "type": "object",
@@ -7368,7 +7557,8 @@
             "enum": [
               "deploy",
               "promote",
-              "rollback"
+              "rollback",
+              "offline"
             ]
           },
           "bindingId": {
@@ -7457,7 +7647,8 @@
             "enum": [
               "deploy",
               "promote",
-              "rollback"
+              "rollback",
+              "offline"
             ]
           },
           "sourceDeploymentId": {
@@ -8430,6 +8621,195 @@
           "target",
           "result",
           "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "HealthProbe": {
+        "type": "object",
+        "properties": {
+          "httpGet": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/",
+                "maxLength": 1024
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "scheme": {
+                "type": "string",
+                "enum": [
+                  "HTTP",
+                  "HTTPS"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "port"
+            ],
+            "additionalProperties": false
+          },
+          "tcpSocket": {
+            "type": "object",
+            "properties": {
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            },
+            "required": [
+              "port"
+            ],
+            "additionalProperties": false
+          },
+          "initialDelaySeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600
+          },
+          "periodSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "successThreshold": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "failureThreshold": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "description": "Chart 1.2.0 Deployment only. Empty object disables the probe; otherwise exactly one HTTP/TCP handler. Liveness and startup require successThreshold=1 when supplied. Named ports, exec, headers and custom host are rejected."
+      },
+      "ApplicationVolume": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "mountPath": {
+            "type": "string"
+          },
+          "readOnly": {
+            "type": "boolean"
+          },
+          "configMap": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "secret": {
+            "type": "object",
+            "properties": {
+              "secretName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "secretName"
+            ],
+            "additionalProperties": false
+          },
+          "persistentVolumeClaim": {
+            "type": "object",
+            "properties": {
+              "claimName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "claimName"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "name",
+          "mountPath",
+          "readOnly"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "configMap"
+            ]
+          },
+          {
+            "required": [
+              "secret"
+            ]
+          },
+          {
+            "required": [
+              "persistentVolumeClaim"
+            ]
+          }
+        ],
+        "description": "Chart 1.2.0; exactly one existing namespace-local source. ConfigMap and Secret require readOnly=true. Names and paths are unique; no overlapping paths, hostPath, subPath, root/system/SA token mounts. Secret needs resource.view + secret.reveal; ConfigMap needs resource.view; writable PVC additionally needs resource.write. References remain external and are never deleted by offline."
+      },
+      "BindingLifecycleInput": {
+        "type": "object",
+        "properties": {
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "expectedVersion",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "BindingDetachResult": {
+        "type": "object",
+        "properties": {
+          "bindingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "detached": {
+            "const": true
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "bindingId",
+          "detached",
+          "version"
         ],
         "additionalProperties": false
       },

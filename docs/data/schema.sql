@@ -102,8 +102,11 @@ CREATE TABLE app_environment_bindings (
     target_id uuid NOT NULL UNIQUE REFERENCES deployment_targets(id),
     override_values jsonb NOT NULL DEFAULT '{}', version integer NOT NULL DEFAULT 1 CHECK(version>0),
     auto_deploy boolean NOT NULL DEFAULT false, current_deployment_id uuid,
-    created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(app_id,environment_id), UNIQUE(id,app_id)
+    detached_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(id,app_id),
+    CHECK(detached_at IS NULL OR (current_deployment_id IS NULL AND NOT auto_deploy))
 );
+CREATE UNIQUE INDEX bindings_active_environment ON app_environment_bindings(app_id,environment_id) WHERE detached_at IS NULL;
 CREATE TABLE pipelines (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), app_id uuid NOT NULL REFERENCES applications(id),
     binding_id uuid, kind text NOT NULL CHECK(kind IN ('ci','cd')),
@@ -184,13 +187,13 @@ CREATE TABLE release_snapshots (
 );
 CREATE TABLE release_requests (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), snapshot_id uuid NOT NULL REFERENCES release_snapshots(id),
-    kind text NOT NULL CHECK(kind IN ('deploy','promote','rollback')),
+    kind text NOT NULL CHECK(kind IN ('deploy','promote','rollback','offline')),
     source_deployment_id uuid,
     reason text NOT NULL DEFAULT '',
     status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','executing','succeeded','failed','unknown')),
     requested_by uuid NOT NULL REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now(),
     CHECK((kind='deploy')=(source_deployment_id IS NULL)),
-    CHECK((kind='rollback' AND char_length(btrim(reason)) BETWEEN 1 AND 1000) OR (kind<>'rollback' AND reason=''))
+    CHECK((kind IN ('rollback','offline') AND char_length(btrim(reason)) BETWEEN 1 AND 1000) OR (kind NOT IN ('rollback','offline') AND reason=''))
 );
 CREATE TABLE deployments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL UNIQUE REFERENCES release_requests(id),

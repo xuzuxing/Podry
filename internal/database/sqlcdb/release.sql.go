@@ -325,7 +325,7 @@ func (q *Queries) GetDeployment(ctx context.Context, id string) (GetDeploymentRo
 }
 
 const getReleaseBinding = `-- name: GetReleaseBinding :one
-SELECT b.id, b.app_id, b.environment_id, b.target_id, b.override_values, b.version, b.auto_deploy, b.current_deployment_id,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
+SELECT b.id, b.app_id, b.environment_id, b.target_id, b.override_values, b.version, b.auto_deploy, b.current_deployment_id, b.detached_at,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
 JOIN deployment_targets t ON t.id=b.target_id WHERE b.id=$1 AND b.app_id=$2 FOR UPDATE OF b,t
 `
 
@@ -343,6 +343,7 @@ type GetReleaseBindingRow struct {
 	Version             int32
 	AutoDeploy          bool
 	CurrentDeploymentID *string
+	DetachedAt          *time.Time
 	ClusterID           string
 	Namespace           string
 	ReleaseName         string
@@ -360,6 +361,7 @@ func (q *Queries) GetReleaseBinding(ctx context.Context, arg GetReleaseBindingPa
 		&i.Version,
 		&i.AutoDeploy,
 		&i.CurrentDeploymentID,
+		&i.DetachedAt,
 		&i.ClusterID,
 		&i.Namespace,
 		&i.ReleaseName,

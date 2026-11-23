@@ -1,0 +1,28 @@
+replicaCount: 1
+containerPort: 8080
+resources: {}
+env: {}
+command: []
+args: []
+readinessProbe: {}
+livenessProbe: {}
+startupProbe: {}
+configFiles: {}
+configMountPath: /etc/podry/config
+volumes: []
+service:
+  enabled: false
+  port: 80
+  type: ClusterIP
+ingress:
+  enabled: false
+  host: ""
+  className: ""
+  tlsSecretName: ""
+  clusterIssuer: ""
+job:
+  completions: 1
+  parallelism: 1
+  restartPolicy: Never
+  backoffLimit: 0
+  activeDeadlineSeconds: 600

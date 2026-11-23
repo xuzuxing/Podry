@@ -64,7 +64,16 @@ func PersistObservation(ctx context.Context, q *sqlcdb.Queries, d sqlcdb.Deploym
 		return err
 	}
 	if o.State == "succeeded" {
-		n, err := q.SetCurrentDeployment(ctx, sqlcdb.SetCurrentDeploymentParams{ID: binding, CurrentDeploymentID: &d.ID, TargetID: d.TargetID})
+		request, err := q.GetReleaseRequest(ctx, d.RequestID)
+		if err != nil {
+			return err
+		}
+		var n int64
+		if request.Kind == "offline" {
+			n, err = q.CompleteBindingOffline(ctx, sqlcdb.CompleteBindingOfflineParams{ID: binding, TargetID: d.TargetID})
+		} else {
+			n, err = q.SetCurrentDeployment(ctx, sqlcdb.SetCurrentDeploymentParams{ID: binding, CurrentDeploymentID: &d.ID, TargetID: d.TargetID})
+		}
 		if err != nil {
 			return err
 		}

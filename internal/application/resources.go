@@ -49,6 +49,9 @@ func (s *Service) readApplicationResources(ctx context.Context, q *sqlcdb.Querie
 	if err != nil {
 		return out, err
 	}
+	if out.Binding.DetachedAt != nil {
+		return out, httpx.Fail(404, "binding_not_found", "环境绑定已解除")
+	}
 	out.Roots, err = q.BindingResourceRoots(ctx, sqlcdb.BindingResourceRootsParams{BindingID: bindingID, TargetID: out.Binding.TargetID})
 	if err != nil {
 		return out, err

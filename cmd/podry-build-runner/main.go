@@ -67,9 +67,35 @@ func run() error {
 		return source(ctx, spec)
 	case "build":
 		return image(ctx, spec)
+	case "check":
+		return check(ctx, spec)
 	default:
 		return errors.New("unsupported mode")
 	}
+}
+func check(ctx context.Context, spec build.ExecutionSpec) error {
+	return checkRepository(ctx, spec, workspace)
+}
+
+func checkRepository(ctx context.Context, spec build.ExecutionSpec, repository string) error {
+	if spec.CheckScript == nil || len(*spec.CheckScript) > 16384 || strings.TrimSpace(*spec.CheckScript) == "" || strings.ContainsRune(*spec.CheckScript, '\x00') {
+		return errors.New("invalid check input")
+	}
+	dir, _, err := build.RepositoryPaths(repository, spec.Context, spec.Dockerfile)
+	if err != nil {
+		return err
+	}
+	fmt.Println("check: running configured checks")
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-eu", "-c", *spec.CheckScript)
+	cmd.Dir = dir
+	// No Git, Registry, cluster auth or inherited process secrets in this container.
+	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/tmp", "TMPDIR=/tmp", "CI=true"}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err = cmd.Run(); err != nil {
+		return errors.New("check failed")
+	}
+	fmt.Println("check: checks passed")
+	return nil
 }
 func askpass() error {
 	raw, e := os.ReadFile("/run/podry-auth/git.json")

@@ -50,6 +50,8 @@ func rootType(r Root) (ResourceType, error) {
 		plural = "pods"
 	case "v1/Secret":
 		plural = "secrets"
+	case "v1/ConfigMap":
+		plural = "configmaps"
 	case "v1/Service":
 		plural = "services"
 	case "networking.k8s.io/v1/Ingress":

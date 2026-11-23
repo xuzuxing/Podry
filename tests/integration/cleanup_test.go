@@ -261,6 +261,9 @@ func TestResourceCleanupBuildLostReplyReplacementAndRetry(t *testing.T) {
 	if a.deletes != 3 || b.kube.creates != 1 {
 		t.Fatal("restart replayed execution or lost cleanup")
 	}
+	if err := database.Migrate(b.c.f.dsn, true); err != nil {
+		t.Fatal("v20 lifecycle downgrade", err)
+	}
 	if err := database.Migrate(b.c.f.dsn, true); err == nil {
 		t.Fatal("cleanup history allowed destructive metadata downgrade")
 	}
@@ -401,7 +404,7 @@ func TestResourceCleanupDisabledAndMigrationRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if database.CheckSchema(context.Background(), pool) == nil {
-		t.Fatal("v18 accepted by v19 binary")
+		t.Fatal("v19 accepted by v20 binary")
 	}
 	if err := database.Migrate(dsn, false); err != nil {
 		t.Fatal(err)
@@ -502,6 +505,9 @@ func TestResourceCleanupReleaseSupersededJobAndSecret(t *testing.T) {
 		t.Fatal("historical deployment changed", err)
 	}
 	cleanupReleaseStep(t, w, false)
+	if err := database.Migrate(f.c.f.dsn, true); err != nil {
+		t.Fatal("v20 lifecycle downgrade", err)
+	}
 	if err := database.Migrate(f.c.f.dsn, true); err == nil {
 		t.Fatal("release cleanup evidence removed by downgrade")
 	}

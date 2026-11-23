@@ -14,6 +14,7 @@ import (
 	"github.com/xuzuxing/podry/internal/httpx"
 	"github.com/xuzuxing/podry/internal/idempotency"
 	"github.com/xuzuxing/podry/internal/platform"
+	"github.com/xuzuxing/podry/internal/release"
 )
 
 func pipelineDTO(p sqlcdb.Pipeline) (Pipeline, error) {
@@ -107,6 +108,11 @@ func targetResources(c Config) []string {
 	return out
 }
 func targetPermission(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, app sqlcdb.Application, c Config, t Target) error {
+	for _, grant := range release.MountPermissions(c.DeployValues) {
+		if err := platform.RequireTarget(ctx, q, a, app.ProjectID, t.ClusterID, t.Namespace, grant.Resource, grant.Action); err != nil {
+			return err
+		}
+	}
 	for _, resource := range targetResources(c) {
 		if err := platform.RequireTarget(ctx, q, a, app.ProjectID, t.ClusterID, t.Namespace, resource, "resource.write"); err != nil {
 			return err

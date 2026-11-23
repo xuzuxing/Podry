@@ -133,7 +133,11 @@ func (s *Service) runtimeLogs(ctx context.Context, row sqlcdb.BuildAttempt) ([]L
 	out := []LogLine{}
 	used := 0
 	available := false
-	for _, container := range []string{"source", "build"} {
+	containers := []string{"source", "build"}
+	if spec.CheckScript != nil {
+		containers = []string{"source", "check", "build"}
+	}
+	for _, container := range containers {
 		body, e := c.Open(ctx, "/api/v1/namespaces/"+spec.Namespace+"/pods/"+name+"/log", url.Values{"container": {container}, "timestamps": {"true"}, "follow": {"false"}})
 		if e != nil {
 			if code(e) == "kubernetes_invalid_query" {

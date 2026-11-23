@@ -11,6 +11,21 @@ import (
 )
 
 func (s *Service) registerAppReleaseRoutes(r chi.Router) {
+	for _, action := range []string{"offline", "detach"} {
+		r.Post("/environments/{bindingId}/"+action, func(w http.ResponseWriter, r *http.Request) {
+			var in LifecycleInput
+			if err := httpx.Decode(w, r, &in); err != nil {
+				reply(w, r, 0, nil, err)
+				return
+			}
+			out, err := s.BindingLifecycle(r.Context(), auth.Current(r.Context()), chi.URLParam(r, "appId"), chi.URLParam(r, "bindingId"), action, in, r.Header.Get("Idempotency-Key"), middleware.GetReqID(r.Context()))
+			if err != nil {
+				reply(w, r, 0, nil, err)
+				return
+			}
+			httpx.JSON(w, out.Status, out.Body)
+		})
+	}
 	r.Get("/drift", func(w http.ResponseWriter, r *http.Request) {
 		refresh := false
 		if values, exists := r.URL.Query()["refresh"]; exists {

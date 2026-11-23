@@ -184,6 +184,7 @@ func (s *Service) planBuild(ctx context.Context, q *sqlcdb.Queries, a auth.Actor
 	out.RegistryHTTPAllowed = s.urlPolicy.AllowsHTTP(registry.Endpoint)
 	out.RegistryEndpoint = registry.Endpoint
 	out.ImageRepository = b.ImageRepository
+	out.CheckScript = b.CheckScript
 	p, e := q.GetProject(ctx, app.ProjectID)
 	if e != nil {
 		return out, e

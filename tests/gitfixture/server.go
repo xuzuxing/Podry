@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
@@ -40,13 +42,46 @@ type Fixture struct {
 	storage      *memory.Storage
 	branches     map[string]plumbing.Hash
 	tree         plumbing.Hash
+	blobs        []plumbing.Hash
 }
 
 func New(t *testing.T) *Fixture {
+	return NewWithRootFiles(t, nil)
+}
+
+// NewWithRootFiles serves real file objects for runner source acceptance. Only
+// ordinary root files are supported; existing empty-tree fixtures stay intact.
+func NewWithRootFiles(t *testing.T, files map[string]string) *Fixture {
 	t.Helper()
 	f := &Fixture{storage: memory.NewStorage(), branches: map[string]plumbing.Hash{}}
+	entries := []object.TreeEntry{}
+	for name, content := range files {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+			t.Fatal("fixture accepts ordinary root files only")
+		}
+		blob := f.storage.NewEncodedObject()
+		blob.SetType(plumbing.BlobObject)
+		blob.SetSize(int64(len(content)))
+		w, err := blob.Writer()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = io.WriteString(w, content); err != nil {
+			t.Fatal(err)
+		}
+		if err = w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		hash, err := f.storage.SetEncodedObject(blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.blobs = append(f.blobs, hash)
+		entries = append(entries, object.TreeEntry{Name: name, Mode: filemode.Regular, Hash: hash})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	tree := f.storage.NewEncodedObject()
-	if err := (&object.Tree{}).Encode(tree); err != nil {
+	if err := (&object.Tree{Entries: entries}).Encode(tree); err != nil {
 		t.Fatal(err)
 	}
 	var err error
@@ -98,7 +133,8 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/info/refs") && r.Method == "GET" {
 		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 		adv := packp.NewAdvRefs()
-		adv.Prefix = [][]byte{[]byte("# service=git-upload-pack\n"), {}}
+		// AdvRefs.Encode supplies the newline; native Git rejects two of them.
+		adv.Prefix = [][]byte{[]byte("# service=git-upload-pack"), {}}
 		if !f.Empty.Load() {
 			head := f.Main[2]
 			if f.UseMerge.Load() {
@@ -109,6 +145,9 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			adv.Head = &head
 			_ = adv.Capabilities.Set(capability.SymRef, "HEAD:refs/heads/main")
+			if len(f.blobs) > 0 {
+				_ = adv.Capabilities.Set(capability.Shallow)
+			}
 			if f.AdvertiseFilter.Load() {
 				_ = adv.Capabilities.Set(capability.Filter)
 			}
@@ -152,9 +191,17 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unadvertised object", 400)
 			return
 		}
+		// Native Git first negotiates shallow boundaries without sending done.
+		// Do not append NAK/pack bytes until its subsequent stateless request.
+		if len(f.blobs) > 0 && !req.Depth.IsZero() && !bytes.Contains(data, []byte("0009done\n")) {
+			w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+			_ = (&packp.ShallowUpdate{Shallows: []plumbing.Hash{want}}).Encode(w)
+			return
+		}
 		hashes := []plumbing.Hash{}
 		if !f.SawFilter.Load() {
 			hashes = append(hashes, f.tree)
+			hashes = append(hashes, f.blobs...)
 		}
 		seen := map[plumbing.Hash]bool{}
 		pending := []plumbing.Hash{want}
@@ -182,6 +229,9 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 		response := packp.NewUploadPackResponseWithPackfile(req, io.NopCloser(bytes.NewReader(pack.Bytes())))
 		if f.PackOverride != nil {
 			response = packp.NewUploadPackResponseWithPackfile(req, io.NopCloser(bytes.NewReader(f.PackOverride)))
+		}
+		if len(f.blobs) > 0 && !req.Depth.IsZero() {
+			response.Shallows = []plumbing.Hash{want}
 		}
 		_ = response.Encode(w)
 		return

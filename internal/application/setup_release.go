@@ -36,6 +36,9 @@ func (s *Service) deployableBindings(ctx context.Context, q *sqlcdb.Queries, a a
 			continue
 		}
 		check := func() error {
+			if _, e := s.artifactPull(ctx, q, a, app, artifact, c.ChartConfig.ChartVersion); e != nil {
+				return e
+			}
 			if e := artifactScope(ctx, q, a, app, artifact); e != nil {
 				return e
 			}

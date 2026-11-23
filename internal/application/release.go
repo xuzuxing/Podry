@@ -210,7 +210,7 @@ func (s *Service) CreateDeploymentPreview(ctx context.Context, a auth.Actor, id 
 	for _, ref := range plan.SecretRefs {
 		keys = append(keys, ref.TargetKey)
 	}
-	plan.Chart, e = chart.Render(chart.Input{Version: planned.chartVersion, AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: planned.values, SecretKeys: keys})
+	plan.Chart, e = chart.Render(chart.Input{Version: planned.chartVersion, AppID: id, BindingID: plan.BindingID, DeploymentID: plan.DeploymentID, Namespace: plan.Target.Namespace, ReleaseName: plan.Target.ReleaseName, WorkloadKind: plan.WorkloadKind, ImageRef: plan.ImageRef, Values: planned.values, SecretKeys: keys, PullRegistry: pullRegistry(plan.PullCredential)})
 	if e != nil {
 		return DeploymentPreview{}, httpx.Fail(422, "chart_render_failed", "内置 Chart 无法渲染，请检查基础配置")
 	}
@@ -301,7 +301,11 @@ func (s *Service) planRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Act
 	if e != nil {
 		return out, e
 	}
-	return previewPlan{releasePlan: releasePlan{SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, values: c.DeployValues, chartVersion: c.ChartConfig.ChartVersion}, nil
+	pull, e := s.artifactPull(ctx, q, a, app, artifact, c.ChartConfig.ChartVersion)
+	if e != nil {
+		return out, e
+	}
+	return previewPlan{releasePlan: releasePlan{PullCredential: pull, SchemaVersion: 1, DeploymentID: uuid.NewString(), RequestID: uuid.NewString(), AppID: id, BindingID: b.ID, BindingVersion: b.Version, TargetID: b.TargetID, Target: target, ArtifactID: artifact.ID, ImageRef: artifact.ImageRepository + "@" + artifact.Digest, ConfigVersion: c.Version, WorkflowVersion: app.WorkflowVersion, PipelineID: pipeline.ID, PipelineVersion: pipeline.Version, TimeoutSeconds: cd.DeployTimeoutSeconds, ClusterCredential: cr, WorkloadKind: c.ChartConfig.WorkloadKind, SecretRefs: c.SecretRefs}, values: c.DeployValues, chartVersion: c.ChartConfig.ChartVersion}, nil
 }
 func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, id string, p releasePlan) (sqlcdb.Application, error) {
 	app, e := deployAccess(ctx, q, a, id)
@@ -350,6 +354,9 @@ func (s *Service) revalidateRelease(ctx context.Context, q *sqlcdb.Queries, a au
 	if artifact.ImageRepository+"@"+artifact.Digest != p.ImageRef {
 		return app, httpx.Fail(409, "artifact_unavailable", "产物与快照不一致")
 	}
+	if e = s.authorizePull(ctx, q, a, app, p.PullCredential); e != nil {
+		return app, e
+	}
 	return app, s.releaseSecrets(ctx, q, a, app, p.SecretRefs)
 }
 func (s *Service) ConfirmRelease(ctx context.Context, a auth.Actor, id string, in PreviewConfirm, key, req string) (idempotency.Result, error) {
@@ -388,6 +395,9 @@ func (s *Service) ConfirmRelease(ctx context.Context, a auth.Actor, id string, i
 			return idempotency.Result{}, e
 		}
 		if _, e = usableArtifact(ctx, q, a, app, plan.ArtifactID); e != nil {
+			return idempotency.Result{}, e
+		}
+		if e = authorizePullScope(ctx, q, a, app, plan.PullCredential); e != nil {
 			return idempotency.Result{}, e
 		}
 		return idempotency.Execute(ctx, q, a.ID, "createReleaseRequest", key, "POST", "/api/apps/"+id+"/deployments", in, func() (idempotency.Result, error) {

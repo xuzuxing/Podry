@@ -88,6 +88,9 @@ func authorizeActionReplay(ctx context.Context, q *sqlcdb.Queries, a auth.Actor,
 	if _, err = usableArtifact(ctx, q, a, app, p.ArtifactID); err != nil {
 		return err
 	}
+	if err = authorizePullScope(ctx, q, a, app, p.PullCredential); err != nil {
+		return err
+	}
 	project, err := q.GetProject(ctx, app.ProjectID)
 	if err != nil {
 		return err
@@ -131,6 +134,9 @@ func (s *Service) planReleaseAction(ctx context.Context, q *sqlcdb.Queries, a au
 	if p.AppID != app.ID || p.DeploymentID != source.ID || p.RequestID != source.RequestID || p.BindingID != source.BindingID || p.ArtifactID != source.ArtifactID || p.TargetID != source.TargetID || p.ConfigVersion != snapshot.ConfigVersion || p.BindingVersion != snapshot.BindingVersion {
 		return out, httpx.Fail(503, "release_snapshot_invalid", "来源发布快照身份校验失败")
 	}
+	if p.Removal != nil {
+		return out, httpx.Fail(409, "source_deployment_unavailable", "下线记录不能作为晋级或回滚来源")
+	}
 	if kind == "promote" {
 		if in.BindingID == p.BindingID {
 			return out, httpx.Invalid("晋级必须选择同一应用的其他环境绑定")
@@ -168,6 +174,9 @@ func (s *Service) planReleaseAction(ctx context.Context, q *sqlcdb.Queries, a au
 		}
 		if artifact.ImageRepository+"@"+artifact.Digest != p.ImageRef {
 			return out, httpx.Fail(409, "artifact_unavailable", "历史产物已不可用")
+		}
+		if err = s.authorizePull(ctx, q, a, app, p.PullCredential); err != nil {
+			return out, err
 		}
 		if err = s.releaseSecrets(ctx, q, a, app, p.SecretRefs); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -246,7 +255,7 @@ func (s *Service) releaseAction(ctx context.Context, a auth.Actor, id, kind stri
 	for _, ref := range candidate.SecretRefs {
 		keys = append(keys, ref.TargetKey)
 	}
-	renderInput := chart.Input{Version: candidate.chartVersion, AppID: candidate.AppID, BindingID: candidate.BindingID, DeploymentID: candidate.DeploymentID, Namespace: candidate.Target.Namespace, ReleaseName: candidate.Target.ReleaseName, WorkloadKind: candidate.WorkloadKind, ImageRef: candidate.ImageRef, Values: candidate.values, SecretKeys: keys}
+	renderInput := chart.Input{Version: candidate.chartVersion, AppID: candidate.AppID, BindingID: candidate.BindingID, DeploymentID: candidate.DeploymentID, Namespace: candidate.Target.Namespace, ReleaseName: candidate.Target.ReleaseName, WorkloadKind: candidate.WorkloadKind, ImageRef: candidate.ImageRef, Values: candidate.values, SecretKeys: keys, PullRegistry: pullRegistry(candidate.PullCredential)}
 	var rendered chart.Result
 	if kind == "rollback" {
 		rendered, err = chart.RenderArchived(renderInput, candidate.Chart)

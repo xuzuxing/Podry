@@ -5,14 +5,16 @@
 ## 当前基线
 
 - 技术栈：Go + chi、PostgreSQL + pgx/v5 + sqlc；CI 为 Kubernetes Job + BuildKit，CD 为 Helm SDK + 内置版本化 Chart。
-- HTTP 合同：OpenAPI V1.24.0，共 79 个操作，全部已实现；新增 GitHub/Gitea/GitLab/Gitee 四平台 Webhook，保留 Chart 1.1.0 的受控 IngressClass/TLS 配置。接口已实现不等同于真实集群或 CI/CD 验收完成。
-- 正式数据库迁移：v19，36 张业务表及 schema_migrations；新增构建/发布清理调度、错误与完成证据，`docs/data/schema.sql` 仍不能代替正式迁移。
+- HTTP 合同：OpenAPI V1.25.0，共 81 个操作，全部已实现；新增环境下线/解绑。Chart 1.2.0 补齐私有拉取、探针、启动参数、配置文件与挂载，旧 Chart 保留。接口实现不等同于真实集群或 CI/CD 验收完成。
+- 正式数据库迁移：v20，36 张业务表及 schema_migrations；新增绑定软解绑与 offline 发布约束；`docs/data/schema.sql` 仍不能代替正式迁移。
 - 默认 `PODRY_BUILD_ENABLED=false`、`PODRY_RELEASE_ENABLED=false`、`PODRY_RESOURCE_WRITES_ENABLED=false`；只读后台巡检同样默认 `PODRY_HEALTH_POLLING_ENABLED=false`。2026-11-22 已在独立测试实例显式启用构建/发布，完成三轮 Deployment 链路、Helm TLS Ingress、运行中取消/重试、有限 Job 发布与历史快照重新执行，以及非生产自动部署和同 Artifact 跨环境绑定晋级；见 [基础验收](docs/backend/29-live-cicd-acceptance.md)、[Ingress](docs/backend/30-ingress-helm-release.md)、[Job 与构建动作](docs/backend/31-live-build-actions-and-job.md)、[自动部署与晋级](docs/backend/32-live-auto-deploy-and-promotion.md)。较早 Job 发布仍为 unknown 并保留目标占用；默认配置保持关闭。
 - 最新补充：[不同 digest/Chart/完整业务配置升级回滚](docs/backend/33-live-version-upgrade-and-rollback.md) 已通过，新目标 revision 3；单步 Discovery 缓存修复已验证。podry-job-live 和较早自动升级所在 podry-demo-auto 两个 unknown 继续占用各自目标。
 - 最新恢复验收：[两条真实 unknown 人工核对](docs/backend/34-live-release-reconciliation.md) 通过。四个后台开关关闭仍可显式核对；同证据续跑、幂等冲突、旧 revision 和目标占用保护通过，unknown 与成功指针保留，无新增构建/发布；原测试 API 已恢复。
 - 最新 Secret 验收：[业务 Secret 历史版本恢复](docs/backend/35-live-secret-history-rollback.md) 在新目标通过；SecretRef v1 → v2 → v1，当前凭据 v3、当前配置 v12/SecretRef v2 保留。同 output 续跑无重复。首个 Secret 目标升级仍 pending/unknown，根因未确定，目前三条 unknown 均保留占用。
-- 最新清理实现：`PODRY_RESOURCE_CLEANUP_ENABLED=false`，默认保留构建资源 24h、被替代发布资源 168h；校验日志、终态、UID/RV 和引用，持久重试与审计，不清理当前工作负载或 unknown，见 [构建/发布资源自动清理](docs/backend/39-resource-cleanup.md)。真实集群回收仍待验收。
+- 最新清理实现：`PODRY_RESOURCE_CLEANUP_ENABLED=false`，默认保留构建资源 24h、被替代发布资源 168h；校验日志、终态、UID/RV 和引用，持久重试与审计，不清理当前工作负载或 unknown，见 [构建/发布资源自动清理](docs/backend/39-resource-cleanup.md)。[真实 K3s 清理步骤专项](docs/backend/42-live-resource-cleanup.md) 已通过隔离夹具/时间加速验收，生产恢复、真实故障矩阵和共享存储多实例继续待办。
 - 前端正在独立开发，本次不提交根目录 `web/`、其配套页面检查脚本及根 README 的前端改动。本文的状态仅代表后端，不代表前后端已完成联调。
+
+- 最新业务补齐：[部署与生命周期](docs/backend/40-application-deployment-capabilities.md)。构建检查独立于认证容器；下线复用持久发布、UID/RV 删除与只读核对，解绑保留历史。新 runner 已按 digest 发布，[真实检查/私有拉取/探针/挂载/下线重装/解绑](docs/backend/41-live-deployment-capabilities.md) 已通过。
 
 ## 已实现
 
@@ -45,14 +47,15 @@
 | 1 | T23 真实 CI 全链路 | 固定 SHA、受控 runner、BuildKit 推送、Registry digest、Artifact、归档、运行中取消及同 Build 冻结输入重试、幂等续跑已通过，见 [31](docs/backend/31-live-build-actions-and-job.md)；推送中断等故障场景待验收 |
 | 2 | T23 真实 CD 全链路 | Deployment/TLS Ingress、有限 Job/历史快照重新执行、自动部署、双环境绑定晋级，以及不同 digest/Chart/副本/环境变量升级与历史回滚已通过；业务 Secret 版本恢复、跨集群及故障矩阵仍待验收 |
 | 3 | T23 故障注入与权限验收 | 已验证优雅重启观察恢复及 Job 回滚短暂 unknown 后只读收敛；podry-job-live、podry-demo-auto 两个 unknown 继续占用，见 [33](docs/backend/33-live-version-upgrade-and-rollback.md)。Discovery 超时已修复，新目标验收通过；强杀、响应丢失、部分写入、凭据轮换/撤权、新 UID 和目标并发等矩阵仍待完成 |
-| 4 | T24 生产恢复与安全清理 | 已实现默认关闭的构建/旧发布资源 GC，见 [清理合同](docs/backend/39-resource-cleanup.md)；真实集群清理、共享归档多实例、生产备份恢复及业务记录保留期仍待办 |
+| 4 | T24 生产恢复与安全清理 | 默认关闭的构建/旧发布资源 GC 及[真实清理步骤专项](docs/backend/42-live-resource-cleanup.md)已通过；专项采用隔离夹具/时间加速，真实故障矩阵、共享归档多实例、生产备份恢复及业务记录保留期仍待办 |
 | 5 | 持续健康实际验收 | 后台巡检已实现持久调度、租约恢复、权限重验和失效保护；默认关闭，真实部署、负载与持续新鲜度待验收 |
+| 6 | 新部署能力实际验收 | 固定 runner、Chart 1.2.0 检查成功/失败、私有拉取、探针、配置/PVC 挂载、下线重装与解绑已通过[真实专项](docs/backend/41-live-deployment-capabilities.md)；语言工具链、探针故障和 PVC 应用读写/存储故障仍待验收；物理目标转移和应用硬删除未开放 |
 
 T23 已完成普通 Deployment 链路与部分恢复验证，T23 故障矩阵 / B6 整体验收尚未完成，后续 P1 的真实执行验收进入条件保持原计划。此前按用户暂缓真实 CI/CD 的安排，E01/E03/E05 及 E04 镜像导入、应用克隆、E06 资源写入提前实现业务与模拟执行路径。不能把未知状态置为成功或直接清除目标占用；发布与资源 Apply/动作人工只读核对已补齐；无证据强制解锁仍未开放。Git SHA-256 仓库及多副本运行兼容性尚未完成验证/适配。
 
 ## HTTP 接口补齐
 
-原剩余的三个 E09/P2 接口已实现：Secret 指定 key 明文读取、Pod 终端会话创建、拥有者关闭。终端同时接入真实 WebSocket → client-go SPDY 通道；详细授权、票据、配额与进程回收合同见 [Secret 与终端](docs/backend/28-sensitive-resource-access.md)。全部 79 个 HTTP 操作已注册，真实集群和前后端联调仍待验收。
+原剩余的三个 E09/P2 接口已实现：Secret 指定 key 明文读取、Pod 终端会话创建、拥有者关闭。终端同时接入真实 WebSocket → client-go SPDY 通道；详细授权、票据、配额与进程回收合同见 [Secret 与终端](docs/backend/28-sensitive-resource-access.md)。加上环境下线/解绑后，当前共 81 个 HTTP 操作已注册；真实集群和前后端联调仍待验收。
 
 GitHub/Gitea/GitLab/Gitee Push 已接入统一持久构建准入；协议差异与 v18 迁移见 [四平台 Webhook](docs/backend/38-git-webhook-providers.md)。显式非生产 on_ci_success 复用原持久构建/发布。资源人工修改/漂移已复用 E06/E07 并补齐 E08 观察记录，不静默回写基础配置。E03 的额外 CD/环境覆盖已实现并通过同集群双环境绑定真实晋级；跨集群未验收，目标迁移未开放。P2 Secret/exec 已实现；真实终端与 Secret 操作仍需受控环境验收。
 
@@ -415,3 +418,73 @@ GitHub/Gitea/GitLab/Gitee Push 已接入统一持久构建准入；协议差异�
 | SQL / 文档 / 配置 | sqlc vet 通过；独立目录重生成 18 个 Go 文件逐字节一致；65 Markdown、629 本地链接、79 HTTP 操作、250 schema 引用、36 张设计表结构检查通过；Compose 配置与本批 diff 空白检查通过 |
 | 复跑中断与恢复 | 一次专项复跑在 go vet 根包阶段被 PowerShell NativeCommandError 中断，仅捕获包头，没有足够诊断确认根因；独立 go vet 重跑退出码 0，随后最终专项复跑完整通过。未修改或重建 web/ 来绕过检查 |
 | 本地日志 | 全量 D:/Temp/podry-cleanup-full-20261123.log；最终内部回归 D:/Temp/podry-cleanup-final-units-20261123.log；最终清理专项 D:/Temp/podry-cleanup-verified-retry-20261123.log。测试容器由脚本自动回收 |
+
+## 2026-11-23 核心部署业务补齐（本批未提交）
+
+- 新增不可变 Chart 1.2.0：Deployment HTTP/TCP readiness/liveness/startup probes、command/args、普通配置文件、已有 ConfigMap/Secret/PVC 挂载。基础配置和环境覆盖使用相同受控校验；挂载权限在准入、确认、回滚与 Worker 重验。新旧 Chart 文件固定 LF，避免 Windows/Linux 换行改变包摘要；1.0.0/1.1.0 原包保留。
+- 私有镜像拉取：外部 Artifact 使用冻结 Registry 凭据；构建 Artifact 从来源 Attempt 的不可变执行快照中读取原凭据，核对 hash 和仓库身份。预览/快照只保存引用和占位，Worker 临时解密到独立拉取 Secret。轮换与历史回滚不改变原凭据版本。
+- checkScript 随构建 Attempt 冻结，Job 按 source → check → build 执行。检查容器没有认证卷/SA token，使用独立临时目录；失败阻止镜像阶段。需要重新构建部署 runner 并更新固定 digest；语言工具链需预先加入受控 runner，未自动安装。
+- 新增 offline/detach 两个幂等接口。下线关闭 CD/自动部署并提升版本，复用持久任务、lease/fencing、原 UID/RV 条件删除与只读人工核对；资源/Pod 未消失、身份替换或清单不完整保留 unknown 和占用。成功后清空当前指针、保留 Helm/发布历史，并支持同绑定重新安装。
+- 解绑要求未发布，或最近成功下线且无后续发布；软解绑后隐藏当前绑定/CD，保留历史。相同逻辑环境可以绑定不同目标；原物理目标仍被历史预约，不支持转移给另一应用，也不提供应用硬删除。
+- 正式迁移 v20、36 张业务表，OpenAPI V1.25.0 / 81 implemented / 0 planned；19 个 sqlc Go 文件。接口、配置例子、权限与边界见 [部署与生命周期](docs/backend/40-application-deployment-capabilities.md)。
+
+| 检查 | 本批结果 |
+| --- | --- |
+| 完整隔离回归 | scripts/test-backend.ps1 通过：206 个顶层、178 个子用例通过，1 个真实集群用例跳过；包含 go vet/build、Linux 集成二进制、独立 PostgreSQL、迁移/升级/降级保护、最小角色、备份恢复、停机与旧业务回归 |
+| 单元测试 | go test ./internal/... ./cmd/... -count=1 通过；包括新 Chart/历史包、受控字段、挂载权限、检查顺序/认证隔离、条件删除/UID 替换/finalizer/残留 Pod/不完整清单、Helm 下线后重新安装 |
+| Linux runner | 真实 /bin/sh 检查成功、失败、未设置变量、秘密环境隔离和截止时间测试通过；运行于一次性测试容器，不是线上流水线 |
+| 生成与静态 | sqlc vet、19 个 sqlc Go 文件及 OpenAPI 独立目录重生成逐字节一致；81 操作全为 implemented；Compose 配置解析、gofmt、编码、空白检查通过 |
+| 文档 | 66 Markdown、633 本地链接、81 HTTP 操作、260 schema 引用、36 张设计表结构检查通过；根进度本地链接及接口矩阵 SHA 已核对；结构检查不代替真实执行 |
+
+完整回归日志位于本机 D:/Temp/podry-capabilities-full-20261123.log。专项测试覆盖两类产物的私有凭据版本冻结/轮换/回滚、Secret 挂载权限、下线 unknown/幂等/解绑/历史保护及检查脚本准入。
+
+本批未迁移开发数据库、未重启服务、未发布 runner 镜像或修改真实集群。新能力仍需真实私有拉取、探针/PVC、检查阶段、下线及重部署验收；历史资源若阻挡 Pod/Secret 消费者检查，需按既有清理策略先处理。前端和其并行文档未纳入本批，代码尚未提交。
+
+## 2026-11-23 部署能力真实验收与资源读取修复（未提交）
+
+- 新 runner 已构建并发布，固定 digest 为 `sha256:4018401f7eace2740a2721850bd2053d9ebc7ccd0de745779c3254c864dd649d`。独立 PostgreSQL 迁移到 v20，独立 API 监听 127.0.0.1:15001；开发数据库和原有验收实例未迁移/重启。
+- 在新的 podry-capabilities-live 命名空间准备鉴权 Registry 和借用资源，CI 复用已有 BuildKit。检查失败不生成 Artifact，检查成功后真实构建推送；匿名 manifest 401、认证读取 200，无凭据 Kubelet 拉取失败、平台拉取 Secret 对应的 Pod Ready，且 Registry 日志记录 containerd 成功读取 manifest。
+- Chart 1.2.0 三类探针、生成配置、已有 ConfigMap/Secret/PVC 挂载及 PVC Bound 通过。完整业务路径“构建产物部署 → 下线 → 导入同一私有镜像 → 重新启用 CD → Helm replace 重装 → 再下线 → 软解绑”通过，暂时 unknown 经 Worker 原任务核对收敛。
+- 修复实际发现的 ConfigMap 根资源白名单遗漏，恢复新 Chart 的应用资源、Diff 和健康读取；新增资源展示、同名 UID 替换及授权过滤回归。两个验收脚本支持私有 Registry、不同 CI/CD namespace 和生命周期持久续跑。
+- 同 output 完成后再次续跑通过；前后均为 2 Build / 2 Attempt / 2 Artifact / 4 Request / 4 Deployment，Helm revision 2，四条发布历史可读。测试应用最终已下线并解绑，托管资源/Pod 消失，借用配置、Secret、PVC UID 及 Helm 历史保留。
+- 定向隔离回归通过：`scripts/test-backend.ps1 -Native -TestPattern 'TestApplicationResources|TestDeploymentCapabilities|TestApplicationLifecycle|TestBuildCheckScript'`，含 go vet/build 和 PostgreSQL；资源/应用包单元测试、Linux 后端构建通过。本轮没有重跑前批完整套件。日志：D:/Temp/podry-capabilities-live-targeted-20261123.log。
+- 结果与复现见 [真实部署能力验收](docs/backend/41-live-deployment-capabilities.md)及其脱敏证据。私有状态留在 D:/Temp/podry-capabilities-live-20261123，不能整体提交。既有应用、历史 unknown、web/ 及并行前端文档保持原状，未暂存/提交/推送。
+
+剩余待办：真实凭据轮换/撤权、不同故障下的强杀/多实例恢复、资源清理真实故障注入与生产恢复矩阵；检查阶段语言工具链、探针故障恢复和 PVC 应用读写/存储故障仍未验收；业务记录保留策略、Registry GC 继续待开发。T23/B6 未整体结项。
+
+## 2026-11-23 资源清理 Worker 真实集群专项（未提交）
+
+- 新增 `TestResourceCleanupLive` 与 `scripts/test-resource-cleanup-live.ps1`。默认测试跳过写集群；显式入口读取选定 kubeconfig 内联认证，建立随机数据库和 namespace，最终调用生产 `ProcessBuild` / `ProcessRelease`。
+- 真实构建资源清理验证：未归档阻止删除，专用测试 finalizer 导致暂缓；仅释放本次注入的 finalizer 后，Job/Pod/认证 Secret/配置 ConfigMap 回收，归档仍可读取。三次清理尝试及五分钟重试调度持久化。
+- 真实发布资源清理验证：当前发布无候选；后续成功发布替代后回收旧 Job，零副本 ReplicaSet 仍保护旧 Secret；条件删除测试引用后，旧 Secret 回收，当前 Job/Secret、借用 ConfigMap 和 Helm 存储哨兵 UID 不变。后者仅是测试哨兵，不代表真实 Helm revision。
+- 业务历史前后保持 2 Build / 2 Attempt / 2 Artifact / 2 Request / 2 Snapshot / 2 Deployment / 4 resource 记录，当前指针不变；审计为 2 次 succeeded、3 次 unknown（暂缓）。真实 namespace 与独立 PostgreSQL namespace 均已确认消失。
+- 明确边界：执行记录、成功指针和保留期为隔离夹具/时间加速；真实 Job/Pod、日志、条件删除、GC 和引用列举来自 K3s。未新增 Git/BuildKit/Helm 执行，未等待七天，也未启动全局清理调度；生产归档 Worker 本轮未重跑。
+- 最终专项通过，268.46 秒；`go vet ./...`、`go build ./...`、`go test ./internal/cleanup ./internal/kubernetes -count=1`、Linux 集成二进制编译及 PowerShell 入口语法检查通过。没有重跑全量业务回归。
+- 前两次夹具准备触发不可变 Artifact/Build 保护，已改为独立新身份，未绕过数据库约束；随后 Docker 引擎异常使临时 PG 准入超时。最终改用 K3s 内独立 PG 16 完成。早期失败的两个测试 namespace 也已按原 UID 回收，未重启 Docker 或原 API。
+- [结果与复现](docs/backend/42-live-resource-cleanup.md)、[公开证据](docs/backend/evidence/2026-11-23-resource-cleanup.json)。原始日志留在本机 D:/Temp/podry-cleanup-live-20261123；未启用开发服务清理、未修改开发库/现有应用/历史 unknown、web/ 或并行前端文档，未暂存、提交或推送。
+
+剩余：清理响应丢失/替换 UID/撤权等真实故障矩阵、共享归档多实例、生产备份恢复；CRD/外部并发引用、业务记录保留策略及 Registry blob GC 继续待办。
+
+## 2026-11-23 构建与发布进程强杀恢复专项（未提交）
+
+- 新增 `TestExecutionRecoveryLive`、内部单步子进程入口与 `scripts/test-execution-recovery-live.ps1`。生产 Worker 在独立 OS 进程执行；真实 K3s 已写入 Job/Helm 存储、响应尚未返回时强杀，等待原 60 秒租约自然到期后启动新进程核对。没有调整业务预算、租约、执行状态或 fencing。
+- 构建只创建一个 suspended Job；恢复找回原 UID/hash，轮换后仍读取冻结凭据。随后撤销项目权限，原 Job 保持暂停，未生成 Artifact，也未准备认证资源或解除暂停。
+- Helm pending-install 存储只创建一次；强杀后保留 submitting/目标占用。轮换凭据、撤销平台资源授权后，新进程只读观察原 revision 1，保留 unknown，原 Secret UID/RV 与 fencingToken=1 不变；后续同目标发布仍 queued，2 Request/2 Snapshot/2 Deployment 和当前指针不变。
+- 最终真实专项通过，138.82 秒；构建/发布/人工核对定向回归 38 个顶层、30 个子用例通过。`go vet ./...`、`go build ./...`、最终集成包 vet、构建/发布包单元测试、Linux 编译和 PowerShell 解析通过；没有重跑全量业务套件。
+- 前两轮 Helm 场景未触发预定强杀：验收代理未显式处理 typed Secret 的响应内容协商。强制请求 JSON 后通过，再补充原 Helm revision 断言并以最终源码复验。Windows 远端 PG 较慢，最终在 K3s 内临时 PG 16 执行；没有放宽生产超时。失败记录与最终通过分别保留。
+- 最终两个测试 Namespace、失败的两个 Namespace 及临时 PG Namespace 均已确认消失。源仓库/Registry 是 fixture，发布 Artifact 为隔离种子；没有执行新 Git/BuildKit/镜像推送或成功工作负载发布，也未撤销真实集群管理员凭据。
+- [完整记录](docs/backend/43-live-execution-recovery.md)、[公开证据](docs/backend/evidence/2026-11-23-execution-recovery.json)。本批没有生产执行器、迁移或 HTTP 合同变更；原应用/历史 unknown、开发库、默认开关、web/ 及并行文档保持原状，未暂存、提交或推送。
+
+下一批仍需覆盖运行中构建/推送强杀、Helm 工作负载部分写入、真实同名替换 UID、远端凭据失效和长期多实例恢复；生产恢复、共享归档、供应商实际 Webhook 投递及业务记录/Registry GC 继续待办。T23/B6 未整体结项。
+
+## 2026-11-23 运行中检查、Helm 工作负载与 UID 替换恢复（未提交）
+
+- 新增 `TestWorkloadExecutionRecoveryLive`，扩展显式 PowerShell 入口与原有进程故障代理。真实受控 runner 使用原生 Git 拉取隔离仓库并完成 source，check 容器保持运行；在 Job 观察响应返回前强杀 Worker，原租约自然到期后恢复到同一个 Pod。轮换平台凭据、撤销项目成员权限后仍只读观察在途结果，没有重新创建或启动任务。
+- Helm SDK 实际写入 pending-install 存储、运行时 Secret 与 Job，在 Job 创建响应交回 Helm 前强杀。恢复先记录原 Job UID，再条件删除/创建同名新 UID；构建与发布各连续两次保持身份冲突 unknown，不覆盖已记 UID。原 Helm 存储 UID/RV、fencing、目标占用、当前成功指针与第二条 queued 发布保持不变。
+- 构建经 Worker 仅 3 次创建加 1 次启动 PATCH，1 Build / 1 Attempt / 0 Artifact；发布仅 3 次创建，2 Request / 2 Snapshot / 2 Deployment。每个场景另有故障注入器 2 次条件删除/替代创建，未混入 Worker 计数。检查脚本最终退出 1，不进入镜像阶段；没有执行 BuildKit 或推送，也没有验收发布工作负载成功运行。
+- 最终真实专项 143.98 秒通过；同一最终二进制复跑原两个强杀场景 144.71 秒通过。定向隔离回归 58 个顶层、50 个子用例通过，0 失败、0 跳过；覆盖 Git/四供应商 Webhook/构建/发布/人工核对。原生 Git shallow 拉取及提交图测试、go vet/build、构建/发布包测试、Linux 编译与 PowerShell 解析通过；未重跑全量业务套件。
+- 前两轮构建在 Git 准入阶段失败，已定位为测试连接继承 HTTP 代理；另修正 Git 夹具重复换行和 shallow 协商兼容性，再用最终源码完成真实 source/check 验收。没有修改生产执行器、数据库结构或 HTTP 合同。
+- 本批及原场景复跑的四个 Namespace、前两轮失败的两个空 Namespace 和专用 PostgreSQL Namespace 均已按身份核对并确认回收。原应用/开发库/历史 unknown、默认调度和 web/ 及并行文档保持原状；未暂存、提交或推送。
+- [验收记录](docs/backend/44-live-workload-recovery.md)、[公开证据](docs/backend/evidence/2026-11-23-workload-recovery.json)。私有日志与状态在 `D:/Temp/podry-workload-recovery-20261123`，不能整体提交。
+
+下一批：镜像构建/推送中断与远端 BuildKit 取消、真实供应商凭据失效、长期多实例与共享归档、生产备份恢复、真实 Webhook 投递。业务记录保留策略及 Registry blob GC 仍待开发；运行中检查恢复不代表完整镜像构建/推送恢复，T23/B6 未整体结项。

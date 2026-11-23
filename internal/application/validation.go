@@ -17,6 +17,7 @@ var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var sensitiveKey = regexp.MustCompile(`(?i)(password|passwd|secret|token|private.?key|api.?key|credential)`)
 var repository = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$`)
 var quantity = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(m|Ki|Mi|Gi|Ti|K|M|G|T)?$`)
+var configKey = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 func repoPath(s string, dir bool) bool {
 	if len(s) == 0 || len(s) > 1024 || strings.ContainsAny(s, "\\:\x00\r\n") || path.IsAbs(s) {
@@ -80,8 +81,8 @@ func (s *Service) validateConfig(ctx context.Context, q *sqlcdb.Queries, a auth.
 		}
 	}
 	if b := c.BuildConfig; b != nil {
-		if b.CheckScript != nil {
-			return httpx.Fail(422, "feature_not_available", "当前阶段不支持 checkScript")
+		if b.CheckScript != nil && (len(strings.TrimSpace(*b.CheckScript)) == 0 || len(*b.CheckScript) > 16384 || strings.ContainsRune(*b.CheckScript, '\x00')) {
+			return httpx.Invalid("checkScript 必须为 1–16384 字节的非空脚本")
 		}
 		if !repoPath(b.Dockerfile, false) || !repoPath(b.Context, true) {
 			return httpx.Invalid("Dockerfile/context 必须是仓库内的相对路径")
@@ -135,7 +136,33 @@ func (s *Service) validateConfig(ctx context.Context, q *sqlcdb.Queries, a auth.
 
 func validateChartValues(c Config) error {
 	if !chart.SupportsVersion(c.ChartConfig.ChartVersion) {
-		return httpx.Fail(422, "unsupported_chart_version", "内置 Chart 支持 1.0.0 和 1.1.0")
+		return httpx.Fail(422, "unsupported_chart_version", "内置 Chart 支持 1.0.0、1.1.0 和 1.2.0")
+	}
+	for _, key := range deploymentFields {
+		if _, exists := c.DeployValues[key]; exists && c.ChartConfig.ChartVersion != "1.2.0" {
+			return httpx.Invalid("启动参数、探针和挂载需要 Chart 1.2.0")
+		}
+	}
+	if c.ChartConfig.ChartVersion == "1.2.0" {
+		paths := []string{}
+		if files, _ := c.DeployValues["configFiles"].(map[string]any); len(files) > 0 {
+			mount, _ := c.DeployValues["configMountPath"].(string)
+			if mount == "" {
+				mount = "/etc/podry/config"
+			}
+			paths = append(paths, mount)
+		}
+		volumes, _ := c.DeployValues["volumes"].([]any)
+		for _, raw := range volumes {
+			v, _ := raw.(map[string]any)
+			mount, _ := v["mountPath"].(string)
+			for _, existing := range paths {
+				if mount == existing || strings.HasPrefix(mount, existing+"/") || strings.HasPrefix(existing, mount+"/") {
+					return httpx.Invalid("配置与存储挂载路径不能重叠")
+				}
+			}
+			paths = append(paths, mount)
+		}
 	}
 	if err := validateValues(c.ChartConfig.WorkloadKind, c.DeployValues); err != nil {
 		return err
@@ -188,11 +215,15 @@ func fields(m map[string]any, keys ...string) bool {
 }
 func validateValues(kind string, v map[string]any) error {
 	invalid := httpx.Invalid("deployValues 不符合内置 Chart 的受控配置；镜像、所有权和 Secret 明文不可写")
-	if !fields(v, "replicaCount", "containerPort", "resources", "env", "service", "ingress", "job") {
+	if !fields(v, append([]string{"replicaCount", "containerPort", "resources", "env", "service", "ingress", "job"}, deploymentFields...)...) {
 		return invalid
 	}
 	for k, val := range v {
 		switch k {
+		case "command", "args", "readinessProbe", "livenessProbe", "startupProbe", "configFiles", "configMountPath", "volumes":
+			if err := validateDeploymentValue(kind, k, val); err != nil {
+				return err
+			}
 		case "replicaCount":
 			if kind == "Job" || !integer(val, 0, 100) {
 				return invalid

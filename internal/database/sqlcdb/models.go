@@ -29,6 +29,7 @@ type AppEnvironmentBinding struct {
 	Version             int32
 	AutoDeploy          bool
 	CurrentDeploymentID *string
+	DetachedAt          *time.Time
 }
 
 type Application struct {

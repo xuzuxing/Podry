@@ -66,6 +66,7 @@ type ExecutionSpec struct {
 	ImageRepository     string            `json:"imageRepository"`
 	CPU                 string            `json:"cpu"`
 	Memory              string            `json:"memory"`
+	CheckScript         *string           `json:"checkScript,omitempty"`
 }
 
 func (s ExecutionSpec) ImageTag() string {

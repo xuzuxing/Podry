@@ -112,13 +112,16 @@ func ownedRelease(r *helmrelease.Release, in Input) bool {
 	return reserved["appId"] == in.Plan.AppID && reserved["bindingId"] == in.Plan.BindingID && reserved["deploymentId"] == in.Plan.DeploymentID && reserved["snapshotSHA256"] == in.Hash
 }
 func priorRelease(r *helmrelease.Release, in Input) bool {
-	if r == nil || r.Info == nil || r.Info.Status != helmrelease.StatusDeployed || r.Namespace != in.Plan.Target.Namespace {
+	if r == nil || r.Info == nil || (r.Info.Status != helmrelease.StatusDeployed && r.Info.Status != helmrelease.StatusUninstalled) || r.Name != in.Plan.Target.ReleaseName || r.Namespace != in.Plan.Target.Namespace {
 		return false
 	}
 	podry, _ := r.Config["podry"].(map[string]any)
 	return podry["appId"] == in.Plan.AppID && podry["bindingId"] == in.Plan.BindingID
 }
 func (h *Helm) Submit(ctx context.Context, in Input) (result Observation, resultErr error) {
+	if in.Plan.Removal != nil {
+		return h.remove(ctx, in, true)
+	}
 	start, phase, operation := time.Now(), "validation", "none"
 	var actionErr error
 	defer func() {
@@ -168,10 +171,11 @@ func (h *Helm) Submit(ctx context.Context, in Input) (result Observation, result
 	reserved["snapshotSHA256"] = in.Hash
 	// Hooks and dependency downloads are disabled. Wait=false separates Helm
 	// submission from controller readiness and Job completion observation.
-	if prior == nil {
+	if prior == nil || prior.Info.Status == helmrelease.StatusUninstalled {
 		phase, operation = "action", "install"
 		install := action.NewInstall(cfg)
 		install.ReleaseName = in.Plan.Target.ReleaseName
+		install.Replace = prior != nil
 		install.Namespace = in.Plan.Target.Namespace
 		install.DisableHooks = true
 		// Only approved built-in charts and validated Values reach this point.
@@ -210,6 +214,9 @@ func (h *Helm) Submit(ctx context.Context, in Input) (result Observation, result
 	return o, observeErr
 }
 func (h *Helm) Observe(ctx context.Context, in Input) (Observation, error) {
+	if in.Plan.Removal != nil {
+		return h.remove(ctx, in, false)
+	}
 	o := Observation{State: "unknown", Code: "release_outcome_unknown"}
 	refs, err := Objects(in.Plan)
 	if err != nil {

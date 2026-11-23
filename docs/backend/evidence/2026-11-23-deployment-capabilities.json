@@ -1,0 +1,287 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-23",
+  "scope": "Independent PostgreSQL v20 and API on localhost:15001; dedicated podry-capabilities-live CD namespace; existing BuildKit in podry-cicd-live reused for CI. Existing applications and unresolved historical targets preserved.",
+  "result": "passed",
+  "runner": "registry.podry.dev/podry-live/runner@sha256:4018401f7eace2740a2721850bd2053d9ebc7ccd0de745779c3254c864dd649d",
+  "runnerBinarySHA256": "ea14fb0f5b2436e732e596d12ab385fdd24e5fb0ce3da7fa93b079f9d828fc14",
+  "appId": "e0abd23e-57cd-4786-a62c-693d7abcd45a",
+  "failureAppId": "1b61f487-1637-4b05-adde-2f63240fe031",
+  "bindingId": "514cab89-b6f1-4a30-ad88-504c5f9554bb",
+  "target": {
+    "clusterId": "2a9f53b1-d620-46f8-bddf-33b2f94bdcb2",
+    "namespace": "podry-capabilities-live",
+    "releaseName": "podry-capabilities"
+  },
+  "checkFailure": {
+    "buildId": "51b48175-4690-474e-9a4f-6ede92e98f69",
+    "attemptId": "84024d90-6bff-4adf-a439-ac8f3ef82f29",
+    "jobUid": "27dad142-4d54-45a2-9cfe-ebc2a1c66218",
+    "podUid": "ab3eefb0-ef54-495e-82d6-d10e463402cc",
+    "configuredScriptExitCode": 23,
+    "runnerExitCode": 1,
+    "artifactCount": 0,
+    "logs": {
+      "sha256": "57cb26d3ad98e9a516f6d25b257902b93df1299b0210a49205d69cdc2e25bc3d",
+      "phases": [
+        "source",
+        "check"
+      ]
+    }
+  },
+  "checkSuccess": {
+    "buildId": "287c4875-e92d-4275-a2e3-d15da60477ce",
+    "exitCode": 0,
+    "credentialVolumeMounted": false,
+    "serviceAccountTokenMounted": false,
+    "logs": {
+      "bytes": 22623,
+      "sha256": "sha256:0d544566493564259d93b089ee918eb4a0cfa8303ec429a3414222f101627694",
+      "lines": 55,
+      "availability": "archived"
+    }
+  },
+  "builtArtifact": {
+    "id": "b0da506a-aaa1-4152-b509-410ad176b389",
+    "source": "build",
+    "imageRef": "registry.podry.dev/podry-auth-20261123/demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+  },
+  "privateRegistry": {
+    "authority": "registry.podry.dev",
+    "dedicatedRepositoryPrefix": "podry-auth-20261123",
+    "anonymousManifestStatus": 401,
+    "authenticatedManifestStatus": 200,
+    "manifestDigest": "sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+    "kubeletSuccessfulManifestReads": 1,
+    "registryLogSHA256": "632acb4d561c859dd2b90f41ea84446fd9baaad6b51f3d71ce75473aa8e27286",
+    "anonymousKubeletControl": {
+      "podUid": "1b67adc9-00d2-4afc-b36d-8bbd8920f02e",
+      "imageRef": "registry.podry.dev/podry-auth-20261123/demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+      "imagePullPolicy": "Always",
+      "imagePullSecrets": [],
+      "unauthorized": true,
+      "removedWithUIDPrecondition": true
+    }
+  },
+  "initialDeployment": {
+    "id": "deb44e61-c58b-4e68-bf03-4f185bc34395",
+    "kind": "deploy",
+    "artifactId": "b0da506a-aaa1-4152-b509-410ad176b389",
+    "sourceDeploymentId": null,
+    "status": "succeeded",
+    "helmRevision": 1,
+    "http": {
+      "transport": "kubectl port-forward to ClusterIP Service",
+      "pingStatus": 200,
+      "pingBody": "pong",
+      "embeddedPageStatus": 200
+    },
+    "workload": {
+      "uid": "952a2e9e-a018-4b92-acc0-02450fd10b13",
+      "pullSecret": {
+        "name": "podry-capabilit-p-deb44e61c58b4e68bf034f185bc34395",
+        "uid": "56b9c72a-e7e7-4e83-a504-18c05e7e860e",
+        "type": "kubernetes.io/dockerconfigjson"
+      },
+      "generatedConfig": {
+        "name": "podry-capabilit-c-deb44e61c58b4e68bf034f185bc34395",
+        "uid": "345f9e31-a705-4677-8c73-5d1868edb115"
+      },
+      "probes": [
+        "readinessProbe",
+        "livenessProbe",
+        "startupProbe"
+      ],
+      "mounts": [
+        {
+          "mountPath": "/etc/podry/config",
+          "name": "podry-config",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/settings",
+          "name": "settings",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/business-secret",
+          "name": "credential",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/data",
+          "name": "data"
+        }
+      ],
+      "pods": [
+        {
+          "name": "podry-capabilities-9f8cbb84d-kng9q",
+          "uid": "be6ab5f8-3398-48e8-bc30-02ab62afa561",
+          "imageID": "registry.podry.dev/podry-auth-20261123/demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+          "ready": true
+        }
+      ]
+    }
+  },
+  "firstOffline": {
+    "id": "60c900b4-5ec7-4faf-895d-f380ad6447e4",
+    "kind": "offline",
+    "artifactId": "b0da506a-aaa1-4152-b509-410ad176b389",
+    "sourceDeploymentId": "deb44e61-c58b-4e68-bf03-4f185bc34395",
+    "status": "succeeded",
+    "helmRevision": 1,
+    "managedObjectCount": 0,
+    "health": "stopped",
+    "replayVerified": true,
+    "helm": [
+      {
+        "revision": 1,
+        "status": "uninstalled",
+        "chartVersion": "1.2.0"
+      }
+    ]
+  },
+  "importedArtifact": {
+    "id": "e8c7a9bb-3f0d-4736-b828-46a46555b1da",
+    "source": "external",
+    "imageRef": "registry.podry.dev/podry-auth-20261123/demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71"
+  },
+  "reinstall": {
+    "id": "532cbaf7-d6d3-48e2-8bca-6d9eea98da47",
+    "kind": "deploy",
+    "artifactId": "e8c7a9bb-3f0d-4736-b828-46a46555b1da",
+    "sourceDeploymentId": null,
+    "status": "succeeded",
+    "helmRevision": 2,
+    "workload": {
+      "uid": "52dc2d85-3b90-494b-b57c-1df155fc41ac",
+      "pullSecret": {
+        "name": "podry-capabilit-p-532cbaf7d6d348e28bca6d9eea98da47",
+        "uid": "d5ba7fc1-5ba1-4aec-837a-13a7140b742e",
+        "type": "kubernetes.io/dockerconfigjson"
+      },
+      "generatedConfig": {
+        "name": "podry-capabilit-c-532cbaf7d6d348e28bca6d9eea98da47",
+        "uid": "b78065d3-35a6-4050-bc4f-6b2569f9fe12"
+      },
+      "probes": [
+        "readinessProbe",
+        "livenessProbe",
+        "startupProbe"
+      ],
+      "mounts": [
+        {
+          "mountPath": "/etc/podry/config",
+          "name": "podry-config",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/settings",
+          "name": "settings",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/business-secret",
+          "name": "credential",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/data",
+          "name": "data"
+        }
+      ],
+      "pods": [
+        {
+          "name": "podry-capabilities-756f58ff86-jpz5g",
+          "uid": "d5458cfe-92fd-40e6-8a8d-5a878d3f73a2",
+          "imageID": "registry.podry.dev/podry-auth-20261123/demo@sha256:7bb647dade725b06faeeba2df326be0339a8423b151a02109e599c79b7282e71",
+          "ready": true
+        }
+      ]
+    },
+    "helm": [
+      {
+        "revision": 1,
+        "status": "superseded",
+        "chartVersion": "1.2.0"
+      },
+      {
+        "revision": 2,
+        "status": "deployed",
+        "chartVersion": "1.2.0"
+      }
+    ]
+  },
+  "finalOffline": {
+    "id": "4d3fc025-4311-4127-8eb8-4bfd2797ab35",
+    "kind": "offline",
+    "artifactId": "e8c7a9bb-3f0d-4736-b828-46a46555b1da",
+    "sourceDeploymentId": "532cbaf7-d6d3-48e2-8bca-6d9eea98da47",
+    "status": "succeeded",
+    "helmRevision": 2,
+    "managedObjectCount": 0,
+    "health": "stopped",
+    "replayVerified": true,
+    "helm": [
+      {
+        "revision": 1,
+        "status": "superseded",
+        "chartVersion": "1.2.0"
+      },
+      {
+        "revision": 2,
+        "status": "uninstalled",
+        "chartVersion": "1.2.0"
+      }
+    ]
+  },
+  "detached": {
+    "version": 6,
+    "detached": true,
+    "bindingId": "514cab89-b6f1-4a30-ad88-504c5f9554bb"
+  },
+  "borrowedResourcesPreserved": [
+    {
+      "kind": "configmap",
+      "name": "borrowed-settings",
+      "uid": "93c3dcc1-6567-43a6-88a9-eeb6d1a84fd4"
+    },
+    {
+      "kind": "secret",
+      "name": "borrowed-secret",
+      "uid": "8d072aac-9ee9-4233-bfe6-4d5035782b93"
+    },
+    {
+      "kind": "persistentvolumeclaim",
+      "name": "borrowed-data",
+      "uid": "ed459731-709c-44b4-9e0f-5393c3bf0a15"
+    }
+  ],
+  "historyReadable": true,
+  "resume": {
+    "verified": true,
+    "before": {
+      "builds": 2,
+      "attempts": 2,
+      "artifacts": 2,
+      "requests": 4,
+      "deployments": 4
+    },
+    "after": {
+      "builds": 2,
+      "attempts": 2,
+      "artifacts": 2,
+      "requests": 4,
+      "deployments": 4
+    }
+  },
+  "limitations": [
+    "One node, same Registry and private test CA; no node reboot or CA persistence exercise",
+    "Check scripts use shell and existing runner tools; no Go or Node toolchain acceptance",
+    "Probe configuration and Ready workloads verified; probe failure/recovery not injected",
+    "PVC binding and mounted volume declarations verified; application file IO, retention policies and storage failure recovery not exercised",
+    "No real credential rotation/revocation, historical rollback, concurrent external writes, multi-instance recovery, production backup or Registry GC acceptance",
+    "Application is offline and detached at completion; fixture Registry, borrowed resources, Helm history and isolated backend/database retained for inspection"
+  ],
+  "finishedAt": "2026-11-23T04:02:54.246Z"
+}

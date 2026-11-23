@@ -15,11 +15,14 @@ const { values: options } = parseArgs({ options: {
   'auto-deploy': { type: 'boolean', default: false },
   'promote-from': { type: 'string' },
   'insecure-kubernetes': { type: 'boolean', default: false },
+  'build-namespace': { type: 'string' },
+  'private-registry': { type: 'boolean', default: false },
   help: { type: 'boolean', default: false },
 } });
 if (options.help) {
   console.log('PODRY_LIVE_TOKEN=<access token> node scripts/test-cicd-live.mjs --api http://127.0.0.1:15000 --app UUID --binding UUID --kubeconfig docs/k3s.yaml --output /outside-repo/evidence.json [--build-id UUID] [--auto-deploy | --promote-from SOURCE_DEPLOYMENT] [--insecure-kubernetes]');
   console.log('Creates a real build and Helm deployment, checks Registry bytes, Job/Pod identity, archived logs and GET /ping. --auto-deploy observes the on_ci_success request without manual preview/confirmation. --promote-from SOURCE_DEPLOYMENT --build-id BUILD promotes that existing Artifact to the manual binding. Reusing --output resumes recorded IDs and idempotency keys. Does not delete resources. Trust private CAs with NODE_EXTRA_CA_CERTS or Node --use-system-ca.');
+  console.log('--build-namespace selects CI when it differs from the CD namespace. --private-registry requires PODRY_LIVE_REGISTRY_AUTHORITY, PODRY_LIVE_REGISTRY_USERNAME and PODRY_LIVE_REGISTRY_PASSWORD; verifies anonymous manifest rejection before authenticated reads.');
   process.exit(0);
 }
 for (const name of ['api', 'app', 'binding', 'output', 'kubeconfig']) assert(options[name], `--${name} is required`);
@@ -32,6 +35,11 @@ if (options['promote-from']) {
 }
 const token = process.env.PODRY_LIVE_TOKEN;
 assert(token && !/[\r\n]/.test(token), 'PODRY_LIVE_TOKEN is required');
+const privateRegistry = options['private-registry'];
+const registryAuthority = process.env.PODRY_LIVE_REGISTRY_AUTHORITY;
+const registryUser = process.env.PODRY_LIVE_REGISTRY_USERNAME;
+const registryPassword = process.env.PODRY_LIVE_REGISTRY_PASSWORD;
+if (privateRegistry) assert(registryAuthority && registryUser && registryPassword && !registryUser.includes(':'), 'Private Registry authority and credentials are required');
 const base = new URL(options.api);
 assert(['http:', 'https:'].includes(base.protocol) && !base.username && !base.password && !base.search && !base.hash && base.pathname === '/', '--api must be an exact HTTP(S) origin');
 const timeout = Number(options['timeout-seconds']);
@@ -40,10 +48,12 @@ const output = resolve(options.output);
 let state;
 try { state = JSON.parse(await readFile(output, 'utf8')); }
 catch (error) { if (error.code !== 'ENOENT') throw error; }
-state ??= { schemaVersion: 1, runId: randomUUID(), api: base.origin, appId: options.app, bindingId: options.binding, automatic: options['auto-deploy'], promoteFrom: options['promote-from'] ?? null, startedAt: new Date().toISOString(), events: [] };
+state ??= { schemaVersion: 1, runId: randomUUID(), api: base.origin, appId: options.app, bindingId: options.binding, automatic: options['auto-deploy'], privateRegistry, promoteFrom: options['promote-from'] ?? null, startedAt: new Date().toISOString(), events: [] };
 assert(state.schemaVersion === 1 && state.api === base.origin && state.appId === options.app && state.bindingId === options.binding, 'Evidence belongs to another application or API');
 const automatic = options['auto-deploy'];
 assert.equal(state.automatic ?? false, automatic, 'Evidence belongs to another deployment mode');
+assert.equal(state.privateRegistry ?? false, privateRegistry, 'Evidence belongs to another Registry mode');
+state.privateRegistry = privateRegistry;
 state.automatic = automatic;
 assert.equal(state.promoteFrom ?? null, options['promote-from'] ?? null, 'Evidence belongs to another promotion source');
 if (options['build-id']) {
@@ -114,28 +124,34 @@ async function checkRegistry(artifact) {
   assert(slash > 0, 'Artifact must include the Registry authority');
   const origin = new URL('https://' + artifact.imageRepository.slice(0, slash));
   assert(!origin.username && !origin.password && origin.pathname === '/' && !origin.search && !origin.hash, 'Invalid Registry authority');
+  if (privateRegistry) assert.equal(origin.host, registryAuthority, 'Registry credentials must only reach the configured authority');
+  const authHeaders = privateRegistry ? { Authorization: 'Basic ' + Buffer.from(`${registryUser}:${registryPassword}`).toString('base64') } : {};
   const prefix = `${origin.origin}/v2/${artifact.imageRepository.slice(slash + 1)}`;
   const accept = 'application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json';
   const visited = new Set();
+  if (privateRegistry) {
+    const anonymous = await response(`${prefix}/manifests/${artifact.digest}`, { headers: { Accept: accept } });
+    assert.equal(anonymous.status, 401, 'Private Registry must reject anonymous manifest reads');
+  }
   async function manifest(digest) {
     assert.match(digest, /^sha256:[0-9a-f]{64}$/);
     if (visited.has(digest)) return;
     visited.add(digest);
     assert(visited.size <= 32, 'Registry manifest graph exceeded budget');
     // The backend access token is never sent to the Registry.
-    const result = await response(`${prefix}/manifests/${digest}`, { headers: { Accept: accept } });
-    assert.equal(result.status, 200, 'Anonymous Registry manifest read failed');
+    const result = await response(`${prefix}/manifests/${digest}`, { headers: { Accept: accept, ...authHeaders } });
+    assert.equal(result.status, 200, 'Registry manifest read failed');
     assert.equal(hash(result.bytes), digest, 'Registry bytes differ from Artifact digest');
     if (result.headers.has('docker-content-digest')) assert.equal(result.headers.get('docker-content-digest'), digest);
     const value = JSON.parse(result.bytes);
     if (value.manifests) for (const entry of value.manifests) await manifest(entry.digest);
     else for (const blob of [value.config, ...value.layers]) {
       assert.match(blob.digest, /^sha256:[0-9a-f]{64}$/);
-      assert.equal((await response(`${prefix}/blobs/${blob.digest}`, { method: 'HEAD' })).status, 200, 'Registry blob missing');
+      assert.equal((await response(`${prefix}/blobs/${blob.digest}`, { method: 'HEAD', headers: authHeaders })).status, 200, 'Registry blob missing');
     }
   }
   await manifest(artifact.digest);
-  return { imageRef: artifact.imageRef, manifests: [...visited], verifiedAt: new Date().toISOString() };
+  return { imageRef: artifact.imageRef, manifests: [...visited], ...(privateRegistry ? { anonymousManifestStatus: 401, authenticatedManifestStatus: 200 } : {}), verifiedAt: new Date().toISOString() };
 }
 async function checkHTTP(target) {
   const child = spawn('kubectl', [...kubectlArgs, '-n', target.namespace, 'port-forward', '--address=127.0.0.1', `service/${target.releaseName}`, ':80'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -183,6 +199,9 @@ try {
     state.pipelineId = pipeline.id;
   }
   const target = binding.target;
+  const buildNamespace = options['build-namespace'] ?? target.namespace;
+  assert(!state.buildNamespace || state.buildNamespace === buildNamespace, 'Build namespace changed on resume');
+  state.buildNamespace = buildNamespace;
   assert(!state.target || JSON.stringify(state.target) === JSON.stringify(target), 'Binding target changed');
   state.target = target;
   if (!state.buildId) {
@@ -218,21 +237,29 @@ try {
   state.attempts = await api('GET', `/builds/${build.id}/attempts`);
   const attempt = state.attempts.find(item => item.attemptNo === build.attemptNo);
   assert(attempt && attempt.status === 'succeeded' && attempt.jobUid, 'Successful Job identity missing');
-  const job = kube(['-n', target.namespace, 'get', 'job', attempt.jobName, '-o', 'json']);
+  const job = kube(['-n', buildNamespace, 'get', 'job', attempt.jobName, '-o', 'json']);
   assert.equal(job.metadata.uid, attempt.jobUid);
   assert(job.status.conditions.some(condition => condition.type === 'Complete' && condition.status === 'True'));
   state.job = { name: job.metadata.name, uid: job.metadata.uid, complete: true };
   // This acceptance uses the same dedicated namespace for CI and CD.
-  const input = JSON.parse(kube(['-n', target.namespace, 'get', 'configmap', `${attempt.jobName}-spec`, '-o', 'json']).data['input.json']);
+  const input = JSON.parse(kube(['-n', buildNamespace, 'get', 'configmap', `${attempt.jobName}-spec`, '-o', 'json']).data['input.json']);
   assert.equal(input.commitSha, build.commitSha); assert.equal(input.attemptId, attempt.id);
   assert.equal(input.buildId, build.id); assert.equal(input.appId, state.appId);
-  const buildPods = kube(['-n', target.namespace, 'get', 'pods', '-l', `batch.kubernetes.io/controller-uid=${job.metadata.uid}`, '-o', 'json']).items;
+  const buildPods = kube(['-n', buildNamespace, 'get', 'pods', '-l', `batch.kubernetes.io/controller-uid=${job.metadata.uid}`, '-o', 'json']).items;
   assert.equal(buildPods.length, 1, 'Expected exactly one observed build Pod');
   const buildPod = buildPods[0];
   assert(buildPod.metadata.ownerReferences.some(owner => owner.uid === job.metadata.uid && owner.controller));
   assert.equal(buildPod.spec.initContainers[0].image, input.runnerImage);
   assert.equal(buildPod.spec.containers[0].image, input.runnerImage);
   assert.equal(buildPod.status.initContainerStatuses[0].state.terminated.exitCode, 0);
+  if (input.checkScript !== undefined) {
+    assert.deepEqual(buildPod.spec.initContainers.map(c => c.name), ['source', 'check']);
+    const check = buildPod.spec.initContainers.find(c => c.name === 'check');
+    assert(!check.volumeMounts.some(m => m.name === 'auth'));
+    assert.equal(buildPod.spec.automountServiceAccountToken, false);
+    assert.equal(buildPod.status.initContainerStatuses.find(c => c.name === 'check')?.state.terminated?.exitCode, 0);
+    state.check = { exitCode: 0, credentialVolumeMounted: false, serviceAccountTokenMounted: false };
+  }
   const termination = buildPod.status.containerStatuses.find(container => container.name === 'build').state.terminated;
   assert.equal(termination.exitCode, 0);
   const result = JSON.parse(termination.message);

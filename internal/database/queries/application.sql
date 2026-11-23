@@ -16,7 +16,7 @@ UPDATE applications SET workflow_version=workflow_version+1,updated_at=now() WHE
 SELECT a.*,h.health AS effective_health FROM applications a JOIN projects p ON p.id=a.project_id JOIN application_health h ON h.app_id=a.id
 WHERE (sqlc.narg(project_id)::uuid IS NULL OR a.project_id=sqlc.narg(project_id))
 AND (sqlc.arg(keyword)::text='' OR strpos(lower(a.name || ' ' || a.description),lower(sqlc.arg(keyword)))>0)
-AND (sqlc.narg(environment_id)::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.environment_id=sqlc.narg(environment_id)))
+AND (sqlc.narg(environment_id)::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.detached_at IS NULL AND b.environment_id=sqlc.narg(environment_id)))
 AND (sqlc.arg(health)::text='' OR h.health=sqlc.arg(health))
 AND (sqlc.arg(is_super_admin)::boolean OR EXISTS(SELECT 1 FROM team_members t WHERE t.team_id=p.team_id AND t.user_id=sqlc.arg(user_id)
  AND (t.role='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=t.user_id))))
@@ -25,7 +25,7 @@ ORDER BY a.updated_at DESC,a.id LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_
 SELECT count(*) FROM applications a JOIN projects p ON p.id=a.project_id JOIN application_health h ON h.app_id=a.id
 WHERE (sqlc.narg(project_id)::uuid IS NULL OR a.project_id=sqlc.narg(project_id))
 AND (sqlc.arg(keyword)::text='' OR strpos(lower(a.name || ' ' || a.description),lower(sqlc.arg(keyword)))>0)
-AND (sqlc.narg(environment_id)::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.environment_id=sqlc.narg(environment_id)))
+AND (sqlc.narg(environment_id)::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.detached_at IS NULL AND b.environment_id=sqlc.narg(environment_id)))
 AND (sqlc.arg(health)::text='' OR h.health=sqlc.arg(health))
 AND (sqlc.arg(is_super_admin)::boolean OR EXISTS(SELECT 1 FROM team_members t WHERE t.team_id=p.team_id AND t.user_id=sqlc.arg(user_id)
  AND (t.role='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=t.user_id))));
@@ -50,9 +50,11 @@ SELECT EXISTS(
 ) AS busy;
 -- name: ListBindings :many
 SELECT b.*,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
-JOIN deployment_targets t ON t.id=b.target_id WHERE b.app_id=$1 ORDER BY b.id;
+JOIN deployment_targets t ON t.id=b.target_id WHERE b.app_id=$1 AND b.detached_at IS NULL ORDER BY b.id;
 -- name: ListPipelines :many
-SELECT * FROM pipelines WHERE app_id=$1 ORDER BY kind DESC,id;
+SELECT pipelines.* FROM pipelines WHERE pipelines.app_id=$1
+AND (binding_id IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.id=pipelines.binding_id AND b.detached_at IS NULL))
+ORDER BY kind DESC,id;
 -- name: CreatePipeline :one
 INSERT INTO pipelines(id,app_id,binding_id,kind,definition,enabled) VALUES($1,$2,$3,$4,$5,$6) RETURNING *;
 -- name: UpdatePipeline :one

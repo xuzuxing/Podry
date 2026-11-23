@@ -83,6 +83,11 @@ func reconciliationAccess(ctx context.Context, q *sqlcdb.Queries, a auth.Actor, 
 	if err = releasePermission(ctx, q, a, out.app, frozenConfig(p), p.Target); err != nil {
 		return out, err
 	}
+	if p.Removal != nil {
+		if err = removalPermission(ctx, q, a, out.app, p); err != nil {
+			return out, err
+		}
+	}
 	resources := append(targetResources(frozenConfig(p)), "core/secrets")
 	if p.WorkloadKind == "Job" {
 		resources = append(resources, "core/pods")

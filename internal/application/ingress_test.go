@@ -12,7 +12,7 @@ func TestVersionedIngressValues(t *testing.T) {
 		{"TLS", "1.1.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev", "className": "traefik", "tlsSecretName": "app-tls", "clusterIssuer": "podry-test-ca"}, false},
 		{"existing certificate", "1.1.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev", "tlsSecretName": "app-tls"}, false},
 		{"legacy rejects TLS", "1.0.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev", "tlsSecretName": "app-tls"}, true},
-		{"unknown version", "1.2.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev"}, true},
+		{"unknown version", "9.0.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev"}, true},
 		{"issuer needs secret", "1.1.0", "Deployment", map[string]any{"enabled": true, "host": "app.podry.dev", "clusterIssuer": "podry-test-ca"}, true},
 		{"secret path", "1.1.0", "Deployment", map[string]any{"tlsSecretName": "../other"}, true},
 		{"wrong class type", "1.1.0", "Deployment", map[string]any{"className": true}, true},

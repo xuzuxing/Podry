@@ -62,7 +62,14 @@ func job(spec ExecutionSpec) object {
 	container := func(name, mode string) object {
 		return object{"name": name, "image": spec.RunnerImage, "imagePullPolicy": "IfNotPresent", "command": []string{"/usr/local/bin/podry-build-runner", mode}, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"cpu": spec.CPU, "memory": spec.Memory}}, "securityContext": object{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": object{"drop": []string{"ALL"}}}, "terminationMessagePath": "/dev/termination-log", "terminationMessagePolicy": "File"}
 	}
-	return object{"apiVersion": "batch/v1", "kind": "Job", "metadata": metadata(spec, ""), "spec": object{"suspend": true, "backoffLimit": 0, "activeDeadlineSeconds": spec.TimeoutSeconds, "template": object{"metadata": object{"annotations": object{"podry.io/attempt-id": spec.AttemptID, "podry.io/execution-hash": Hash(spec)}}, "spec": object{"restartPolicy": "Never", "automountServiceAccountToken": false, "enableServiceLinks": false, "nodeSelector": object{"kubernetes.io/os": "linux", "kubernetes.io/arch": strings.TrimPrefix(spec.Platform, "linux/")}, "securityContext": object{"seccompProfile": object{"type": "RuntimeDefault"}}, "initContainers": []any{container("source", "source")}, "containers": []any{container("build", "build")}, "volumes": volumes}}}}
+	init := []any{container("source", "source")}
+	if spec.CheckScript != nil {
+		check := container("check", "check")
+		check["volumeMounts"] = []any{object{"name": "workspace", "mountPath": "/workspace"}, object{"name": "check-tmp", "mountPath": "/tmp"}, object{"name": "spec", "mountPath": "/run/podry", "readOnly": true}}
+		volumes = append(volumes, object{"name": "check-tmp", "emptyDir": object{"sizeLimit": "512Mi"}})
+		init = append(init, check)
+	}
+	return object{"apiVersion": "batch/v1", "kind": "Job", "metadata": metadata(spec, ""), "spec": object{"suspend": true, "backoffLimit": 0, "activeDeadlineSeconds": spec.TimeoutSeconds, "template": object{"metadata": object{"annotations": object{"podry.io/attempt-id": spec.AttemptID, "podry.io/execution-hash": Hash(spec)}}, "spec": object{"restartPolicy": "Never", "automountServiceAccountToken": false, "enableServiceLinks": false, "nodeSelector": object{"kubernetes.io/os": "linux", "kubernetes.io/arch": strings.TrimPrefix(spec.Platform, "linux/")}, "securityContext": object{"seccompProfile": object{"type": "RuntimeDefault"}}, "initContainers": init, "containers": []any{container("build", "build")}, "volumes": volumes}}}}
 }
 func (s *Service) step(ctx context.Context, spec ExecutionSpec, row sqlcdb.BuildAttempt, create bool) stepResult {
 	r := stepResult{stage: row.Stage, status: row.Status, availability: row.LogAvailability}

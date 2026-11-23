@@ -1,0 +1,84 @@
+{
+  "audits": {
+    "deferred": 3,
+    "succeeded": 2
+  },
+  "build": {
+    "archiveReadableAfterCleanup": true,
+    "archiveSha256": "99bf64be0f6b1b18f3729bda2ccf31b6798513e900c36460c627d6012211c0ea",
+    "attemptId": "9e0f8c79-e384-4477-b6d1-a909f13fcaf8",
+    "cleanupAttempts": 3,
+    "finalizerBlocked": true,
+    "historyCounts": {
+      "artifacts": 2,
+      "build_attempts": 2,
+      "builds": 2,
+      "deployment_resources": 0,
+      "deployments": 0,
+      "release_requests": 0,
+      "release_snapshots": 0
+    },
+    "job": {
+      "kind": "Job",
+      "name": "podry-build-9e0f8c79-e384-4477-b6d1-a909f13fcaf8",
+      "uid": "eb172398-091a-4f12-9854-162e1763c6fe"
+    },
+    "pod": {
+      "kind": "",
+      "name": "podry-build-9e0f8c79-e384-4477-b6d1-a909f13fcaf8-pc7rj",
+      "uid": "152b93d0-ea25-4804-8e99-f2b0377312ab"
+    },
+    "resourcesAbsent": true,
+    "unarchivedBlocked": true
+  },
+  "finishedAt": "2026-11-23T06:40:26.793517Z",
+  "imageRef": "registry.podry.dev/podry-live/podry-job@sha256:b9cd7434b07ce6e4a004c0c40f99711411c09ec2cf59dec8e6c86a462e33e0b3",
+  "namespace": "podry-cleanup-live-bc60a1e0",
+  "namespaceRemoved": true,
+  "namespaceUid": "e977e7ff-5042-4669-a7cd-f3a1ce2e8844",
+  "release": {
+    "borrowedConfigMapPreserved": true,
+    "currentDeploymentId": "de9157b3-6bac-4afe-82f0-7cb3a8e12f9c",
+    "currentProtected": true,
+    "currentResources": [
+      {
+        "kind": "Secret",
+        "name": "release-demo-s-de9157b36bac4afe82f07cb3a8e12f9c",
+        "uid": "36d56651-204e-42f0-badd-a2d622dd2ec4"
+      },
+      {
+        "kind": "Job",
+        "name": "release-demo-de9157b36bac4afe82f07cb3a8e12f9c",
+        "uid": "8f6031bf-78e7-4efe-8e5e-8b349a58679e"
+      }
+    ],
+    "helmStorageSentinelPreserved": true,
+    "historyCounts": {
+      "artifacts": 2,
+      "build_attempts": 2,
+      "builds": 2,
+      "deployment_resources": 4,
+      "deployments": 2,
+      "release_requests": 2,
+      "release_snapshots": 2
+    },
+    "obsoleteDeploymentId": "37887c71-ee5b-4773-bc30-8b0a96530549",
+    "obsoleteResourcesAbsent": true,
+    "oldSecret": {
+      "kind": "Secret",
+      "name": "release-demo-s-37887c71ee5b4773bc308b0a96530549",
+      "uid": "d3043855-84cf-4f53-9157-11483089a5fd"
+    },
+    "referenceProtected": true,
+    "zeroReplicaConsumer": {
+      "kind": "ReplicaSet",
+      "name": "retained-secret-consumer",
+      "uid": "37d53b93-f162-458c-9bba-3abf7bf89b98"
+    }
+  },
+  "result": "passed",
+  "runId": "bc60a1e0-1c02-40e9-aee4-5f80fe22d7be",
+  "schemaVersion": 1,
+  "scope": "real K3s cleanup worker with isolated seeded execution records and accelerated retention; no CI or Helm submission",
+  "startedAt": "2026-11-23T06:38:08.6173588Z"
+}

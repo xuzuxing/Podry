@@ -1,0 +1,10 @@
+{{- if .Values.configFiles }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.podry.configName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "podry.labels" . | nindent 4 }}
+data: {{ .Values.configFiles | toJson }}
+{{- end }}

@@ -23,6 +23,18 @@ type CredentialRef struct {
 	Version int32  `json:"version"`
 }
 
+type PullCredential struct {
+	CredentialRef
+	Registry string `json:"registry"`
+}
+
+type RemovalPlan struct {
+	DeploymentID   string     `json:"deploymentId"`
+	SnapshotSHA256 string     `json:"snapshotSha256"`
+	HelmRevision   int32      `json:"helmRevision"`
+	Resources      []Resource `json:"resources"`
+}
+
 // Field order and JSON names are part of the v1 canonical snapshot hash.
 // Runtime credentials must never be added to this persisted representation.
 type Plan struct {
@@ -45,6 +57,9 @@ type Plan struct {
 	WorkloadKind      string        `json:"workloadKind"`
 	SecretRefs        []SecretRef   `json:"secretRefs"`
 	Chart             chart.Result  `json:"chart"`
+	// Omitted for historical v1 snapshots to preserve their canonical hashes.
+	PullCredential *PullCredential `json:"pullCredential,omitempty"`
+	Removal        *RemovalPlan    `json:"removal,omitempty"`
 }
 
 func Decode(raw []byte, hash string) (Plan, error) {

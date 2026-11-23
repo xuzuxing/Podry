@@ -248,6 +248,9 @@ func TestGitWebhookProviderMigrationHistoryProtection(t *testing.T) {
 	f := setupProviderWebhook(t, "gitea", "")
 	webhookStatus(t, f.send([]byte(`{"ping":true}`), uuid.NewString(), "ping", f.secret, nil), 202)
 	if err := database.Migrate(f.c.f.dsn, true); err != nil {
+		t.Fatal("v20 lifecycle downgrade", err)
+	}
+	if err := database.Migrate(f.c.f.dsn, true); err != nil {
 		t.Fatal("v19 cleanup metadata downgrade", err)
 	}
 	if err := database.Migrate(f.c.f.dsn, true); err == nil {
@@ -273,6 +276,9 @@ func TestGitWebhookProviderIdentityIsolation(t *testing.T) {
 func TestGitWebhookProviderSchemaUpgradeAndGitHubHistory(t *testing.T) {
 	f := setupWebhook(t)
 	webhookStatus(t, f.deliver([]byte(`{"ping":true}`), uuid.NewString(), "ping", webhookTestSecret, nil), 202)
+	if err := database.Migrate(f.c.f.dsn, true); err != nil {
+		t.Fatal("v20 lifecycle downgrade", err)
+	}
 	if err := database.Migrate(f.c.f.dsn, true); err != nil {
 		t.Fatal("v19 cleanup metadata downgrade", err)
 	}

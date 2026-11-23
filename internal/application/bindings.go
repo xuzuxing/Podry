@@ -140,6 +140,9 @@ func (s *Service) UpdateBinding(ctx context.Context, a auth.Actor, id, bindingID
 		if err != nil {
 			return Binding{}, err
 		}
+		if b.DetachedAt != nil {
+			return Binding{}, httpx.Fail(409, "binding_detached", "环境绑定已解除")
+		}
 		if b.Version != *in.ExpectedVersion {
 			return Binding{}, httpx.Fail(409, "revision_conflict", "环境绑定版本已变化")
 		}

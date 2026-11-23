@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,14 +128,42 @@ func (s *Service) authorize(ctx context.Context, p Plan, user string) error {
 		if err = platform.RequireTarget(ctx, s.q, a, app.ProjectID, p.Target.ClusterID, p.Target.Namespace, gvr, "resource.write"); err != nil {
 			return err
 		}
+		if p.Removal != nil {
+			if err = platform.RequireTarget(ctx, s.q, a, app.ProjectID, p.Target.ClusterID, p.Target.Namespace, gvr, "resource.delete"); err != nil {
+				return err
+			}
+		}
 	}
 	// Helm persists release records as Secrets even when the chart has no Secret.
+	if p.Removal != nil {
+		if err = platform.RequireTarget(ctx, s.q, a, app.ProjectID, p.Target.ClusterID, p.Target.Namespace, "core/pods", "resource.view"); err != nil {
+			return err
+		}
+	}
+	for _, grant := range MountPermissions(p.Chart.Values) {
+		if err = platform.RequireTarget(ctx, s.q, a, app.ProjectID, p.Target.ClusterID, p.Target.Namespace, grant.Resource, grant.Action); err != nil {
+			return err
+		}
+	}
 	if err = platform.RequireTarget(ctx, s.q, a, app.ProjectID, p.Target.ClusterID, p.Target.Namespace, "core/secrets", "resource.write"); err != nil {
 		return err
 	}
 	pr, err := s.q.GetProject(ctx, app.ProjectID)
 	if err != nil {
 		return err
+	}
+	if p.PullCredential != nil {
+		ref := p.PullCredential
+		cr, e := s.q.GetCredential(ctx, ref.ID)
+		if e != nil {
+			return e
+		}
+		if cr.Kind != "registry" || p.Chart.Version != "1.2.0" || strings.SplitN(p.ImageRef, "/", 2)[0] != ref.Registry {
+			return httpx.Forbidden()
+		}
+		if e = platform.CredentialAccess(ctx, s.q, a, cr, &pr.TeamID, false); e != nil {
+			return e
+		}
 	}
 	for _, ref := range p.SecretRefs {
 		cr, err := s.q.GetCredential(ctx, ref.CredentialID)
@@ -151,6 +180,9 @@ func (s *Service) authorize(ctx context.Context, p Plan, user string) error {
 	return nil
 }
 func (s *Service) values(ctx context.Context, p Plan) (map[string]any, error) {
+	if p.Removal != nil {
+		return map[string]any{}, nil
+	}
 	raw, err := json.Marshal(p.Chart.Values)
 	if err != nil {
 		return nil, err
@@ -177,6 +209,22 @@ func (s *Service) values(ctx context.Context, p Plan) (map[string]any, error) {
 		data[ref.TargetKey] = base64.StdEncoding.EncodeToString([]byte(value))
 	}
 	reserved["secretData"] = data
+	if p.PullCredential != nil {
+		payload, err := s.secret(ctx, p.PullCredential.CredentialRef)
+		if err != nil {
+			return nil, err
+		}
+		username, _ := payload["username"].(string)
+		password, _ := payload["password"].(string)
+		if username == "" || password == "" {
+			return nil, errors.New("registry credential unavailable")
+		}
+		docker, err := json.Marshal(map[string]any{"auths": map[string]any{p.PullCredential.Registry: map[string]string{"username": username, "password": password, "auth": base64.StdEncoding.EncodeToString([]byte(username + ":" + password))}}})
+		if err != nil {
+			return nil, err
+		}
+		reserved["pullData"] = base64.StdEncoding.EncodeToString(docker)
+	}
 	return values, nil
 }
 
@@ -201,8 +249,9 @@ func (s *Service) claim(ctx context.Context) (claimed, error) {
 	})
 }
 
-// A durable submitting state permits observation only. Even an absent Helm
-// release after a crash is ambiguous; lease expiry never permits a second submit.
+// A durable submitting state permits observation only for installs/upgrades.
+// Offline steps may resume UID-conditional deletion after current authorization.
+// An absent Helm release never permits repeating an install after lease expiry.
 func (s *Service) ProcessOne(ctx context.Context) (bool, error) {
 	return s.processOne(ctx, ctx)
 }
@@ -272,6 +321,11 @@ func (s *Service) processOne(claimCtx, ctx context.Context) (bool, error) {
 			return true, err
 		}
 		c.lease = d
+		result, err = s.executor.Submit(stepCtx, in)
+	} else if p.Removal != nil {
+		if err = s.authorize(stepCtx, p, c.row.RequestedBy); err != nil {
+			return true, s.finish(ctx, c, Observation{State: "unknown", Code: "release_authorization_revoked"})
+		}
 		result, err = s.executor.Submit(stepCtx, in)
 	} else {
 		result, err = s.executor.Observe(stepCtx, in)

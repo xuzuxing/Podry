@@ -3,7 +3,7 @@ WITH candidate AS (
  SELECT p.binding_id FROM binding_health_polls p
  JOIN app_environment_bindings b ON b.id=p.binding_id
  JOIN applications a ON a.id=b.app_id
- WHERE a.archived_at IS NULL AND p.next_poll_at<=clock_timestamp()
+ WHERE a.archived_at IS NULL AND b.detached_at IS NULL AND p.next_poll_at<=clock_timestamp()
  AND (p.lease_until IS NULL OR p.lease_until<=clock_timestamp())
  ORDER BY p.next_poll_at,p.binding_id FOR UPDATE OF p SKIP LOCKED LIMIT 1
 )

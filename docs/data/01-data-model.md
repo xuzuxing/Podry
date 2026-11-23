@@ -40,7 +40,7 @@ erDiagram
 | applications | id, project_id, name, source_mode, workflow_version, archived_at | 同项目内名称唯一，工作流版本做乐观锁 |
 | app_config_versions | app_id, version, git_config, build_config, chart_config, deploy_values, secret_refs | 同应用版本唯一、不可变；JSON 不含凭据明文；chart_config=null 表示 Base 未确认 |
 | deployment_targets | cluster_id, namespace, release_name, active_deployment_id, fencing_token | 物理目标唯一，未知结果保留占用 |
-| app_environment_bindings | app_id, environment_id, target_id, override_values, version, auto_deploy | 每应用每环境唯一，目标只绑定一个应用 |
+| app_environment_bindings | app_id, environment_id, target_id, override_values, version, auto_deploy, detached_at | v20：每应用每环境只允许一个活跃绑定；解绑保留历史，物理目标仍独占 |
 | pipelines | app_id, binding_id, kind, definition, version, enabled | 每应用一条 CI，每绑定一条 CD |
 | builds | app_id, pipeline_id, config_version, commit_sha, status, attempt_no | 固定输入，状态是当前 attempt 投影 |
 | build_attempts | build_id, attempt_no, job_name, job_uid, status, lease_*, cancel_requested_at/by, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at | attempt 唯一，任务名唯一，租约独立于外部状态；取消意图不可变；v19 清理不删除执行历史 |
@@ -48,7 +48,7 @@ erDiagram
 | secret_versions | credential_id, version, encrypted_payload | 只允许显式保留的历史密文版本 |
 | deployment_previews | app_id, binding_id, config_version, snapshot, expires_at | 短期预览，消费时校验版本与授权 |
 | release_snapshots | app_id, binding_id, artifact_id, config_version, chart_*, values_redacted, secret_refs, manifest_redacted | 不可变、不得保存敏感明文 |
-| release_requests | snapshot_id, kind, source_deployment_id, reason, status, requested_by | deploy/promote/rollback；由快照确定目标；回滚理由 1–1000 字，来源与身份不可变 |
+| release_requests | snapshot_id, kind, source_deployment_id, reason, status, requested_by | deploy/promote/rollback/offline；由快照确定目标；回滚/下线理由 1–1000 字，来源与身份不可变 |
 | deployments | request_id, target_id, status, helm_revision, lease_*, fencing_token, next_cleanup_at, cleanup_attempts, cleanup_error_code, resources_cleaned_at | 每请求一个执行记录；外部状态与请求状态区分；v19 只回收被替代且无人引用的执行资源 |
 | deployment_resources | deployment_id, group_name, version, resource, kind, namespace, name, uid, manifest_hash | 保存资源身份，UID 不是名称别名 |
 | resource_previews | cluster_id, requested_by, encrypted_documents, key_id, items_redacted, expires_at, consumed_at | v12；身份与密文不可变，10 分钟有效且仅消费一次；重验授权/凭据/UID/RV |

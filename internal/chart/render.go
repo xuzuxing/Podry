@@ -21,12 +21,13 @@ import (
 	"helm.sh/helm/v3/pkg/engine"
 )
 
-//go:embed charts/podry/Chart.yaml charts/podry/values.yaml charts/podry/templates/* charts/podry-tls/Chart.yaml charts/podry-tls/values.yaml charts/podry-tls/templates/*
+//go:embed charts/podry/Chart.yaml charts/podry/values.yaml charts/podry/templates/* charts/podry-tls/Chart.yaml charts/podry-tls/values.yaml charts/podry-tls/templates/* charts/podry-app/Chart.yaml charts/podry-app/values.yaml charts/podry-app/templates/*
 var source embed.FS
 
 // Chart content changes require a new version and an explicitly reviewed hash.
 const PackageSHA256 = "ec64a72850fb0eba6408e24703ba31331f9e34172a5163b58b2badb469452228"
 const TLSPackageSHA256 = "5f523eda5a704e8c757246206a0ac5469ee03822813d69b50ba8341314a84cd5"
+const AppPackageSHA256 = "7af384869aed57465a25f5c8e5accaa4ac5a1cb422398a05000cb5d1b6eef8f0"
 
 func packageVersion(version string) (string, string) {
 	switch version {
@@ -34,6 +35,8 @@ func packageVersion(version string) (string, string) {
 		return "charts/podry", PackageSHA256
 	case "1.1.0":
 		return "charts/podry-tls", TLSPackageSHA256
+	case "1.2.0":
+		return "charts/podry-app", AppPackageSHA256
 	default:
 		return "", ""
 	}
@@ -49,6 +52,7 @@ type Input struct {
 	AppID, BindingID, DeploymentID, Namespace, ReleaseName, WorkloadKind, ImageRef string
 	Values                                                                         map[string]any
 	SecretKeys                                                                     []string
+	PullRegistry                                                                   string
 }
 type Result struct {
 	Name           string         `json:"name"`
@@ -104,7 +108,7 @@ func Render(in Input) (Result, error) {
 		return out, err
 	}
 	if Hash(archive.Bytes()) != checksum {
-		return out, fmt.Errorf("built-in chart checksum mismatch")
+		return out, fmt.Errorf("built-in chart checksum mismatch: %s", Hash(archive.Bytes()))
 	}
 	ch, err := loader.LoadFiles(files)
 	if err != nil {
@@ -155,6 +159,13 @@ func render(in Input, ch *helmchart.Chart, archive []byte) (Result, error) {
 		secretData[key] = base64.StdEncoding.EncodeToString([]byte("<redacted>"))
 	}
 	values["podry"] = map[string]any{"appId": in.AppID, "bindingId": in.BindingID, "deploymentId": in.DeploymentID, "workloadKind": in.WorkloadKind, "workloadName": workload, "secretName": prefix + "-s-" + suffix, "imageRef": in.ImageRef, "secretKeys": in.SecretKeys, "secretData": secretData}
+	if in.Version == "1.2.0" || ch.Metadata.Version == "1.2.0" {
+		reserved := values["podry"].(map[string]any)
+		reserved["configName"] = prefix + "-c-" + suffix
+		reserved["pullSecretName"] = prefix + "-p-" + suffix
+		reserved["pullRegistry"] = in.PullRegistry
+		reserved["pullData"] = base64.StdEncoding.EncodeToString([]byte("<redacted>"))
+	}
 	rendered, err := chartutil.ToRenderValues(ch, values, chartutil.ReleaseOptions{Name: in.ReleaseName, Namespace: in.Namespace, Revision: 1, IsInstall: true}, nil)
 	if err != nil {
 		return out, err

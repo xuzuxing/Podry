@@ -1,0 +1,2 @@
+# Archived Chart package hashes must be identical on Windows and Linux.
+internal/chart/charts/** text eol=lf

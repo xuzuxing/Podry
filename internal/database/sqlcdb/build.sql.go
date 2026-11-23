@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+const buildArtifactExecution = `-- name: BuildArtifactExecution :one
+SELECT execution_spec,execution_hash FROM build_attempts WHERE id=$1 AND build_id=$2
+`
+
+type BuildArtifactExecutionParams struct {
+	ID      string
+	BuildID string
+}
+
+type BuildArtifactExecutionRow struct {
+	ExecutionSpec []byte
+	ExecutionHash string
+}
+
+func (q *Queries) BuildArtifactExecution(ctx context.Context, arg BuildArtifactExecutionParams) (BuildArtifactExecutionRow, error) {
+	row := q.db.QueryRow(ctx, buildArtifactExecution, arg.ID, arg.BuildID)
+	var i BuildArtifactExecutionRow
+	err := row.Scan(&i.ExecutionSpec, &i.ExecutionHash)
+	return i, err
+}
+
 const cancelUnclaimedBuildAttempt = `-- name: CancelUnclaimedBuildAttempt :one
 UPDATE build_attempts SET stage='finished',status='canceled',finished_at=clock_timestamp(),
  lease_owner=NULL,lease_expires_at=NULL,revision=revision+1

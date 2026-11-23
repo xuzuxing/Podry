@@ -82,7 +82,7 @@ func CheckSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := pool.QueryRow(ctx, "SELECT version,dirty FROM schema_migrations").Scan(&version, &dirty); err != nil {
 		return errors.New("database schema is missing; run podry migrate up")
 	}
-	if version != 19 || dirty {
+	if version != 20 || dirty {
 		return errors.New("database schema is incompatible or dirty; run explicit migrations")
 	}
 	return nil

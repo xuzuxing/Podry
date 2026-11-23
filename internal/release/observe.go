@@ -18,6 +18,8 @@ func resourceName(version, kind string) (string, error) {
 		return "batch/jobs", nil
 	case "v1/Secret":
 		return "core/secrets", nil
+	case "v1/ConfigMap":
+		return "core/configmaps", nil
 	case "v1/Service":
 		return "core/services", nil
 	case "networking.k8s.io/v1/Ingress":
@@ -41,6 +43,9 @@ func resourcePath(r Resource) (string, error) {
 // Objects reads identities only, never Secret data. Both the preflight scope and
 // runtime observation are derived from the exact archived preview manifest.
 func Objects(p Plan) ([]Resource, error) {
+	if p.Removal != nil {
+		p.DeploymentID = p.Removal.DeploymentID
+	}
 	decoder := yaml.NewYAMLOrJSONDecoder(strings.NewReader(p.Chart.Manifest), 4096)
 	var result []Resource
 	seen := map[string]bool{}

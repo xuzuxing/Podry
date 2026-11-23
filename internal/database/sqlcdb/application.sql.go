@@ -29,7 +29,7 @@ const countApplications = `-- name: CountApplications :one
 SELECT count(*) FROM applications a JOIN projects p ON p.id=a.project_id JOIN application_health h ON h.app_id=a.id
 WHERE ($1::uuid IS NULL OR a.project_id=$1)
 AND ($2::text='' OR strpos(lower(a.name || ' ' || a.description),lower($2))>0)
-AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.environment_id=$3))
+AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.detached_at IS NULL AND b.environment_id=$3))
 AND ($4::text='' OR h.health=$4)
 AND ($5::boolean OR EXISTS(SELECT 1 FROM team_members t WHERE t.team_id=p.team_id AND t.user_id=$6
  AND (t.role='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=t.user_id))))
@@ -93,7 +93,7 @@ func (q *Queries) CreateApplication(ctx context.Context, arg CreateApplicationPa
 
 const createBinding = `-- name: CreateBinding :one
 INSERT INTO app_environment_bindings(app_id,environment_id,target_id,override_values,auto_deploy)
-VALUES($1,$2,$3,COALESCE($5::jsonb,'{}'::jsonb),$4) RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id
+VALUES($1,$2,$3,COALESCE($5::jsonb,'{}'::jsonb),$4) RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id, detached_at
 `
 
 type CreateBindingParams struct {
@@ -122,6 +122,7 @@ func (q *Queries) CreateBinding(ctx context.Context, arg CreateBindingParams) (A
 		&i.Version,
 		&i.AutoDeploy,
 		&i.CurrentDeploymentID,
+		&i.DetachedAt,
 	)
 	return i, err
 }
@@ -280,7 +281,7 @@ const listApplications = `-- name: ListApplications :many
 SELECT a.id, a.project_id, a.name, a.description, a.source_mode, a.workflow_version, a.archived_at, a.created_at, a.updated_at,h.health AS effective_health FROM applications a JOIN projects p ON p.id=a.project_id JOIN application_health h ON h.app_id=a.id
 WHERE ($1::uuid IS NULL OR a.project_id=$1)
 AND ($2::text='' OR strpos(lower(a.name || ' ' || a.description),lower($2))>0)
-AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.environment_id=$3))
+AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.app_id=a.id AND b.detached_at IS NULL AND b.environment_id=$3))
 AND ($4::text='' OR h.health=$4)
 AND ($5::boolean OR EXISTS(SELECT 1 FROM team_members t WHERE t.team_id=p.team_id AND t.user_id=$6
  AND (t.role='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=t.user_id))))
@@ -352,8 +353,8 @@ func (q *Queries) ListApplications(ctx context.Context, arg ListApplicationsPara
 }
 
 const listBindings = `-- name: ListBindings :many
-SELECT b.id, b.app_id, b.environment_id, b.target_id, b.override_values, b.version, b.auto_deploy, b.current_deployment_id,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
-JOIN deployment_targets t ON t.id=b.target_id WHERE b.app_id=$1 ORDER BY b.id
+SELECT b.id, b.app_id, b.environment_id, b.target_id, b.override_values, b.version, b.auto_deploy, b.current_deployment_id, b.detached_at,t.cluster_id,t.namespace,t.release_name FROM app_environment_bindings b
+JOIN deployment_targets t ON t.id=b.target_id WHERE b.app_id=$1 AND b.detached_at IS NULL ORDER BY b.id
 `
 
 type ListBindingsRow struct {
@@ -365,6 +366,7 @@ type ListBindingsRow struct {
 	Version             int32
 	AutoDeploy          bool
 	CurrentDeploymentID *string
+	DetachedAt          *time.Time
 	ClusterID           string
 	Namespace           string
 	ReleaseName         string
@@ -388,6 +390,7 @@ func (q *Queries) ListBindings(ctx context.Context, appID string) ([]ListBinding
 			&i.Version,
 			&i.AutoDeploy,
 			&i.CurrentDeploymentID,
+			&i.DetachedAt,
 			&i.ClusterID,
 			&i.Namespace,
 			&i.ReleaseName,
@@ -403,7 +406,9 @@ func (q *Queries) ListBindings(ctx context.Context, appID string) ([]ListBinding
 }
 
 const listPipelines = `-- name: ListPipelines :many
-SELECT id, app_id, binding_id, kind, definition, version, enabled FROM pipelines WHERE app_id=$1 ORDER BY kind DESC,id
+SELECT pipelines.id, pipelines.app_id, pipelines.binding_id, pipelines.kind, pipelines.definition, pipelines.version, pipelines.enabled FROM pipelines WHERE pipelines.app_id=$1
+AND (binding_id IS NULL OR EXISTS(SELECT 1 FROM app_environment_bindings b WHERE b.id=pipelines.binding_id AND b.detached_at IS NULL))
+ORDER BY kind DESC,id
 `
 
 func (q *Queries) ListPipelines(ctx context.Context, appID string) ([]Pipeline, error) {
@@ -525,7 +530,7 @@ func (q *Queries) UpdateApplication(ctx context.Context, arg UpdateApplicationPa
 
 const updateBinding = `-- name: UpdateBinding :one
 UPDATE app_environment_bindings SET override_values=$3,auto_deploy=$4,version=version+1
-WHERE id=$1 AND app_id=$2 AND version=$5 RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id
+WHERE id=$1 AND app_id=$2 AND version=$5 RETURNING id, app_id, environment_id, target_id, override_values, version, auto_deploy, current_deployment_id, detached_at
 `
 
 type UpdateBindingParams struct {
@@ -554,6 +559,7 @@ func (q *Queries) UpdateBinding(ctx context.Context, arg UpdateBindingParams) (A
 		&i.Version,
 		&i.AutoDeploy,
 		&i.CurrentDeploymentID,
+		&i.DetachedAt,
 	)
 	return i, err
 }

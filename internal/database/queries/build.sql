@@ -36,6 +36,8 @@ SELECT count(*) FROM builds WHERE app_id=$1;
 SELECT * FROM build_attempts WHERE build_id=$1 ORDER BY attempt_no;
 -- name: GetBuildAttempt :one
 SELECT * FROM build_attempts WHERE build_id=$1 AND attempt_no=$2;
+-- name: BuildArtifactExecution :one
+SELECT execution_spec,execution_hash FROM build_attempts WHERE id=$1 AND build_id=$2;
 -- name: HasActiveBuilds :one
 SELECT EXISTS(SELECT 1 FROM builds WHERE app_id=$1 AND status IN ('queued','running','canceling','unknown'));
 -- name: ClaimBuildAttempt :one

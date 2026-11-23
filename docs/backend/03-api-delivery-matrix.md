@@ -1,12 +1,12 @@
 # HTTP 接口分期矩阵
 
-日期：2026-11-21 · 状态：全部 79 个 HTTP 操作已实现；E09 补齐 Secret reveal、终端创建/关闭和 WebSocket 通道。40–41 已补齐独立环境绑定与覆盖，模板支持 add_deploy；59–60 增加晋级与历史快照回滚。55 确认发布已装配持久 Helm Worker，开关默认关闭并返回 503，开启后返回 202；58 和 61 增加实时 Diff 与应用资源。30 补齐原子应用克隆，见 [克隆记录](19-application-cloning.md)。52 增加镜像导入、镜像应用与 external_image，见 [镜像实施记录](18-image-artifacts.md)。48–49 增加构建取消与固定输入重试，见 [实施记录](17-build-actions.md)。前批见 [晋级与回滚](16-release-actions.md)，前批见 [多环境绑定与覆盖](15-environment-bindings.md)、[应用资源与健康观察](13-application-observation.md)、[发布执行与恢复](12-release-execution.md)、[发布规划](11-release-planning.md)、[构建执行](09-build-execution.md)。67/68/70 已实现预览、持久 Apply 与任务查询，见 [资源写入](20-resource-writes.md)。69 已实现删除、Deployment 重启/扩缩容及 HPA/发布冲突，见 [资源动作](21-resource-actions.md)。75 已实现 GitHub Push 准入，见 [Webhook](23-git-webhooks.md)，显式非生产自动部署已补齐，见 [记录](24-ci-auto-deploy.md)。阶段列继续表示交付安排，CI/CD 真实执行按用户要求暂缓。
+日期：2026-11-23 · 状态：全部 81 个 HTTP 操作已实现；E09 补齐 Secret reveal、终端创建/关闭和 WebSocket 通道。40–41 已补齐独立环境绑定与覆盖，模板支持 add_deploy；59–60 增加晋级与历史快照回滚。55 确认发布已装配持久 Helm Worker，开关默认关闭并返回 503，开启后返回 202；58 和 61 增加实时 Diff 与应用资源。30 补齐原子应用克隆，见 [克隆记录](19-application-cloning.md)。52 增加镜像导入、镜像应用与 external_image，见 [镜像实施记录](18-image-artifacts.md)。48–49 增加构建取消与固定输入重试，见 [实施记录](17-build-actions.md)。前批见 [晋级与回滚](16-release-actions.md)，前批见 [多环境绑定与覆盖](15-environment-bindings.md)、[应用资源与健康观察](13-application-observation.md)、[发布执行与恢复](12-release-execution.md)、[发布规划](11-release-planning.md)、[构建执行](09-build-execution.md)。67/68/70 已实现预览、持久 Apply 与任务查询，见 [资源写入](20-resource-writes.md)。69 已实现删除、Deployment 重启/扩缩容及 HPA/发布冲突，见 [资源动作](21-resource-actions.md)。75 已实现 GitHub Push 准入，见 [Webhook](23-git-webhooks.md)，显式非生产自动部署已补齐，见 [记录](24-ci-auto-deploy.md)。阶段列继续表示交付安排，CI/CD 真实执行按用户要求暂缓。
 
-本表逐项映射现有 [OpenAPI](../api/openapi.json) 的 **79 个 HTTP 操作**：P0 61 个、P1 15 个、P2 3 个。它是排期索引，不代表完成率；同一操作的可选分支也可能分期交付。新增 78 为显式发布核对、79 为资源 Apply/动作人工核对，保留既有 operationId 与编号。
+本表逐项映射现有 [OpenAPI](../api/openapi.json) 的 **81 个 HTTP 操作**：P0 61 个、P1 17 个、P2 3 个。它是排期索引，不代表完成率；同一操作的可选分支也可能分期交付。新增 78 为显式发布核对、79 为资源 Apply/动作人工核对，保留既有 operationId 与编号。
 
 总体架构与 P0 范围见 [开发计划](01-development-plan.md)，任务见 [任务清单](02-task-breakdown.md)。路径省略统一前缀 `/api`。阶段 B0 完成合同补齐后，必须据新合同重新核对本表，不能沿用旧计数判断验收。
 
-当前 OpenAPI SHA-256：`7a5d2a357b12bdda7edb6b0210be31c8308e158e77205831a29d12429954bb6e`（V1.22.0：79 implemented、0 planned；补齐 Secret reveal 和终端创建/关闭及 WebSocket/SPDY 通道，仍为 v17、36 张业务表）。
+当前 OpenAPI SHA-256：`a80e5ebeea9ee6761adafeb49aa793e1bc67656ff621b28328621e8270e49ccc`（V1.25.0：81 implemented、0 planned；数据库 v20、36 张业务表）。
 
 ## 1. 交付约定
 
@@ -99,6 +99,8 @@
 | 77 | `GET /apps/{appId}/drift` | `getApplicationDrift` | P1 | E08 | 已实现：绑定必选，默认本地缓存/最近历史；显式 refresh=true 只读刷新；脱敏数量、60 秒失效、不自动修复 |
 | 78 | `POST /deployments/{deploymentId}/reconcile` | `reconcileDeployment` | P1 | T15/T24 补充 | 已实现：当前操作者完整授权、只读 Helm 核对、revision/lease/fencing、事务审计与幂等；证据不足保留 unknown，见 [合同](26-release-reconciliation.md) |
 | 79 | `POST /resource-operations/{operationId}/reconcile` | `reconcileResourceOperation` | P1 | E06/E07 恢复补充 | 已实现：原请求人当前完整权限、revision/lease、只读证据与凭据重验、pending 跳过、原子审计/幂等；unknown 不强制解除，见 [合同](27-resource-reconciliation.md) |
+| 80 | `POST /apps/{appId}/environments/{bindingId}/offline` | `offlineApplicationBinding` | P1 | 应用生命周期 | 已实现：持久下线、UID/RV 条件删除、unknown 保留、成功清空当前指针；见 [合同](40-application-deployment-capabilities.md) |
+| 81 | `POST /apps/{appId}/environments/{bindingId}/detach` | `detachApplicationBinding` | P1 | 应用生命周期 | 已实现：乐观版本、成功下线证据、软解绑、保留历史与物理目标预约 |
 
 ## 3. 分阶段出口
 

@@ -1,0 +1,18 @@
+{{- if and (eq .Values.podry.workloadKind "Deployment") .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "podry.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+  selector:
+    podry.io/binding-id: {{ .Values.podry.bindingId | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+{{- end }}

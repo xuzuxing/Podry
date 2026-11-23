@@ -1,5 +1,16 @@
 # 后端开发任务清单
 
+2026-11-23 T23 运行中/工作负载恢复专项：真实 runner 的 source/check、观察阶段进程强杀、自然租约到期后同 Pod 恢复，以及 Helm Job 已写入但状态未完成时强杀通过；构建/发布同名替换 UID 后连续只读观察保留原身份、unknown 和目标占用。原两个强杀场景复跑通过，定向回归 58 个顶层/50 个子用例通过。未执行镜像构建/推送，也不是长期多实例验收；T23/B6 仍未整体完成。见 [真实结果与边界](44-live-workload-recovery.md)。
+
+2026-11-23 T23 强杀恢复专项：新增独立 OS 进程强杀验收，真实 K3s Job 创建及 Helm pending 存储响应丢失后，等待原 60 秒租约自然到期再恢复；冻结凭据轮换、撤权、原 UID/revision、目标占用及排队保护通过。38 个顶层/30 个子用例定向回归通过；不包含运行中构建/推送或成功部署恢复，T23/B6 尚未整体完成。见 [验收入口与证据边界](43-live-execution-recovery.md)。
+
+2026-11-23 T24 清理专项：生产清理步骤在真实 K3s 和隔离 PostgreSQL 通过，覆盖未归档阻止回收、finalizer 暂缓、旧 Job/Secret 回收、零副本 ReplicaSet 引用保护、历史/审计保留及测试资源回收。使用受控执行记录和时间加速，未新增 CI/Helm 执行；默认清理关闭，生产恢复/多实例/故障矩阵继续待办。见 [真实清理步骤与边界](42-live-resource-cleanup.md)。
+
+2026-11-23 真实部署能力验收：新 runner 已按 digest 发布，专用鉴权 Registry、检查成功/失败、Chart 1.2.0 配置/探针/PVC、下线后重装与软解绑通过；修复生成 ConfigMap 的资源/Diff/健康读取遗漏，同 output 重放无重复执行。见 [真实结果与边界](41-live-deployment-capabilities.md)。开发库和既有应用未变；下方“未发布 runner/未修改集群”为首次实现批次的历史记录。
+
+2026-11-23 业务补齐：Chart 1.2.0 支持私有镜像拉取、探针、启动参数、配置文件与 ConfigMap/Secret/PVC 挂载；构建支持独立 checkScript 阶段；新增环境持久下线和软解绑两个接口。正式迁移 v20、36 张业务表，OpenAPI V1.25.0 / 81 个操作。具体权限、兼容性和待验收边界见 [部署与生命周期](40-application-deployment-capabilities.md)。未发布新 runner 镜像、未迁移开发数据库或修改真实集群。
+
+
 2026-11-23 T24 清理更新：v19 增加构建 Job/Secret/ConfigMap 与已被替代发布的 Job/版本 Secret 自动清理，默认关闭，保留日志门槛、精确 UID/RV、引用检查、目标占用与持久重试审计。见 [资源清理合同](39-resource-cleanup.md)。业务记录保留期、真实集群清理和生产恢复验收继续待办。
 
 2026-11-23 Webhook 更新：GitHub/Gitea/GitLab/Gitee Push 业务均已实现，统一持久构建准入；v18 扩展投递 provider 约束，仍为 36 表及 79 个 HTTP 操作，合同见 [四平台 Webhook](38-git-webhook-providers.md)。真实供应商投递独立待验收，下方保留此前批次记录。

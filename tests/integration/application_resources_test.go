@@ -34,7 +34,7 @@ func resourceURL(raw map[string]any) string {
 	if api == "v1" {
 		base = "/api/v1"
 	}
-	plurals := map[string]string{"Deployment": "deployments", "Job": "jobs", "ReplicaSet": "replicasets", "Pod": "pods", "Secret": "secrets", "Service": "services", "Ingress": "ingresses"}
+	plurals := map[string]string{"Deployment": "deployments", "Job": "jobs", "ReplicaSet": "replicasets", "Pod": "pods", "Secret": "secrets", "ConfigMap": "configmaps", "Service": "services", "Ingress": "ingresses"}
 	m := bm(raw["metadata"])
 	return base + "/namespaces/" + m["namespace"].(string) + "/" + plurals[kind] + "/" + m["name"].(string)
 }
@@ -64,7 +64,7 @@ func newApplicationAPI(t *testing.T) *applicationAPI {
 			if r.URL.Path == "/api/v1" {
 				version = "v1"
 			}
-			types := map[string]map[string]string{"v1": {"pods": "Pod", "services": "Service", "secrets": "Secret"}, "apps/v1": {"deployments": "Deployment", "replicasets": "ReplicaSet"}, "batch/v1": {"jobs": "Job"}, "networking.k8s.io/v1": {"ingresses": "Ingress"}}
+			types := map[string]map[string]string{"v1": {"pods": "Pod", "services": "Service", "secrets": "Secret", "configmaps": "ConfigMap"}, "apps/v1": {"deployments": "Deployment", "replicasets": "ReplicaSet"}, "batch/v1": {"jobs": "Job"}, "networking.k8s.io/v1": {"ingresses": "Ingress"}}
 			items := []any{}
 			for name, kind := range types[version] {
 				items = append(items, map[string]any{"name": name, "kind": kind, "namespaced": true, "verbs": []string{"get", "list"}})
@@ -108,8 +108,20 @@ type applicationResourceFixture struct {
 }
 
 func setupApplicationResources(t *testing.T, kind string) *applicationResourceFixture {
+	return setupApplicationResourcesWithConfigFiles(t, kind, false)
+}
+
+func setupApplicationResourcesWithConfigFiles(t *testing.T, kind string, withFiles bool) *applicationResourceFixture {
 	t.Helper()
 	f := setupRelease(t, kind)
+	configVersion := int32(3)
+	if withFiles {
+		cfg := decode[application.Config](t, f.c.f.call("GET", "/api/apps/"+f.app+"/config", f.c.developer, nil, 200))
+		cfg.ChartConfig.ChartVersion = "1.2.0"
+		cfg.DeployValues["configFiles"] = map[string]any{"app.yaml": "mode: ordinary-config"}
+		f.c.f.call("PUT", "/api/apps/"+f.app+"/config", f.c.developer, map[string]any{"expectedVersion": cfg.Version, "section": "base", "chartConfig": cfg.ChartConfig, "deployValues": cfg.DeployValues, "secretRefs": cfg.SecretRefs}, 200)
+		configVersion++
+	}
 	a := newApplicationAPI(t)
 	cred := decode[platform.Credential](t, f.c.f.call("POST", "/api/credentials", f.c.admin, map[string]any{"name": "Resource fixture", "kind": "kubeconfig", "payload": map[string]any{"apiServer": a.server.URL, "token": "fixture", "insecureSkipTLSVerify": true}}, 201))
 	cluster := decode[platform.Cluster](t, f.c.f.call("POST", "/api/clusters", f.c.admin, map[string]any{"name": "Resource fixture cluster", "apiServer": a.server.URL, "credentialId": cred.ID}, 201))
@@ -123,7 +135,7 @@ func setupApplicationResources(t *testing.T, kind string) *applicationResourceFi
 	}
 	f.c.clusterID = cluster.ID
 	f.apps.UseReleases(releaseReady{})
-	p := f.preview(t, 3)
+	p := f.preview(t, configVersion)
 	r := decode[application.ReleaseRequest](t, f.confirm(t, p, "resources-confirm", 202))
 	var raw []byte
 	if err := f.c.f.pool.QueryRow(context.Background(), "SELECT snapshot FROM release_snapshots WHERE id=$1", r.SnapshotID).Scan(&raw); err != nil {
@@ -268,6 +280,53 @@ func TestApplicationResourcesOwnershipDiffAndFreshHealth(t *testing.T) {
 	f.health(t, "unknown")
 	if f.api.writes.Load() != 0 {
 		t.Fatal("read endpoints wrote to cluster")
+	}
+}
+
+func TestApplicationResourcesGeneratedConfigMapIdentityAndGrants(t *testing.T) {
+	f := setupApplicationResourcesWithConfigFiles(t, "Deployment", true)
+	var config resource.Object
+	for _, item := range f.resources(t, 200) {
+		if item.Kind == "ConfigMap" {
+			config = item
+		}
+	}
+	if config.Ref.UID == "" || !strings.Contains(config.Manifest, "mode: ordinary-config") {
+		t.Fatal("generated ConfigMap missing from application resources")
+	}
+	f.health(t, "healthy")
+	diff := f.diff(t, 200)
+	if diff.Before != diff.After || !strings.Contains(diff.After, "mode: ordinary-config") {
+		t.Fatal("generated ConfigMap omitted from live diff")
+	}
+	path := "/api/v1/namespaces/demo/configmaps/" + config.Ref.Name
+	f.api.mu.Lock()
+	bm(f.api.objects[path]["metadata"])["uid"] = "replacement-config"
+	f.api.mu.Unlock()
+	f.resources(t, 409)
+	f.diff(t, 409)
+	f.api.mu.Lock()
+	bm(f.api.objects[path]["metadata"])["uid"] = config.Ref.UID
+	f.api.mu.Unlock()
+	// Filtering a generated file must not read its content upstream.
+	if _, err := f.c.f.pool.Exec(context.Background(), "UPDATE resource_grants SET resources=ARRAY['apps/deployments','apps/replicasets','core/pods','core/secrets','core/services','networking.k8s.io/ingresses'] WHERE id=$1", f.grant); err != nil {
+		t.Fatal(err)
+	}
+	var configReads atomic.Int32
+	f.api.mu.Lock()
+	f.api.hook = func(r *http.Request) {
+		if r.URL.Path == path {
+			configReads.Add(1)
+		}
+	}
+	f.api.mu.Unlock()
+	for _, item := range f.resources(t, 200) {
+		if item.Kind == "ConfigMap" || strings.Contains(item.Manifest, "mode: ordinary-config") {
+			t.Fatal("filtered ConfigMap content leaked")
+		}
+	}
+	if configReads.Load() != 0 || f.api.writes.Load() != 0 {
+		t.Fatal("resource read crossed grant or read-only boundary")
 	}
 }
 

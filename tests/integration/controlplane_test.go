@@ -132,7 +132,7 @@ func TestBuildOnlyWorkflowWithoutRegisteredCluster(t *testing.T) {
 func TestUpgradeIdentityDatabasePreservesExistingRows(t *testing.T) {
 	dsn, pool := testDatabase(t)
 	ctx := context.Background()
-	for i := 0; i < 17; i++ {
+	for i := 0; i < 18; i++ {
 		if err := database.Migrate(dsn, true); err != nil {
 			t.Fatal(err)
 		}
