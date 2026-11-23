@@ -3,7 +3,12 @@
  * 发布历史：对齐真实 Devtron 的 Deployment History 布局。
  * 左列 = Select Environment + 该环境的发布列表；右侧 = 时间线 + Source/Configuration 页签。
  */
-import { computed, ref, watch } from 'vue'
+import BuildSourceSnapshot from '@/components/application/BuildSourceSnapshot.vue'
+import ArtifactSummaryCard from '@/components/application/ArtifactSummaryCard.vue'
+import ArtifactDetailsDrawer from '@/components/application/ArtifactDetailsDrawer.vue'
+import ArtifactMetadataDialog from '@/components/application/ArtifactMetadataDialog.vue'
+import { artifactImageLabel } from '@/utils/artifactDetails'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import type { SelectValue } from 'tdesign-vue-next'
 import { useRoute, useRouter } from 'vue-router'
@@ -11,10 +16,10 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   advanceCanary,
   getConfig,
+  getDeployment,
   listArtifacts,
   listBindings,
   listBuilds,
-  listCommits,
   listDeployments,
   listEnvironments,
   MockError,
@@ -29,11 +34,10 @@ import type {
   Build,
   DeployStrategy,
   Deployment,
-  DeployValues,
   Environment,
-  GitCommit,
 } from '@/types'
 import { fmtTime, shortDigest } from '@/utils/format'
+import DeploymentSnapshotPanel from '@/components/application/DeploymentSnapshotPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -85,7 +89,6 @@ const bindings = ref<Binding[]>([])
 const environments = ref<Environment[]>([])
 const artifacts = ref<Artifact[]>([])
 const builds = ref<Build[]>([])
-const commits = ref<GitCommit[]>([])
 const config = ref<AppConfig | null>(null)
 
 const loading = ref(true)
@@ -129,11 +132,6 @@ const detailBuild = computed<Build | null>(() => {
   return builds.value.find((item) => item.id === artifact.buildId) ?? null
 })
 
-const detailCommit = computed<GitCommit | null>(() => {
-  const sha = detailBuild.value?.commitSha
-  if (!sha) return null
-  return commits.value.find((item) => item.sha === sha) ?? null
-})
 
 const canary = computed(() => detail.value?.canary ?? null)
 
@@ -149,9 +147,7 @@ function fmtWhen(iso: string | null | undefined): string {
 }
 
 function imageTagOf(imageRef: string): string {
-  const last = imageRef.split('/').pop() ?? imageRef
-  const index = last.lastIndexOf(':')
-  return index >= 0 ? last.slice(index + 1) : last
+  return artifactImageLabel(imageRef)
 }
 
 function shortTag(imageRef: string): string {
@@ -159,54 +155,9 @@ function shortTag(imageRef: string): string {
   return tag.length > 14 ? `…${tag.slice(-12)}` : tag
 }
 
-function shortCommit(sha: string | null | undefined): string {
-  return sha ? sha.slice(0, 7) : '—'
-}
-
-const repoUrl = computed(() => config.value?.gitConfig?.repositoryUrl ?? '')
-const repoLabel = computed(() => {
-  const url = repoUrl.value
-  if (!url) return '未配置 Git 源'
-  const withoutProtocol = url.replace(/^[a-z]+:\/\//i, '').replace(/\.git$/i, '')
-  const parts = withoutProtocol.split('/')
-  return parts.slice(-2).join('/')
-})
-const branchLabel = computed(() => config.value?.gitConfig?.branch || '—')
-const commitSha = computed(() => detailBuild.value?.commitSha ?? '')
-const commitSubject = computed(() => detailBuild.value?.commitSubject ?? '')
-const commitAuthor = computed(() => detailCommit.value?.authorName ?? '—')
-const commitWhen = computed(() => fmtWhen(detailCommit.value?.committedAt))
 
 /* ---------------- 配置详情 ---------------- */
-interface ValueRow {
-  key: string
-  value: string
-  overridden: boolean
-}
-
-const valueRows = computed<ValueRow[]>(() => {
-  const appValues: DeployValues = config.value?.deployValues ?? {}
-  const overrides: DeployValues = detailBinding.value?.overrideValues ?? {}
-  const rows: ValueRow[] = []
-
-  function push(key: string, appValue: number | string | undefined, overValue: number | string | undefined): void {
-    if (appValue === undefined && overValue === undefined) return
-    const overridden = overValue !== undefined && String(overValue) !== String(appValue ?? '')
-    rows.push({ key, value: String(overValue ?? appValue), overridden })
-  }
-
-  push('replicaCount', appValues.replicaCount, overrides.replicaCount)
-  push('containerPort', appValues.containerPort, overrides.containerPort)
-  push('host', appValues.host, overrides.host)
-  push('job.backoffLimit', appValues.job?.backoffLimit, overrides.job?.backoffLimit)
-  push('job.activeDeadlineSeconds', appValues.job?.activeDeadlineSeconds, overrides.job?.activeDeadlineSeconds)
-
-  const envKeys = new Set([...Object.keys(appValues.env ?? {}), ...Object.keys(overrides.env ?? {})])
-  for (const key of envKeys) {
-    push(`env.${key}`, appValues.env?.[key], overrides.env?.[key])
-  }
-  return rows
-})
+const historicalTarget = computed(() => detail.value?.configSnapshot?.target)
 
 const configDrift = computed(() => {
   if (!config.value || !detail.value) return false
@@ -220,14 +171,11 @@ const advancing = ref(false)
 const promoteOpen = ref(false)
 const rollbackOpen = ref(false)
 const labelOpen = ref(false)
+const imageDetailsVisible = ref(false)
 const promoteTargetId = ref('')
 const rollbackReason = ref('')
-const labelDraft = ref('')
 const actionError = ref('')
 const actionErrorCode = ref('')
-const localLabels = ref<Record<string, string[]>>({})
-
-const currentLabels = computed<string[]>(() => (detail.value ? localLabels.value[detail.value.id] ?? [] : []))
 
 const promoteOptions = computed(() =>
   bindings.value
@@ -259,20 +207,18 @@ function errorTextOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
 }
 
-async function copyText(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-    MessagePlugin.success('已复制到剪贴板')
-  } catch {
-    MessagePlugin.warning('浏览器未授权剪贴板，请手动选择文本')
-  }
-}
-
 function syncEnvQuery(envId: string): void {
   const query = { ...route.query }
+  delete query.deployment
+  delete query.tab
   if (envId) query.env = envId
   else delete query.env
   void router.replace({ query })
+}
+
+function selectDeployment(id: string): void {
+  selectedDeploymentId.value = id
+  void router.replace({ query: { ...route.query, deployment: id } })
 }
 
 function selectEnv(envId: string): void {
@@ -307,10 +253,20 @@ async function loadAll(): Promise<void> {
     environments.value = environmentList
     artifacts.value = artifactList
 
+    // 对比页返回及历史深链可以定位分页之外的记录；不能串用其他应用。
+    const requested = typeof route.query.deployment === 'string' ? route.query.deployment : ''
+    if (requested && !deployments.value.some(item => item.id === requested)) {
+      try {
+        const item = await getDeployment(requested)
+        if (item.appId === appId.value && bindingList.some(binding => binding.id === item.bindingId)) deployments.value = [...deployments.value, item]
+      } catch { /* 缺失记录保留为空，不回退展示另一条记录。 */ }
+    }
+
     const wanted = typeof route.query.env === 'string' ? route.query.env : ''
     if (wanted && environmentList.some((item) => item.id === wanted)) {
       selectedEnvId.value = wanted
     }
+    activeTab.value = route.query.tab === 'config' ? 'config' : 'source'
   } catch (err) {
     loadError.value = errorTextOf(err, '发布记录加载失败')
   } finally {
@@ -324,12 +280,9 @@ async function loadSourceMeta(): Promise<void> {
     const [appConfig, buildPage] = await Promise.all([getConfig(appId.value), listBuilds(appId.value)])
     config.value = appConfig
     builds.value = buildPage.items
-    const branch = appConfig.gitConfig?.branch
-    commits.value = branch ? await listCommits(branch) : []
   } catch {
     config.value = null
     builds.value = []
-    commits.value = []
   }
 }
 
@@ -349,20 +302,11 @@ function openRollback(): void {
 }
 
 function openLabel(): void {
-  labelDraft.value = ''
   labelOpen.value = true
 }
 
-function saveLabel(): void {
-  const text = labelDraft.value.trim()
-  const current = detail.value
-  if (!text || !current) return
-  localLabels.value = {
-    ...localLabels.value,
-    [current.id]: [...(localLabels.value[current.id] ?? []), text],
-  }
-  labelDraft.value = ''
-  labelOpen.value = false
+function artifactSaved(saved: Artifact): void {
+  artifacts.value = artifacts.value.map(item => item.id === saved.id && saved.appId === appId.value ? saved : item)
 }
 
 function onPromoteTargetChange(value: SelectValue): void {
@@ -458,12 +402,39 @@ async function onAdvanceCanary(): Promise<void> {
 }
 
 /* ---------------- 联动 ---------------- */
-/** 环境切换 / 数据刷新后，保证选中的是该环境里最新一条发布 */
+/** 环境切换 / 数据刷新后，优先定位 URL 记录，没有指定时选择最新一条发布。 */
 watch(envDeployments, (list) => {
+  if (typeof route.query.deployment === 'string') {
+    selectedDeploymentId.value = list.some(item => item.id === route.query.deployment) ? route.query.deployment : ''
+    return
+  }
   if (!selectedDeploymentId.value || !list.some((item) => item.id === selectedDeploymentId.value)) {
     selectedDeploymentId.value = list[0]?.id ?? ''
   }
 })
+
+let queryGeneration = 0
+watch(() => [route.query.env, route.query.deployment, route.query.tab], async () => {
+  const token = ++queryGeneration
+  if (loading.value) return
+  const id = typeof route.query.deployment === 'string' ? route.query.deployment : ''
+  const env = typeof route.query.env === 'string' ? route.query.env : ''
+  const currentApp = appId.value
+  selectedEnvId.value = environments.value.some(item => item.id === env) ? env : ''
+  activeTab.value = route.query.tab === 'config' ? 'config' : 'source'
+  if (!id) { selectedDeploymentId.value = deploymentsOfEnv(selectedEnvId.value)[0]?.id ?? ''; return }
+  selectedDeploymentId.value = deploymentsOfEnv(selectedEnvId.value).some(item => item.id === id) ? id : ''
+  if (deployments.value.some(item => item.id === id)) return
+  try {
+    const item = await getDeployment(id)
+    if (token !== queryGeneration || currentApp !== appId.value) return
+    if (item.appId === currentApp && bindings.value.some(binding => binding.id === item.bindingId)) {
+      deployments.value = [...deployments.value, item]
+      selectedDeploymentId.value = deploymentsOfEnv(selectedEnvId.value).some(record => record.id === id) ? id : ''
+    }
+  } catch { /* 无效深链保持空态，不能选中另一条发布。 */ }
+})
+onBeforeUnmount(() => { queryGeneration++ })
 
 watch(
   appId,
@@ -501,7 +472,7 @@ watch(
             type="button"
             class="dh-row"
             :class="{ 'dh-row--active': item.id === selectedDeploymentId }"
-            @click="selectedDeploymentId = item.id"
+            @click="selectDeployment(item.id)"
           >
             <span class="dh-row__icon" :class="`dh-row__icon--${toneOfStatus(item.status)}`">
               <t-icon
@@ -692,34 +663,7 @@ watch(
 
         <!-- Source 页签 -->
         <div v-else-if="activeTab === 'source'" class="dh-source">
-          <article class="dh-card">
-            <header class="dh-repo">
-              <t-icon name="logo-github" size="16px" class="dh-repo__icon" />
-              <span class="dh-repo__name">{{ repoLabel }}</span>
-              <span class="dh-repo__slash">/</span>
-              <t-icon name="git-branch" size="14px" class="dh-repo__branch-icon" />
-              <span class="dh-repo__branch">{{ branchLabel }}</span>
-              <t-tooltip :content="repoUrl || '未配置 Git 源'">
-                <t-icon name="info-circle" size="14px" class="dh-repo__info" />
-              </t-tooltip>
-            </header>
-
-            <div class="dh-commit">
-              <template v-if="commitSha">
-                <span class="dh-sha">{{ shortCommit(commitSha) }}</span>
-                <p class="dh-commit__subject">{{ commitSubject }}</p>
-                <p class="dh-commit__line">
-                  <t-icon name="user" size="13px" />
-                  <span>{{ commitAuthor }}</span>
-                </p>
-                <p class="dh-commit__line">
-                  <t-icon name="time" size="13px" />
-                  <span>{{ commitWhen }}</span>
-                </p>
-              </template>
-              <p v-else class="dh-commit__empty">暂无数据 · 该提交没有可用的源码信息</p>
-            </div>
-          </article>
+          <BuildSourceSnapshot :build="detailBuild" :show-build-config="false" />
 
           <div class="dh-chain" aria-hidden="true">
             <span class="dh-chain__line"></span>
@@ -727,35 +671,7 @@ watch(
             <span class="dh-chain__line"></span>
           </div>
 
-          <article class="dh-card dh-artifact">
-            <div class="dh-artifact__main">
-              <span class="dh-artifact__badge">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0066cc" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M21 8.4 12 3 3 8.4v7.2L12 21l9-5.4V8.4Z" />
-                  <path d="M3.3 8.5 12 13.7l8.7-5.2M12 21v-7.3" />
-                </svg>
-              </span>
-              <div class="dh-artifact__body">
-                <p class="dh-artifact__tag">
-                  <span>{{ imageTagOf(detail.imageRef) }}</span>
-                  <button type="button" class="dh-copy" title="复制 tag" @click="copyText(imageTagOf(detail.imageRef))">
-                    <t-icon name="copy" size="12px" />
-                  </button>
-                </p>
-                <p class="dh-artifact__ref">
-                  <span>{{ detail.imageRef }}</span>
-                  <button type="button" class="dh-copy" title="复制镜像地址" @click="copyText(detail.imageRef)">
-                    <t-icon name="copy" size="12px" />
-                  </button>
-                </p>
-              </div>
-            </div>
-
-            <div class="dh-labels">
-              <span v-for="label in currentLabels" :key="label" class="dh-label">{{ label }}</span>
-              <button type="button" class="dh-addlabel" @click="openLabel">+ 添加标签/备注</button>
-            </div>
-          </article>
+          <ArtifactSummaryCard class="dh-card dh-artifact" :artifact="detailArtifact" :fallback-image="detail.imageRef" show-details @edit="openLabel" @details="imageDetailsVisible = true" />
         </div>
 
         <!-- Configuration 页签 -->
@@ -768,7 +684,7 @@ watch(
           <section class="dh-card dh-spec">
             <div class="dh-spec__field dh-spec__field--wide">
               <span class="dh-spec__label">Image</span>
-              <span class="dh-spec__value dh-mono">{{ detail.imageRef }}</span>
+              <button type="button" class="dh-spec__value dh-mono dh-image-link" @click="imageDetailsVisible = true">{{ detail.imageRef }}</button>
               <span v-if="detailArtifact" class="dh-spec__sub dh-mono">
                 digest {{ shortDigest(detailArtifact.digest) }}
               </span>
@@ -784,12 +700,12 @@ watch(
             <div class="dh-spec__field">
               <span class="dh-spec__label">Cluster / Namespace</span>
               <span class="dh-spec__value dh-mono">
-                {{ detailBinding ? `${detailBinding.target.clusterId} / ${detailBinding.target.namespace}` : '—' }}
+                {{ historicalTarget ? `${historicalTarget.clusterId} / ${historicalTarget.namespace}` : '未记录' }}
               </span>
             </div>
             <div class="dh-spec__field">
               <span class="dh-spec__label">Release name</span>
-              <span class="dh-spec__value dh-mono">{{ detailBinding?.target.releaseName ?? '—' }}</span>
+              <span class="dh-spec__value dh-mono">{{ historicalTarget?.releaseName ?? '未记录' }}</span>
             </div>
             <div class="dh-spec__field">
               <span class="dh-spec__label">Deployment type</span>
@@ -813,18 +729,7 @@ watch(
             </div>
           </section>
 
-          <p class="dh-cfg-title dh-cfg-title--sub">Deployment values</p>
-          <section class="dh-card dh-spec">
-            <div v-for="row in valueRows" :key="row.key" class="dh-spec__field">
-              <span class="dh-spec__label dh-mono">{{ row.key }}</span>
-              <span class="dh-spec__value">
-                <span class="dh-mono">{{ row.value }}</span>
-                <span v-if="row.overridden" class="dh-badge dh-badge--override">环境覆盖</span>
-                <span v-else class="dh-badge">应用默认</span>
-              </span>
-            </div>
-            <p v-if="!valueRows.length" class="dh-cfg-empty">该环境未设置部署值，使用应用默认配置。</p>
-          </section>
+          <DeploymentSnapshotPanel :key="detail.id" :deployment="detail" :binding="detailBinding" />
 
           <section v-if="canary" class="dh-card dh-canary">
             <div class="dh-canary__head">
@@ -938,24 +843,17 @@ watch(
   </t-dialog>
 
   <!-- 标签 / 备注 -->
-  <t-dialog v-model:visible="labelOpen" header="添加标签/备注" width="440px" :footer="false">
-    <div class="dh-dialog">
-      <p class="dh-dialog__hint">mock 阶段仅记录在当前会话中，接入元数据接口后会持久化。</p>
-      <t-input v-model="labelDraft" placeholder="例如：已验证支付回调" @enter="saveLabel" />
-      <div class="dh-dialog__foot">
-        <t-button variant="outline" @click="labelOpen = false">取消</t-button>
-        <t-button theme="primary" :disabled="!labelDraft.trim()" @click="saveLabel">添加</t-button>
-      </div>
-    </div>
-  </t-dialog>
+  <ArtifactMetadataDialog v-model:visible="labelOpen" :artifact="detailArtifact" @saved="artifactSaved" />
+  <ArtifactDetailsDrawer v-model:visible="imageDetailsVisible" :app-id="appId" :artifact-id="detail?.artifactId || ''" :fallback-image="detail?.imageRef" :deployment="detail" :environment-name="envName" @saved="artifactSaved" />
 </template>
 
 <style scoped>
+.dh-image-link{border:0;background:none;padding:0;text-align:left;cursor:pointer;color:#0066cc;font:inherit;overflow-wrap:anywhere}
 /* ---------------- 整页骨架 ---------------- */
 .dh {
   display: grid;
   grid-template-columns: 296px minmax(0, 1fr);
-  height: calc(100vh - 130px);
+  height: calc(100dvh - 102px);
   min-height: 480px;
   margin: -12px -16px -24px;
   overflow: hidden;

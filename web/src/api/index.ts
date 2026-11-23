@@ -1,21 +1,30 @@
+import { buildHistoryLogFixture } from '@/mock/historyLogFixtures'
 import type {
   AppConfig,
   Application,
+  ApplicationLabel,
   ApplicationSetup,
   Artifact,
   AuditEvent,
   Binding,
   DeployStrategy,
   Build,
+  BuildSelection,
+  CIDefinition,
+  CDDefinition,
+  DeploymentStageType,
+  StageRun,
   Cluster,
   Credential,
   ConfigMapEntry,
+  ConfigEntryOptions,
   SecretEntry,
   DeployValues,
   Deployment,
   Environment,
   GitBranch,
   GitCommit,
+  GitWebhookEvent,
   K8sResource,
   ClusterOverview,
   NodeDetail,
@@ -27,11 +36,44 @@ import type {
   SetupStep,
   ResourceEvent,
   ResourceType,
+  ResourceRef,
+  NodeTaint,
   Team,
   User,
   Workflow,
 } from '@/types'
+import type { ConfigComparisonCatalog } from '@/types/configComparison'
+import { comparisonChartDefaults } from '@/mock/comparisonCharts'
+import { mockScopedVariables } from '@/mock/scopedVariables'
+import { captureConfigVariables } from '@/utils/configVariables'
+import { resolveComparisonSide } from '@/utils/configComparison'
 import * as db from '@/mock/data'
+import { gitMaterialsOf } from '@/utils/gitMaterials'
+import { effectiveValues } from '@/utils/deploymentValues'
+import { effectiveEntries, entryOptions, parseEntryData } from '@/utils/configEntries'
+import { captureDeploymentConfig } from '@/utils/deploymentSnapshot'
+import { ciSourcesOf, effectiveBuildConfig, sourceError, sourceMatches, validateBuildConfig } from '@/utils/pipelineBuild'
+import { normalizeBuildConfig } from '@/utils/buildOptions'
+import { validatePipelineTasks } from '@/utils/pipelineTasks'
+import { taskCatalog } from '@/mock/taskCatalog'
+import { emptyStageResources, stageResourceOptions, stageResourceErrors } from '@/utils/stageResources'
+import { deploymentStageErrors, deploymentStageOf } from '@/utils/deploymentStage'
+import { advanceStageRun, stageIsActive, stageTaskLog } from '@/utils/stageRuns'
+import { stringify } from 'yaml'
+import { nodeManifestError, syncNodeDetailManifest } from '@/utils/nodeDetails'
+import { applicationNameError, applicationDescriptionError, applicationTagErrors, applicationLabels } from '@/utils/applicationCreation'
+import { legacyApplicationTags } from '@/utils/applicationOverview'
+import { artifactImageRepository, artifactMetadataError, artifactMetadataInput } from '@/utils/artifactDetails'
+import { isWebhookSource, sourceContextError, webhookMatches } from '@/utils/gitSources'
+import { mockWebhookEvents } from '@/mock/gitWebhookEvents'
+import { gitCommitExcluded } from '@/utils/gitCommitFilters'
+import { dockerfileTemplates } from '@/mock/dockerfileTemplates'
+import type { DockerfileTemplate, DockerfileTemplateContent } from '@/types/dockerfile'
+import { resourceIdentity, resourceYamlDocuments, retainManagedFields } from '@/utils/resourceManifest'
+import { desiredResourceSnapshot } from '@/mock/resourceDesiredManifests'
+import type { DesiredResourceManifest } from '@/types/resourceManifest'
+import { podContainers, type PodLogOptions } from '@/utils/podLogs'
+import { isPodShell, podTerminalError, type PodShell } from '@/utils/podTerminal'
 
 /**
  * 静态实现阶段的 mock API：保持与 docs/api/openapi.json 同形的入参/出参，
@@ -39,6 +81,28 @@ import * as db from '@/mock/data'
  */
 const delay = (ms = 160) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
+/** 本地模板目录及内容；不请求 Devtron 的中央目录，不读取或写入 Git。 */
+export async function listDockerfileTemplates(): Promise<DockerfileTemplate[]> {
+  await delay(100)
+  return dockerfileTemplates.map(({ id, language, framework }) => ({ id, language, framework }))
+}
+
+export async function getDockerfileTemplate(id: string): Promise<DockerfileTemplateContent> {
+  await delay(180)
+  const template = dockerfileTemplates.find(item => item.id === id)
+  if (!template) throw new MockError('not_found', '模板已不在当前目录中，请重新选择或重试', 404)
+  return clone(template)
+}
+/** 新创建对象保留集群归属；固定演示数据按现有命名空间划分。 */
+const resourceClusters = new Map<string, string>()
+function belongsToCluster(item: K8sResource, clusterId: string): boolean {
+  const owner = resourceClusters.get(item.ref.uid)
+  if (owner) return owner === clusterId
+  if (item.kind === 'Node') return clusterId === 'c-prod' ? item.ref.name.startsWith('prod-') : clusterId === 'c-dev' && item.ref.name.startsWith('dev-')
+  if (item.ref.namespace === '_cluster') return true
+  return (db.namespaces[clusterId] ?? []).some((namespace) => namespace.name === item.ref.namespace)
+}
 const page = <T>(items: T[], p = 1, size = 20) => {
   const start = (p - 1) * size
   return { items: clone(items.slice(start, start + size)), total: items.length, page: p, pageSize: size }
@@ -107,7 +171,7 @@ export interface AppQuery {
 
 export async function listApplications(query: AppQuery = {}) {
   await delay(140)
-  let items = db.applications.slice()
+  let items = db.applications.filter((app) => !app.archivedAt)
   if (query.projectId) items = items.filter((a) => a.projectId === query.projectId)
   if (query.health) items = items.filter((a) => a.health === query.health)
   if (query.keyword) {
@@ -167,16 +231,21 @@ export async function createApplication(input: {
   description?: string
   sourceMode: 'git' | 'image'
   cloneFromAppId?: string
+  labels?: ApplicationLabel[]
 }) {
   await delay(260)
-  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
-    throw new MockError('validation_error', '名称需为 3–53 位小写字母、数字或连字符', 422)
-  }
+  if (!db.projects.some(item => item.id === input.projectId)) throw new MockError('validation_error', '请选择有效项目', 422)
+  const fieldError = applicationNameError(input.name) || applicationDescriptionError(input.description ?? '')
+  if (fieldError) throw new MockError('validation_error', fieldError, 422)
+  if (input.sourceMode !== 'git' && input.sourceMode !== 'image') throw new MockError('validation_error', '请选择有效应用类型', 422)
+  const labels = applicationLabels(input.labels ?? [])
+  if (applicationTagErrors(labels).some(error => error.key || error.value)) throw new MockError('validation_error', '标签缺失或格式无效', 422)
+  if (labels.some(label => typeof label.propagate !== 'boolean')) throw new MockError('validation_error', '标签传播设置无效', 422)
   if (db.applications.some((a) => a.projectId === input.projectId && a.name === input.name)) {
     throw new MockError('conflict', '同项目下已存在同名应用', 409)
   }
   const source = input.cloneFromAppId
-    ? db.applications.find((item) => item.id === input.cloneFromAppId)
+    ? db.applications.find((item) => item.id === input.cloneFromAppId && !item.archivedAt)
     : undefined
   if (input.cloneFromAppId && !source) throw new MockError('not_found', '源应用不存在', 404)
   if (source && source.sourceMode !== input.sourceMode) {
@@ -191,8 +260,12 @@ export async function createApplication(input: {
     health: 'unknown',
     archivedAt: null,
     updatedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    createdBy: db.currentUser.name,
     envCount: 0,
     lastDeployedAt: null,
+    labels: clone(labels),
+    tags: labels.map(label => `${label.key}:${label.value}`),
   }
   db.applications.unshift(app)
   const sourceConfig = source ? db.appConfigs[source.id] : null
@@ -239,9 +312,11 @@ export interface ConfigSectionInput {
   section: 'git' | 'build' | 'base'
   expectedVersion: number
   gitConfig?: AppConfig['gitConfig']
+  gitMaterials?: AppConfig['gitMaterials']
   buildConfig?: AppConfig['buildConfig']
   chartConfig?: AppConfig['chartConfig']
   deployValues?: DeployValues
+  deployValuesYaml?: string
 }
 
 export async function saveConfig(appId: string, input: ConfigSectionInput): Promise<AppConfig> {
@@ -251,8 +326,54 @@ export async function saveConfig(appId: string, input: ConfigSectionInput): Prom
   if (input.expectedVersion !== config.version) {
     throw new MockError('revision_conflict', '配置已被他人更新，请重新读取', 409)
   }
-  if (input.section === 'git' && input.gitConfig) config.gitConfig = clone(input.gitConfig)
-  if (input.section === 'build' && input.buildConfig) config.buildConfig = clone(input.buildConfig)
+  if (input.section === 'git') {
+    if (input.gitMaterials) {
+      const materials = clone(input.gitMaterials)
+      if (!materials.length) throw new MockError('last_repository', '应用至少需要保留一个 Git 仓库', 422)
+      if (materials.length > 1 && db.workflows[appId]?.items.some(item => item.kind === 'ci' && (item.definition as CIDefinition).materials?.some(isWebhookSource))) throw new MockError('repository_in_use', '请先将 Webhook 流水线改为分支代码源，再添加 Git 仓库', 409)
+      const sourceMaterialId = config.buildConfig ? config.buildConfig.gitMaterialId || gitMaterialsOf(config)[0]?.id : undefined
+      if (sourceMaterialId && !materials.some((item) => item.id === sourceMaterialId)) {
+        throw new MockError('repository_in_use', '该仓库正用于构建，请先在构建配置中切换仓库', 409)
+      }
+      if (config.buildConfig?.buildMode !== 'buildpack' && !config.buildConfig?.useRootContext && config.buildConfig?.contextGitMaterialId && !materials.some((item) => item.id === config.buildConfig?.contextGitMaterialId)) {
+        throw new MockError('repository_in_use', '该仓库正用于构建上下文，请先在构建配置中切换仓库', 409)
+      }
+      for (const pipeline of db.workflows[appId]?.items ?? []) {
+        if (pipeline.kind !== 'ci') continue
+        const override = (pipeline.definition as CIDefinition).buildOverride
+        if (!override) continue
+        const used = [override.gitMaterialId, ...(override.buildMode !== 'buildpack' && !override.useRootContext ? [override.contextGitMaterialId] : [])]
+        if (used.some(id => id && !materials.some(item => item.id === id))) throw new MockError('repository_in_use', '该仓库正用于流水线构建覆盖，请先修改流水线配置', 409)
+      }
+      config.gitMaterials = materials
+      const first = materials[0]!
+      config.gitConfig = { repositoryUrl: first.repositoryUrl, branch: first.branch, accountMode: first.accountMode, credentialId: first.credentialId }
+      const workflow = db.workflows[appId]
+      let sourcesChanged = false
+      for (const pipeline of workflow?.items ?? []) {
+        if (pipeline.kind !== 'ci') continue
+        const definition = pipeline.definition as CIDefinition
+        if (!definition.materials) continue
+        const next = ciSourcesOf(config, definition)
+        if (JSON.stringify(next) !== JSON.stringify(definition.materials)) {
+          definition.materials = next
+          pipeline.version++
+          sourcesChanged = true
+        }
+      }
+      if (workflow && sourcesChanged) workflow.version++
+    } else if (input.gitConfig) {
+      config.gitConfig = clone(input.gitConfig)
+      if (config.gitMaterials?.[0]) Object.assign(config.gitMaterials[0], clone(input.gitConfig))
+    }
+  }
+  if (input.section === 'build' && input.buildConfig) {
+    const materials = gitMaterialsOf(config)
+    const message = Object.values(validateBuildConfig(input.buildConfig, materials))[0]
+    if (message) throw new MockError('validation_error', message, 422)
+    if (!db.registries.some(item => item.id === input.buildConfig?.registryId)) throw new MockError('validation_error', '镜像仓库不存在', 422)
+    config.buildConfig = normalizeBuildConfig(input.buildConfig, materials[0]?.id)
+  }
   if (input.section === 'base') {
     if (input.chartConfig) {
       if (config.chartConfig && config.chartConfig.workloadKind !== input.chartConfig.workloadKind) {
@@ -260,7 +381,10 @@ export async function saveConfig(appId: string, input: ConfigSectionInput): Prom
       }
       config.chartConfig = clone(input.chartConfig)
     }
-    if (input.deployValues) config.deployValues = clone(input.deployValues)
+    if (input.deployValues) {
+      config.deployValues = clone(input.deployValues)
+      config.deployValuesYaml = input.deployValuesYaml
+    }
   }
   config.version += 1
   syncSetup(appId)
@@ -275,20 +399,29 @@ export async function listConfigMaps(appId: string, environmentId: string | null
   )
 }
 
-export interface ConfigMapInput {
+export interface ConfigMapInput extends ConfigEntryOptions {
   id?: string
   appId: string
   environmentId: string | null
   name: string
   data: Record<string, string>
+  dataYaml?: string
+}
+
+function validateConfigEntry(input: ConfigEntryOptions & { name: string }, keys: string[]): void {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(input.name)) throw new MockError('validation_error', '名称需为 1–63 位小写字母、数字或连字符', 422)
+  if ((!keys.length && input.source !== 'external' && input.mergeStrategy !== 'patch') || keys.some((key) => !/^[a-zA-Z0-9._-]+$/.test(key)) || new Set(keys).size !== keys.length) throw new MockError('validation_error', '请检查 key 名称或重复项', 422)
+  if (input.mountAs === 'volume' && (!input.mountPath?.startsWith('/') || input.mountPath.includes('..'))) throw new MockError('validation_error', '请填写有效的绝对挂载路径', 422)
+  if (input.fileMode && !/^0?[0-7]{3}$/.test(input.fileMode)) throw new MockError('validation_error', '请填写八进制文件权限', 422)
 }
 
 export async function saveConfigMap(input: ConfigMapInput): Promise<ConfigMapEntry> {
   await delay(220)
-  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
-    throw new MockError('validation_error', '名称需为 3–63 位小写字母、数字或连字符', 422)
-  }
-  if (!Object.keys(input.data).length) throw new MockError('validation_error', '至少需要一个 key', 422)
+  validateConfigEntry(input, Object.keys(input.data))
+  const parsedData = parseEntryData(input.dataYaml ?? stringify(input.data))
+  if (parsedData.error || JSON.stringify(Object.entries(parsedData.data).sort()) !== JSON.stringify(Object.entries(input.data).sort())) throw new MockError('validation_error', parsedData.error || 'YAML 与配置数据不一致', 422)
+  const existing = input.id ? db.configMaps.find((item) => item.id === input.id && item.appId === input.appId && item.environmentId === input.environmentId) : undefined
+  if (input.id && !existing) throw new MockError('not_found', '配置不存在', 404)
   const duplicated = db.configMaps.some(
     (item) =>
       item.appId === input.appId &&
@@ -297,10 +430,12 @@ export async function saveConfigMap(input: ConfigMapInput): Promise<ConfigMapEnt
       item.id !== input.id,
   )
   if (duplicated) throw new MockError('conflict', '同一范围内已存在同名 ConfigMap', 409)
-  const existing = input.id ? db.configMaps.find((item) => item.id === input.id) : undefined
   if (existing) {
+    if (existing.name !== input.name) throw new MockError('conflict', '已有配置名称不可修改', 409)
+    Object.assign(existing, entryOptions(input))
     existing.name = input.name
     existing.data = { ...input.data }
+    existing.dataYaml = input.dataYaml
     existing.updatedAt = new Date().toISOString()
     return clone(existing)
   }
@@ -309,7 +444,9 @@ export async function saveConfigMap(input: ConfigMapInput): Promise<ConfigMapEnt
     appId: input.appId,
     environmentId: input.environmentId,
     name: input.name,
+    ...entryOptions(input),
     data: { ...input.data },
+    dataYaml: input.dataYaml,
     updatedAt: new Date().toISOString(),
   }
   db.configMaps.push(created)
@@ -327,7 +464,7 @@ export async function listSecrets(appId: string, environmentId: string | null): 
   return clone(db.configSecrets.filter((item) => item.appId === appId && item.environmentId === (environmentId || null)))
 }
 
-export interface SecretInput {
+export interface SecretInput extends ConfigEntryOptions {
   id?: string
   appId: string
   environmentId: string | null
@@ -337,10 +474,9 @@ export interface SecretInput {
 
 export async function saveSecret(input: SecretInput): Promise<SecretEntry> {
   await delay(220)
-  if (!/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/.test(input.name)) {
-    throw new MockError('validation_error', '名称需为 3–63 位小写字母、数字或连字符', 422)
-  }
-  if (!input.keys.length) throw new MockError('validation_error', '至少需要一个 key', 422)
+  validateConfigEntry(input, input.keys)
+  const existing = input.id ? db.configSecrets.find((item) => item.id === input.id && item.appId === input.appId && item.environmentId === input.environmentId) : undefined
+  if (input.id && !existing) throw new MockError('not_found', '配置不存在', 404)
   const duplicated = db.configSecrets.some(
     (item) =>
       item.appId === input.appId &&
@@ -349,8 +485,9 @@ export async function saveSecret(input: SecretInput): Promise<SecretEntry> {
       item.id !== input.id,
   )
   if (duplicated) throw new MockError('conflict', '同一范围内已存在同名 Secret', 409)
-  const existing = input.id ? db.configSecrets.find((item) => item.id === input.id) : undefined
   if (existing) {
+    if (existing.name !== input.name) throw new MockError('conflict', '已有配置名称不可修改', 409)
+    Object.assign(existing, entryOptions(input))
     existing.name = input.name
     existing.keys = [...input.keys]
     existing.updatedAt = new Date().toISOString()
@@ -361,6 +498,7 @@ export async function saveSecret(input: SecretInput): Promise<SecretEntry> {
     appId: input.appId,
     environmentId: input.environmentId,
     name: input.name,
+    ...entryOptions(input),
     keys: [...input.keys],
     updatedAt: new Date().toISOString(),
   }
@@ -386,35 +524,175 @@ export async function listBindings(appId: string): Promise<Binding[]> {
   return clone(db.bindingsOf(appId))
 }
 
+/** 仅返回目标环境可引用的名称和类型；不返回 Secret 值或配置内容。 */
+function stageResourcesFor(appId: string, bindingId: string) {
+  const binding = db.bindingById(bindingId)
+  if (!binding || binding.appId !== appId) throw new MockError('not_found', '部署阶段的环境绑定不存在', 404)
+  const env = db.environments.find(item => item.id === binding.environmentId)
+  const options = stageResourceOptions(
+    db.configMaps.filter(item => item.appId === appId && item.environmentId === null),
+    db.configMaps.filter(item => item.appId === appId && item.environmentId === binding.environmentId),
+    db.configSecrets.filter(item => item.appId === appId && item.environmentId === null),
+    db.configSecrets.filter(item => item.appId === appId && item.environmentId === binding.environmentId),
+  )
+  const workerEnabled = db.clusters.find(item => item.id === binding.target.clusterId)?.cdWorkerEnabled === true
+  return { options, scope: `${env?.name ?? binding.environmentId} · ${binding.target.namespace}`, workerEnabled }
+}
+export async function listStageResources(appId: string, bindingId: string) {
+  await delay(120)
+  return clone(stageResourcesFor(appId, bindingId))
+}
+
+/** 演示 Helm release 输出；真实接入时应返回 Helm Notes，而非应用 description。 */
+export async function getReleaseNotes(appId: string, bindingId: string): Promise<string> {
+  await delay(180)
+  const binding = db.bindingById(bindingId)
+  if (!binding || binding.appId !== appId) throw new MockError('not_found', '环境绑定不存在', 404)
+  const released = db.deployments.some((item) => item.bindingId === bindingId && item.helmRevision !== null)
+  if (!released) return ''
+  return ['## ' + binding.target.releaseName, '', '**NAMESPACE:** `' + binding.target.namespace + '`', '', '### NOTES:', 'This is a local Mock Helm release.', '', '1. Use the **Services** and **Pods** tabs to inspect the example resources.', '2. Check the workload with:', '', '```sh', 'kubectl get pods -n ' + binding.target.namespace, '```', '', '> These notes are local demonstration data, not live Helm output.'].join('\n')
+}
+
 export async function getWorkflow(appId: string): Promise<Workflow> {
   await delay(120)
   return clone(db.workflows[appId] ?? { version: 0, items: [] })
 }
 
-export async function saveWorkflow(appId: string, workflow: Workflow): Promise<Workflow> {
+export async function saveWorkflow(appId: string, workflow: Workflow, expectedConfigVersion?: number): Promise<Workflow> {
   await delay(240)
-  db.workflows[appId] = clone({ ...workflow, version: workflow.version + 1 })
+  const config = db.appConfigs[appId]
+  if (workflow.version !== (db.workflows[appId]?.version ?? 0) || expectedConfigVersion !== undefined && expectedConfigVersion !== config?.version) throw new MockError('revision_conflict', '应用或流水线配置已更新，请关闭后重新读取', 409)
+  for (const pipeline of workflow.items) {
+    if (pipeline.kind === 'cd') {
+      const definition = pipeline.definition as CDDefinition
+      const { workerEnabled } = stageResourcesFor(appId, pipeline.bindingId ?? '')
+      for (const stage of ['pre', 'post'] as const) {
+        const message = deploymentStageErrors(deploymentStageOf(definition, stage), workerEnabled)[0]
+        if (message) throw new MockError('validation_error', `${stage === 'pre' ? '前置阶段' : '后置阶段'}：${message}`, 422)
+      }
+      if (definition.preStageResources || definition.postStageResources) {
+        const { options } = stageResourcesFor(appId, pipeline.bindingId ?? '')
+        for (const [label, refs] of [['前置阶段', definition.preStageResources], ['后置阶段', definition.postStageResources]] as const) {
+          const message = stageResourceErrors(refs ?? emptyStageResources(), options)[0]
+          if (message) throw new MockError('validation_error', `${label}：${message}`, 422)
+        }
+      }
+    }
+    const taskErrors = validatePipelineTasks(pipeline.definition.preTasks ?? [],pipeline.definition.postTasks ?? [])
+    const taskError = Object.values(taskErrors).flat()[0]
+    if (taskError) throw new MockError('validation_error', taskError, 422)
+    for (const task of [...pipeline.definition.preTasks ?? [],...pipeline.definition.postTasks ?? []]) {
+      if (!task.plugin) continue
+      const plugin = taskCatalog.find(item=>item.id===task.plugin!.id)
+      const version = plugin?.versions.find(item=>item.version===task.plugin!.version)
+      if (!version) throw new MockError('validation_error', '插件或版本不存在', 422)
+      if (version.inputs.length !== task.variables.length || version.inputs.some(input=>!task.variables.some(item=>item.key===input.key && item.format===input.format)) || JSON.stringify(task.outputs) !== JSON.stringify(version.outputs) || task.script !== version.script || task.execution !== 'shell') throw new MockError('validation_error', '插件参数结构与版本不一致', 422)
+    }
+    if (pipeline.kind !== 'ci' || !config) continue
+    const definition = pipeline.definition as CIDefinition
+    if (definition.materials) {
+      const materials = gitMaterialsOf(config)
+      if (definition.materials.length !== materials.length || materials.some(material => definition.materials!.filter(item => item.gitMaterialId === material.id).length !== 1)) throw new MockError('validation_error', '请为每个仓库配置唯一代码源', 422)
+      const message = definition.materials.map(sourceError).find(Boolean)
+      if (message) throw new MockError('validation_error', message, 422)
+      const contextError = sourceContextError(definition.materials, materials)
+      if (contextError) throw new MockError('validation_error', contextError, 422)
+    }
+    if (definition.buildOverride) {
+      const message = Object.values(validateBuildConfig(definition.buildOverride, gitMaterialsOf(config)))[0]
+      if (message) throw new MockError('validation_error', message, 422)
+      if (!db.registries.some(item => item.id === definition.buildOverride?.registryId)) throw new MockError('validation_error', '镜像仓库不存在', 422)
+    }
+  }
+  const savedWorkflow = clone({ ...workflow, version: workflow.version + 1 })
+  for (const pipeline of savedWorkflow.items) {
+    if (pipeline.kind !== 'ci') continue
+    const definition = pipeline.definition as CIDefinition
+    if (definition.buildOverride) definition.buildOverride = normalizeBuildConfig(definition.buildOverride, gitMaterialsOf(config)[0]?.id)
+  }
+  db.workflows[appId] = savedWorkflow
   syncSetup(appId)
   return clone(db.workflows[appId])
 }
 
 // ---------------- Git 选择 ----------------
-export async function listBranches(appId: string): Promise<GitBranch[]> {
+export async function listBranches(appId: string, gitMaterialId?: string): Promise<GitBranch[]> {
   await delay(180)
   if (!db.appConfigs[appId]?.gitConfig) throw new MockError('git_not_configured', '尚未配置 Git 源', 422)
-  return clone(db.branches)
+  if (gitMaterialId && !gitMaterialsOf(db.appConfigs[appId]!).some(item => item.id === gitMaterialId)) throw new MockError('not_found', 'Git 仓库已不存在', 404)
+  return gitMaterialId ? db.branches.map(branch => ({...branch,headSha:scopedCommits(branch.name,appId,gitMaterialId)[0]?.sha ?? branch.headSha})) : clone(db.branches)
 }
 
-export async function listCommits(ref: string): Promise<GitCommit[]> {
+/** 按仓库和分支生成稳定、独立的 Mock 提交；无范围参数时兼容旧记录查询。 */
+function scopedCommits(ref: string, appId?: string, gitMaterialId?: string): GitCommit[] {
+  if (!appId || !gitMaterialId) return clone(db.commits)
+  const materials = gitMaterialsOf(db.appConfigs[appId] ?? null)
+  const material = materials.find(item => item.id === gitMaterialId)
+  if (!material) throw new MockError('not_found', 'Git 仓库已不存在', 404)
+  if (!db.branches.some(item => item.name === ref)) return []
+  if (material.id === materials[0]?.id && ref === 'main') return clone(db.commits).map(commit => ({ ...commit, excluded: gitCommitExcluded(commit, material.filterPatterns) }))
+  return clone(db.commits).map((commit, index) => {
+    let hash = 2166136261
+    for (const char of `${material.repositoryUrl}:${ref}:${commit.sha}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
+    const prefix = (hash >>> 0).toString(16).padStart(8, '0')
+    return { ...commit, sha: prefix + commit.sha.slice(8), subject: `${material.repositoryUrl.split('/').pop()?.replace(/\.git$/, '')}: ${ref} · ${commit.subject}`, authorName: index % 2 ? '陈开发' : commit.authorName, excluded: gitCommitExcluded(commit, material.filterPatterns) }
+  })
+}
+
+export async function listCommits(ref: string, appId?: string, gitMaterialId?: string): Promise<GitCommit[]> {
   await delay(200)
   if (ref === 'unknown') throw new MockError('git_unavailable', 'Git 服务暂不可达，请稍后重试', 503)
-  return clone(db.commits)
+  return scopedCommits(ref, appId, gitMaterialId)
+}
+
+function webhookContext(appId: string, pipelineId: string, gitMaterialId: string) {
+  const config = db.appConfigs[appId]
+  const pipeline = db.workflows[appId]?.items.find(item => item.id === pipelineId && item.kind === 'ci')
+  if (!config || !pipeline) throw new MockError('not_found', '构建流水线已不存在', 404)
+  const materials = gitMaterialsOf(config)
+  const material = materials.find(item => item.id === gitMaterialId)
+  const sources = ciSourcesOf(config, pipeline.definition as CIDefinition)
+  const source = sources.find(item => item.gitMaterialId === gitMaterialId)
+  if (!material || !source || !isWebhookSource(source)) throw new MockError('validation_error', '该仓库没有配置 Webhook 代码源', 422)
+  const message = sourceContextError(sources, materials) || sourceError(source)
+  if (message) throw new MockError('validation_error', message, 422)
+  return { material, source }
+}
+
+/** 包括通过与未通过过滤的本地示例，供触发列表和 Received webhooks 共用。 */
+export async function listWebhookEvents(appId: string, pipelineId: string, gitMaterialId: string): Promise<GitWebhookEvent[]> {
+  await delay(180)
+  const { material, source } = webhookContext(appId, pipelineId, gitMaterialId)
+  return clone(mockWebhookEvents(appId, material, scopedCommits('main', appId, material.id)).filter(event => event.type === source.type))
+}
+
+export async function setPipelineBranches(appId: string, pipelineId: string, branches: Array<{ gitMaterialId: string; branch: string }>, expectedWorkflowVersion: number, expectedConfigVersion: number): Promise<Workflow> {
+  await delay(200)
+  const workflow = db.workflows[appId]
+  const config = db.appConfigs[appId]
+  const pipeline = workflow?.items.find(item => item.id === pipelineId && item.kind === 'ci')
+  if (!workflow || !config || !pipeline) throw new MockError('not_found', '构建流水线已不存在', 404)
+  if (workflow.version !== expectedWorkflowVersion || config.version !== expectedConfigVersion) throw new MockError('revision_conflict', '配置或流水线已更新，请重新打开提交选择', 409)
+  const sources = ciSourcesOf(config, pipeline.definition as CIDefinition)
+  const regexSources = sources.filter(source => source.type === 'regex')
+  if (branches.length !== regexSources.length || regexSources.some(source => branches.filter(item => item.gitMaterialId === source.gitMaterialId).length !== 1)) throw new MockError('validation_error', '请为每个正则代码源设置唯一分支', 422)
+  const next = sources.map(source => {
+    if (source.type !== 'regex') return source
+    const branch = branches.find(item => item.gitMaterialId === source.gitMaterialId)!.branch.trim()
+    if (!branch || !sourceMatches(source, branch)) throw new MockError('branch_mismatch', '分支名称不匹配配置的正则表达式', 422)
+    return { ...source, selectedBranch: branch }
+  })
+  ;(pipeline.definition as CIDefinition).materials = next
+  pipeline.version++
+  workflow.version++
+  return clone(workflow)
 }
 
 // ---------------- 构建 ----------------
-export async function listBuilds(appId: string) {
+export async function listBuilds(appId: string, pipelineId?: string) {
   await delay(140)
-  return page(clone(db.buildsOf(appId)), 1, 50)
+  const items = db.buildsOf(appId).filter((item) => !pipelineId || (pipelineId === '__unassigned__' ? !item.pipelineId : item.pipelineId === pipelineId))
+  return page(items.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)), 1, 50)
 }
 
 export async function getBuild(buildId: string): Promise<Build> {
@@ -424,23 +702,62 @@ export async function getBuild(buildId: string): Promise<Build> {
   return clone(build)
 }
 
-export async function triggerBuild(appId: string, commitSha: string, expectedConfigVersion: number): Promise<Build> {
+export async function triggerBuild(appId: string, commitSha: string, expectedConfigVersion: number, pipelineId?: string, sourceBranch?: string, selection?: BuildSelection): Promise<Build> {
   await delay(300)
   const config = db.appConfigs[appId]
   if (!config) throw new MockError('not_found', '配置不存在', 404)
   if (expectedConfigVersion !== config.version) {
     throw new MockError('revision_conflict', '配置已更新，请重新选择提交', 409)
   }
-  if (db.builds.some((b) => b.appId === appId && (b.status === 'queued' || b.status === 'running'))) {
+  const cis = db.workflows[appId]?.items.filter((item) => item.kind === 'ci') ?? []
+  const pipeline = cis.find((item) => item.id === pipelineId) ?? (!pipelineId && cis.length === 1 ? cis[0] : undefined)
+  if (!pipeline) throw new MockError('pipeline_required', '请选择当前应用的构建流水线', 422)
+  if (!pipeline.enabled) throw new MockError('pipeline_disabled', '该构建流水线已停用', 422)
+  if (db.builds.some((b) => b.appId === appId && b.pipelineId === pipeline.id && ['queued', 'running', 'canceling'].includes(b.status))) {
     throw new MockError('build_active', '已有进行中的构建', 409)
   }
-  const commit = db.commits.find((c) => c.sha === commitSha)
+  const definition = pipeline.definition as CIDefinition
+  const workflowVersion = db.workflows[appId]!.version
+  if (selection && selection.workflowVersion !== workflowVersion) throw new MockError('revision_conflict', '流水线已更新，请重新打开提交选择', 409)
+  const materials = gitMaterialsOf(config)
+  const sources = ciSourcesOf(config, definition)
+  if (!materials.length || !config.buildConfig) throw new MockError('validation_error', '请先完成代码源和构建配置', 422)
+  const sourceMessage = sourceContextError(sources, materials) || sources.map(sourceError).find(Boolean)
+  if (sourceMessage) throw new MockError('validation_error', sourceMessage, 422)
+  const buildConfig = effectiveBuildConfig(config, definition)
+  const buildError = Object.values(validateBuildConfig(buildConfig, materials))[0]
+  if (buildError) throw new MockError('validation_error', buildError, 422)
+  const picks = selection?.materials ?? (materials.length === 1 ? [{ gitMaterialId: materials[0]!.id, branch: sourceBranch ?? definition.branch, commitSha }] : [])
+  if (picks.length !== materials.length || materials.some(material => picks.filter(item => item.gitMaterialId === material.id).length !== 1)) throw new MockError('material_required', '请为每个 Git 仓库选择一个提交', 422)
+  const snapshots = materials.map((material, index) => {
+    const pick = picks.find(item => item.gitMaterialId === material.id)!
+    const source = sources[index]!
+    if (isWebhookSource(source)) {
+      const event = mockWebhookEvents(appId, material, scopedCommits('main', appId, material.id)).find(item => item.id === pick.webhookEventId)
+      if (!event || !webhookMatches(source, event)) throw new MockError('event_invalid', '所选 Webhook 事件不存在或未通过当前过滤条件，请刷新后重新选择', 422)
+      if (event.ref !== pick.branch || event.commit.sha !== pick.commitSha) throw new MockError('commit_invalid', '提交与 Webhook 事件不一致，请重新选择', 422)
+      if (event.commit.excluded) throw new MockError('commit_excluded', '该提交仅修改已排除路径中的文件，无法用于构建', 422)
+      return { ...event.commit, gitMaterialId: material.id, repositoryUrl: material.repositoryUrl, checkoutPath: material.checkoutPath, branch: event.ref, sourceType: source.type, sourceValue: source.value, webhookEvent: clone(event) }
+    }
+    if (pick.webhookEventId || !sourceMatches(source, pick.branch)) throw new MockError('branch_mismatch', '所选分支不匹配流水线代码源配置', 422)
+    const selected = scopedCommits(pick.branch, appId, material.id).find(item => item.sha === pick.commitSha)
+    if (!selected) throw new MockError('commit_invalid', '所选提交不属于该仓库和分支，请刷新后重新选择', 422)
+    if (selected.excluded) throw new MockError('commit_excluded', '该提交仅修改已排除路径中的文件，无法用于构建', 422)
+    return { ...selected, gitMaterialId: material.id, repositoryUrl: material.repositoryUrl, checkoutPath: material.checkoutPath, branch: pick.branch, sourceType: source.type, sourceValue: source.value }
+  })
+  const primary = snapshots.find(item => item.gitMaterialId === buildConfig.gitMaterialId) ?? snapshots[0]!
   const build: Build = {
     id: `bd-${Math.floor(Math.random() * 9000 + 1000)}`,
     appId,
+    pipelineId: pipeline.id,
+    sourceBranch: primary.branch,
+    repositoryUrl: primary.repositoryUrl,
+    materials: clone(snapshots),
+    buildConfigSnapshot: clone(buildConfig),
+    workflowVersion,
     status: 'running',
-    commitSha,
-    commitSubject: commit?.subject ?? '',
+    commitSha: primary.sha,
+    commitSubject: primary.subject,
     configVersion: config.version,
     attemptNo: 1,
     artifactId: null,
@@ -470,10 +787,18 @@ export async function retryBuild(buildId: string): Promise<Build> {
   await delay(220)
   const source = db.builds.find((b) => b.id === buildId)
   if (!source) throw new MockError('not_found', '构建不存在', 404)
+  if (!source.pipelineId) throw new MockError('pipeline_required', '该记录没有流水线归属，请从构建发布页发起构建', 422)
+  if (!db.workflows[source.appId]?.items.some((item) => item.kind === 'ci' && item.id === source.pipelineId && item.enabled)) {
+    throw new MockError('pipeline_disabled', '原构建流水线已删除或停用，请从构建发布页选择流水线', 422)
+  }
+  if (db.builds.some((item) => item.appId === source.appId && item.pipelineId === source.pipelineId && ['running', 'queued', 'canceling'].includes(item.status))) {
+    throw new MockError('build_active', '该流水线已有进行中的构建', 409)
+  }
   const build: Build = {
     ...clone(source),
     id: `bd-${Math.floor(Math.random() * 9000 + 1000)}`,
     status: 'running',
+    artifactId: null,
     attemptNo: source.attemptNo + 1,
     createdAt: new Date().toISOString(),
     finishedAt: null,
@@ -491,12 +816,14 @@ export async function getBuildLogs(buildId: string): Promise<string[]> {
   if (build.logAvailability === 'unavailable' || build.logAvailability === 'expired') {
     throw new MockError('log_unavailable', '日志不可用，构建结果仍以产物为准', 404)
   }
+  const format = (lines: string[]): string[] => buildHistoryLogFixture(build, lines)
   const head = [
+    '[Mock] 本地构建日志示例：没有执行构建命令、启动 Job 或推送镜像。',
     `[podry] attempt #${build.attemptNo} for build ${build.id}`,
     `[podry] commit ${build.commitSha.slice(0, 8)} config v${build.configVersion}`,
-    '[source] init container: cloning https://github.com/acme/checkout-api.git',
-    '[source] checkout detached HEAD at fixed SHA',
-    '[buildkit] #1 [internal] load build definition from docker/Dockerfile',
+    ...(build.materials?.map(item => `[source] ${item.repositoryUrl} -> ${item.checkoutPath} @ ${item.branch} (${item.sha.slice(0, 8)})`) ?? ['[source] historical source metadata not recorded']),
+    '[source] checkout detached HEAD at fixed SHA (Mock log)',
+    `[buildkit] #1 [internal] build mode ${build.buildConfigSnapshot?.buildMode ?? 'historical fixture'}; Dockerfile ${build.buildConfigSnapshot?.dockerfile ?? 'not recorded'}`,
     '[buildkit] #2 [internal] load metadata for docker.io/library/node:22-alpine',
     '[buildkit] #4 [1/4] COPY package*.json ./',
     '[buildkit] #5 [2/4] RUN npm ci --omit=dev',
@@ -505,26 +832,132 @@ export async function getBuildLogs(buildId: string): Promise<string[]> {
     '[buildkit] #8 exporting to image',
   ]
   if (build.status === 'succeeded') {
-    return [
+    const artifact = db.artifacts.find(item => item.id === build.artifactId && item.appId === build.appId && item.buildId === build.id)
+    return format([
       ...head,
-      '[buildkit] #8 pushing manifest for harbor.acme.dev/acme/checkout-api:v1.42.0',
-      `[podry] artifact digest ${build.artifactId ?? 'sha256:8f14e45f'}`,
-      '[podry] build succeeded',
-    ]
+      ...(artifact ? [`[buildkit] #8 image ${artifact.imageRef}`, `[podry] artifact digest ${artifact.digest}`] : ['[podry] historical artifact metadata not recorded']),
+      '\x1b[32m[podry] build succeeded\x1b[0m',
+    ])
   }
   if (build.status === 'failed') {
-    return [...head, '[buildkit] ERROR failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1', '[podry] build failed: buildkit_failed']
+    return format([...head, '\x1b[31m[buildkit] ERROR failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1\x1b[0m', '[podry] build failed: buildkit_failed'])
   }
   if (build.status === 'canceled') {
-    return [...head, '[podry] cancel requested, terminating Job build-checkout-api', '[podry] build canceled']
+    return format([...head, `[podry] cancel requested, terminating Job ${build.jobName || 'not recorded'}`, '[podry] build canceled'])
   }
-  return [...head, '[buildkit] #8 DONE 3.2s', '[podry] waiting for image export...']
+  if (build.status === 'unknown') return format([...head, '[podry] execution status unknown; waiting for reconciliation'])
+  if (build.status === 'queued') return format([head[0]!, head[1]!, '[podry] queued; waiting for a worker'])
+  if (build.status === 'canceling') return format([...head, '[podry] cancel requested; waiting for worker confirmation'])
+  return format([...head, '[buildkit] #8 DONE 3.2s', '[podry] waiting for image export...'])
 }
 
 // ---------------- 产物与发布 ----------------
 export async function listArtifacts(appId: string): Promise<Artifact[]> {
   await delay(120)
   return clone(db.artifactsOf(appId))
+}
+
+// ---------------- 部署前后置阶段（仅本地 Mock；不创建 Deployment） ----------------
+function stagePipeline(appId: string, pipelineId: string) {
+  const pipeline = db.workflows[appId]?.items.find(item => item.id === pipelineId && item.kind === 'cd')
+  if (!pipeline || !pipeline.enabled) throw new MockError('not_found', '部署流水线不存在或已禁用', 404)
+  const binding = db.bindingById(pipeline.bindingId ?? '')
+  if (!binding || binding.appId !== appId) throw new MockError('not_found', '阶段环境绑定不存在', 404)
+  return { pipeline, binding, definition: pipeline.definition as CDDefinition }
+}
+function assertStage(stage: DeploymentStageType): void {
+  if (stage !== 'PRECD' && stage !== 'POSTCD') throw new MockError('validation_error', '请选择前置或后置阶段', 422)
+}
+function stageRecord(appId: string, id: string): StageRun {
+  const run = db.stageRuns.find(item => item.id === id && item.appId === appId)
+  if (!run) throw new MockError('not_found', '阶段运行记录不存在', 404)
+  advanceStageRun(run)
+  return run
+}
+function assertStageIdle(appId: string, pipelineId: string, stage: DeploymentStageType): void {
+  db.stageRuns.forEach(run => advanceStageRun(run))
+  if (db.stageRuns.some(run => run.appId === appId && run.pipelineId === pipelineId && run.stage === stage && stageIsActive(run.status))) throw new MockError('stage_running', '此阶段已有运行中的记录，请等待或取消后重试', 409)
+}
+function stageImages(appId: string, pipelineId: string): Artifact[] {
+  const { definition } = stagePipeline(appId, pipelineId)
+  return db.artifactsOf(appId).filter(artifact => artifact.source === 'external' || !definition.upstreamPipelineId || db.builds.some(build => build.id === artifact.buildId && build.appId === appId && build.pipelineId === definition.upstreamPipelineId))
+}
+export async function listStageImages(appId: string, pipelineId: string): Promise<Artifact[]> {
+  await delay(100)
+  return clone(stageImages(appId, pipelineId))
+}
+export async function listStageRuns(appId: string, pipelineId?: string, stage?: DeploymentStageType): Promise<StageRun[]> {
+  await delay(100)
+  if (stage !== undefined) assertStage(stage)
+  db.stageRuns.forEach(run => advanceStageRun(run))
+  return clone(db.stageRuns.filter(run => run.appId === appId && (!pipelineId || run.pipelineId === pipelineId) && (!stage || run.stage === stage)).sort((a,b) => b.createdAt.localeCompare(a.createdAt)))
+}
+export async function triggerStageRun(appId: string, input: { pipelineId: string; stage: DeploymentStageType; artifactId: string; configVersion: number; workflowVersion: number }): Promise<StageRun> {
+  await delay(160)
+  assertStage(input.stage)
+  const { pipeline, binding, definition } = stagePipeline(appId, input.pipelineId)
+  const config = db.appConfigs[appId]
+  if (!config || config.version !== input.configVersion || db.workflows[appId]?.version !== input.workflowVersion) throw new MockError('revision_conflict', '配置或流水线已更新，请关闭后重新选择镜像', 409)
+  const tasks = input.stage === 'PRECD' ? definition.preTasks : definition.postTasks
+  if (!tasks?.length) throw new MockError('validation_error', '此阶段没有可执行任务，请先配置任务', 422)
+  const validation = Object.values(validatePipelineTasks(definition.preTasks ?? [], definition.postTasks ?? [])).flat()[0]
+  if (validation) throw new MockError('validation_error', validation, 422)
+  const settings = deploymentStageOf(definition, input.stage === 'PRECD' ? 'pre' : 'post')
+  const refs = (input.stage === 'PRECD' ? definition.preStageResources : definition.postStageResources) ?? emptyStageResources()
+  const context = stageResourcesFor(appId, binding.id)
+  const message = deploymentStageErrors(settings, context.workerEnabled)[0] ?? stageResourceErrors(refs,context.options)[0]
+  if (message) throw new MockError('validation_error', message, 422)
+  const artifact = stageImages(appId, pipeline.id).find(item => item.id === input.artifactId)
+  if (!artifact) throw new MockError('validation_error', '镜像不属于此应用或上游 CI', 422)
+  assertStageIdle(appId, pipeline.id, input.stage)
+  const selected = <T extends ConfigMapEntry | SecretEntry>(entries: T[], names: string[]): T[] => effectiveEntries(entries.filter(item=>item.appId===appId && item.environmentId===null),entries.filter(item=>item.appId===appId && item.environmentId===binding.environmentId)).filter(item=>names.includes(item.name))
+  const run: StageRun = {
+    id: `stage-${crypto.randomUUID()}`, appId, pipelineId: pipeline.id, bindingId: binding.id, environmentId: binding.environmentId,
+    stage: input.stage, status: 'queued', configVersion: config.version, workflowVersion: input.workflowVersion,
+    snapshot: clone({ tasks, settings, resources: refs, target: binding.target, artifact, build: db.builds.find(build=>build.id===artifact.buildId && build.appId===appId) ?? null, configMaps: selected(db.configMaps,refs.configMaps), secrets: selected(db.configSecrets,refs.secrets) }),
+    createdAt: new Date().toISOString(), finishedAt: null, operator: db.currentUser.name, attemptNo: 1, retryOf: null,
+  }
+  db.stageRuns.unshift(run)
+  return clone(run)
+}
+export async function cancelStageRun(appId: string, id: string): Promise<StageRun> {
+  await delay(120)
+  const run = stageRecord(appId,id)
+  if (!stageIsActive(run.status)) throw new MockError('state_conflict', '此阶段已结束，不能取消', 409)
+  run.status = 'canceled'; run.finishedAt = new Date().toISOString()
+  return clone(run)
+}
+export async function retryStageRun(appId: string, id: string): Promise<StageRun> {
+  await delay(160)
+  const source = stageRecord(appId,id)
+  if (!['failed','canceled'].includes(source.status)) throw new MockError('state_conflict', '仅失败或已取消的阶段可以重试', 409)
+  const { binding } = stagePipeline(appId,source.pipelineId)
+  if (binding.id !== source.bindingId || (['clusterId','namespace','releaseName'] as const).some(key=>binding.target[key]!==source.snapshot.target[key])) throw new MockError('revision_conflict', '目标环境已变更，请重新选择镜像触发', 409)
+  const workerEnabled = db.clusters.find(item=>item.id===binding.target.clusterId)?.cdWorkerEnabled === true
+  const message = deploymentStageErrors(source.snapshot.settings,workerEnabled)[0]
+  if (message) throw new MockError('validation_error',message,422)
+  assertStageIdle(appId,source.pipelineId,source.stage)
+  const run = clone({ ...source, id: `stage-${crypto.randomUUID()}`, createdAt: new Date().toISOString(), finishedAt: null, status: 'queued' as const, attemptNo: source.attemptNo+1, retryOf: source.id })
+  db.stageRuns.unshift(run)
+  return clone(run)
+}
+export async function getStageRunLogs(appId: string, id: string, taskId: string): Promise<string> {
+  await delay(80)
+  const run = stageRecord(appId,id)
+  if (!run.snapshot.tasks.some(task=>task.id===taskId)) throw new MockError('not_found', '任务不属于此阶段运行', 404)
+  return stageTaskLog(run,taskId)
+}
+
+export async function updateArtifactMetadata(artifactId: string, input: { releaseTags: string[]; notes: string }): Promise<Artifact> {
+  const metadata = artifactMetadataInput(input.releaseTags, input.notes)
+  const validation = artifactMetadataError(metadata.releaseTags, metadata.notes)
+  if (validation) throw new MockError('validation_error', validation, 422)
+  await delay(180)
+  const artifact = db.artifacts.find((item) => item.id === artifactId)
+  if (!artifact) throw new MockError('not_found', '镜像产物不存在', 404)
+  artifact.releaseTags = metadata.releaseTags
+  artifact.notes = metadata.notes
+  return clone(artifact)
 }
 
 export interface PreviewInput {
@@ -554,6 +987,7 @@ export async function previewDeployment(appId: string, input: PreviewInput): Pro
   if (input.expectedConfigVersion !== config.version) {
     throw new MockError('revision_conflict', '配置已更新，请重新预览', 409)
   }
+  const values = effectiveValues(config.deployValues, binding)
   return {
     previewId: `pv-${Date.now()}`,
     expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
@@ -561,8 +995,8 @@ export async function previewDeployment(appId: string, input: PreviewInput): Pro
     target: clone(binding.target),
     configVersion: config.version,
     diff: {
-      before: `replicas: ${binding.overrideValues.replicaCount ?? config.deployValues.replicaCount ?? 1}\nimage: ${artifact.imageRepository}:previous`,
-      after: `replicas: ${binding.overrideValues.replicaCount ?? config.deployValues.replicaCount ?? 1}\nimage: ${artifact.imageRef}`,
+      before: `replicas: ${values.replicaCount ?? 1}\nimage: ${artifact.imageRepository}:previous`,
+      after: `replicas: ${values.replicaCount ?? 1}\nimage: ${artifact.imageRef}`,
     },
     warnings: binding.environmentId === 'e-prod' ? ['生产环境仅允许手动发布', '发布后需观察 60s 就绪状态'] : [],
   }
@@ -571,6 +1005,27 @@ export async function previewDeployment(appId: string, input: PreviewInput): Pro
 export async function listDeployments(appId: string) {
   await delay(140)
   return page(clone(db.deploymentsOf(appId)), 1, 50)
+}
+
+/** 配置对比专用的完整 Mock 目录，不使用发布列表的 50 条分页截断。 */
+export async function getConfigComparisonCatalog(appId: string): Promise<ConfigComparisonCatalog> {
+  await delay(160)
+  const config = db.appConfigs[appId]
+  if (!config) throw new MockError('not_found', '应用配置不存在', 404)
+  const bindings = db.bindings.filter(item => item.appId === appId)
+  const catalog: ConfigComparisonCatalog = { config, bindings, applicationName: db.appById(appId)?.name ?? '', chartDefaults: comparisonChartDefaults(config.chartConfig),
+    environments: db.environments.filter(item => bindings.some(binding => binding.environmentId === item.id)),
+    configMaps: db.configMaps.filter(item => item.appId === appId),
+    secrets: db.configSecrets.filter(item => item.appId === appId),
+    deployments: db.deployments.filter(item => item.appId === appId),
+  }
+  catalog.variableSnapshots = {}
+  for (const environment of ['base', ...new Set(bindings.map(item => item.environmentId))]) {
+    const document = resolveComparisonSide(catalog, { environment, version: 'saved' }).document
+    const snapshot = document && captureConfigVariables(document, mockScopedVariables(appId, environment))
+    if (snapshot) catalog.variableSnapshots[environment] = snapshot
+  }
+  return clone(catalog)
 }
 
 export async function getDeployment(deploymentId: string): Promise<Deployment> {
@@ -595,6 +1050,9 @@ export async function confirmDeployment(input: {
   const appId = db.bindingById(input.bindingId)?.appId
   if (!appId) throw new MockError('not_found', '环境绑定不存在', 404)
   const strategy: DeployStrategy = input.strategy ?? 'rolling'
+  const snapshotBinding = db.bindingById(input.bindingId)!
+  const snapshotConfig = db.appConfigs[appId]
+  if (!snapshotConfig || snapshotConfig.version !== input.configVersion) throw new MockError('conflict', '配置已变更，请重新预览发布', 409)
   const steps = (input.canarySteps ?? CANARY_DEFAULT_STEPS).filter((step) => step > 0 && step <= 100)
   if (strategy === 'canary' && !steps.length) {
     throw new MockError('validation_error', '灰度至少需要一个放量比例', 422)
@@ -607,6 +1065,7 @@ export async function confirmDeployment(input: {
     artifactId: input.artifactId,
     imageRef: input.imageRef,
     configVersion: input.configVersion,
+    configSnapshot: captureDeploymentConfig(snapshotConfig, snapshotBinding, db.configMaps, db.configSecrets, mockScopedVariables(appId, snapshotBinding.environmentId)),
     status: 'observing',
     kind: 'deploy',
     helmRevision: null,
@@ -650,11 +1109,16 @@ export async function promoteDeployment(deploymentId: string, targetBindingId: s
   const source = db.deployments.find((d) => d.id === deploymentId)
   const binding = db.bindingById(targetBindingId)
   if (!source || !binding) throw new MockError('not_found', '记录不存在', 404)
+  if (source.appId !== binding.appId) throw new MockError('conflict', '只能晋级到同一应用的环境', 409)
+  const targetConfig = db.appConfigs[binding.appId]
+  if (!targetConfig) throw new MockError('not_found', '应用配置不存在', 404)
   const deployment: Deployment = {
     ...clone(source),
     id: `d-${Date.now()}`,
     requestId: `req-${Date.now()}`,
     bindingId: targetBindingId,
+    configVersion: targetConfig.version,
+    configSnapshot: captureDeploymentConfig(targetConfig, binding, db.configMaps, db.configSecrets, mockScopedVariables(binding.appId, binding.environmentId)),
     kind: 'promote',
     status: 'observing',
     helmRevision: null,
@@ -719,15 +1183,12 @@ export interface ResourceQuery {
 
 export async function listResources(clusterId: string, query: ResourceQuery): Promise<K8sResource[]> {
   await delay(150)
-  const all = db.resources.filter((r) => r.ref.resource === query.resource)
-  const scoped = all.filter((r) => {
-    if (clusterId === 'c-prod') return r.ref.namespace === 'shop-prod' || r.ref.namespace === '_cluster'
-    return r.ref.namespace !== 'shop-prod'
-  })
+  const all = db.resources.filter((r) => r.ref.resource === query.resource && r.ref.group === query.group)
+  const scoped = all.filter((r) => belongsToCluster(r, clusterId))
   return clone(
     scoped.filter((r) => {
       if (query.namespace && query.namespace !== 'all' && r.ref.namespace !== query.namespace) return false
-      if (query.keyword && !r.ref.name.includes(query.keyword)) return false
+      if (query.keyword && !r.ref.name.toLowerCase().includes(query.keyword.toLowerCase())) return false
       return true
     }),
   )
@@ -737,8 +1198,12 @@ export async function getResource(clusterId: string, group: string, resource: st
   await delay(120)
   if (!db.clusterById(clusterId)) throw new MockError('not_found', '集群不存在', 404)
   const found = db.resources.find(
-    (r) => r.ref.resource === resource && r.ref.namespace === namespace && r.ref.name === name && r.ref.group === group,
+    (r) => belongsToCluster(r, clusterId) && r.ref.resource === resource && r.ref.namespace === namespace && r.ref.name === name && r.ref.group === group,
   )
+  if (!found && resource === 'namespaces') {
+    const item = (db.namespaces[clusterId] ?? []).find((entry) => entry.name === name)
+    if (item) return { ref: { group: '', version: 'v1', resource, namespace: '_cluster', name, uid: item.uid }, kind: 'Namespace', status: item.phase, summary: '', ownerRefs: [], appId: null, manifest: `apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ${name}\nstatus:\n  phase: ${item.phase}\n` }
+  }
   if (!found) throw new MockError('not_found', '资源不存在', 404)
   return clone(found)
 }
@@ -748,31 +1213,39 @@ export async function listEvents(uid: string): Promise<ResourceEvent[]> {
   return clone(db.events[uid] ?? [])
 }
 
+/** Frontend-only desired state; never synthesize intent from an edited live manifest. */
+export async function getDesiredResourceManifest(clusterId: string, ref: ResourceRef): Promise<DesiredResourceManifest | null> {
+  const resource = await getResource(clusterId, ref.group, ref.resource, ref.namespace, ref.name)
+  if (resource.ref.uid !== ref.uid) throw new MockError('revision_conflict', '资源已被重建，请刷新详情后重新比较', 409)
+  if (!resource.appId || resource.ownerRefs.length) return null
+  return desiredResourceSnapshot(resource.ref.uid)
+}
+
 export async function getPodLogs(
   uid: string,
-  options?: { container?: string; sinceSeconds?: number; tailLines?: number; previous?: boolean },
+  options?: PodLogOptions,
 ): Promise<string[]> {
   await delay(options?.container || options?.sinceSeconds ? 260 : 180)
-  const lines = db.podLogs[uid]
+  const resource = db.resources.find(item => item.ref.uid === uid && item.kind === 'Pod')
+  if (!resource) throw new MockError('not_found', 'Pod 不存在', 404)
+  const container = options?.container ?? podContainers(resource.manifest)[0]?.name
+  if (!container || !podContainers(resource.manifest).some(item => item.name === container)) throw new MockError('not_found', '所选容器不存在', 404)
+  const key = `${uid}/${container}`
+  const lines = options?.previous ? db.previousPodLogs[key] : db.containerPodLogs[key] ?? (container === 'app' ? db.podLogs[uid] : undefined)
+  if (options?.previous && !lines) throw new MockError('previous_logs_unavailable', `容器 ${container} 没有上一次终止实例的日志`, 404)
   if (!lines) throw new MockError('not_found', '该资源没有容器日志', 404)
   let result = clone(lines)
-  if (options?.sinceSeconds) {
-    const cutoff = Date.now() - options.sinceSeconds * 1000
-    const filtered = result.filter((line) => {
+  if (options?.sinceSeconds !== undefined || options?.sinceTime) {
+    const cutoff = options.sinceTime ? Date.parse(options.sinceTime) : Date.now() - options!.sinceSeconds! * 1000
+    if (!Number.isFinite(cutoff)) throw new MockError('invalid_input', '日志开始时间无效', 400)
+    result = result.filter((line) => {
       const at = Date.parse(line.slice(0, 24))
       return Number.isNaN(at) ? true : at >= cutoff
     })
-    // 演示数据都在过去较久，窗口过滤后为空时保留尾部 3 行，避免“空日志”误判
-    result = filtered.length ? filtered : result.slice(-3)
+    // 原演示数据都在过去较久，窗口过滤后为空时保留尾部 3 行，避免“空日志”误判；现在返回真实空结果供页面展示。
   }
   if (options?.tailLines) result = result.slice(-options.tailLines)
-  if (options?.container && options.container !== 'app') {
-    result = result.map((line) => `[${options.container}] ${line}`)
-  }
-  if (options?.previous) {
-    // 上一容器日志：mock 复用当前日志并显式标注来源
-    result = result.map((line) => `[previous] ${line}`)
-  }
+  // 上一容器日志：原 mock 复用当前日志并显式标注来源；现在读取独立的终止实例 fixture。
   return result
 }
 
@@ -804,7 +1277,7 @@ export async function listClusterEvents(clusterId: string): Promise<ClusterEvent
   const rows: ClusterEventRow[] = []
   for (const [uid, list] of Object.entries(db.events)) {
     const owner = db.resources.find((item) => item.ref.uid === uid)
-    if (!owner) continue
+    if (!owner || !belongsToCluster(owner, clusterId)) continue
     for (const [index, event] of list.entries()) {
       rows.push({
         id: `${uid}-${index}`,
@@ -834,8 +1307,71 @@ export async function getNodeDetail(clusterId: string, name: string): Promise<No
   await delay(160)
   if (!db.clusterById(clusterId)) throw new MockError('not_found', '集群不存在', 404)
   const detail = db.nodeDetails[name]
-  if (!detail) throw new MockError('not_found', '节点不存在', 404)
+  const matchesCluster = clusterId === 'c-prod' ? name.startsWith('prod-') : clusterId === 'c-dev' && name.startsWith('dev-')
+  if (!detail || !matchesCluster) throw new MockError('not_found', '节点不存在', 404)
   return clone(detail)
+}
+
+export interface ResourceActionInput {
+  ref: ResourceRef
+  action: 'delete' | 'restart' | 'scale' | 'cordon' | 'uncordon' | 'drain' | 'taints'
+  replicas?: number
+  force?: boolean
+  ignoreDaemonSets?: boolean
+  deleteEmptyDirData?: boolean
+  taints?: NodeTaint[]
+}
+
+/** 资源操作的本地 Mock：提交后更新同一数据源，供两个 Manager 读回。 */
+export async function performResourceAction(clusterId: string, input: ResourceActionInput): Promise<void> {
+  await delay(180)
+  const { ref, action } = input
+  const target = await getResource(clusterId, ref.group, ref.resource, ref.namespace, ref.name)
+  if (target.ref.uid !== ref.uid) throw new MockError('revision_conflict', '对象已被重建，请刷新后重试', 409)
+  const index = db.resources.findIndex((item) => item.ref.uid === ref.uid && belongsToCluster(item, clusterId))
+  const row = db.resources[index]
+  const node = target.kind === 'Node' ? db.nodeDetails[ref.name] : undefined
+  if (action === 'delete') {
+    if (index >= 0) db.resources.splice(index, 1)
+    if (node) delete db.nodeDetails[ref.name]
+    if (target.kind === 'Namespace') db.namespaces[clusterId] = (db.namespaces[clusterId] ?? []).filter((item) => item.uid !== ref.uid)
+  } else if (action === 'scale') {
+    if (!row || !['Deployment', 'StatefulSet', 'ReplicaSet'].includes(row.kind)) throw new MockError('validation_error', '该资源不支持副本扩缩容', 422)
+    if (!Number.isInteger(input.replicas) || input.replicas! < 0 || input.replicas! > 10000) throw new MockError('validation_error', '副本数需为 0–10000 的整数', 422)
+    const field = `  replicas: ${input.replicas}`
+    row.manifest = /^  replicas:\s*\d+/m.test(row.manifest) ? row.manifest.replace(/^  replicas:\s*\d+/m, field) : row.manifest.replace(/^spec:\s*$/m, `spec:\n${field}`)
+    row.summary = `${input.replicas}/${input.replicas} ready（Mock）`
+    row.status = input.replicas === 0 ? 'Stopped' : 'Available'
+  } else if (action === 'restart') {
+    if (!row || !['Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet'].includes(row.kind)) throw new MockError('validation_error', '该资源不支持滚动重启', 422)
+    // Mock 只记录重启事件；真实实现应更新 Pod template annotation，由控制器滚动重建。
+    const events = db.events[ref.uid] ?? (db.events[ref.uid] = [])
+    events.unshift({ type: 'Normal', reason: 'Restarted', message: '本地 Mock：已提交工作负载重启', count: 1, lastSeenAt: new Date().toISOString() })
+  } else {
+    if (!node || !row) throw new MockError('validation_error', '此操作只支持 Node', 422)
+    if (action === 'taints') {
+      if (input.taints?.some((taint) => !taint.key.trim() || !['NoSchedule', 'PreferNoSchedule', 'NoExecute'].includes(taint.effect))) throw new MockError('validation_error', '请填写有效的 Taint key 和 effect', 422)
+      node.taints = clone(input.taints ?? [])
+    } else {
+      node.unschedulable = action !== 'uncordon'
+      if (action === 'drain') {
+        const daemonPods = node.pods.filter((pod) => db.resources.find((resource) => resource.ref.name === pod.name && resource.kind === 'Pod')?.ownerRefs.some((owner) => owner.toLowerCase().includes('daemonset')))
+        node.pods = input.ignoreDaemonSets ? daemonPods : []
+      }
+      row.status = node.unschedulable ? `${node.status},SchedulingDisabled` : node.status
+    }
+    // 节点 YAML 与概要共用写入结果，避免重新打开后回到旧状态。
+    const specPattern = /^spec:[ \t]*\n(?:[ \t]+[^\n]*(?:\n|$)|\n)*/m
+    const originalSpec = specPattern.exec(node.manifest)?.[0]
+    let spec = (originalSpec ?? 'spec:\n')
+      .replace(/^  unschedulable:[^\n]*(?:\n|$)/m, '')
+      .replace(/^  taints:[^\n]*(?:\n(?: {4,}[^\n]*|  -[^\n]*))*(?:\n|$)/m, '')
+    if (!spec.endsWith('\n')) spec += '\n'
+    spec += `  unschedulable: ${node.unschedulable}\n  taints:${node.taints.length ? '\n' + node.taints.map((taint) => `    - key: ${JSON.stringify(taint.key)}\n      value: ${JSON.stringify(taint.value)}\n      effect: ${taint.effect}`).join('\n') : ' []'}\n`
+    node.manifest = originalSpec ? node.manifest.replace(specPattern, () => spec) : `${node.manifest.trimEnd()}\n${spec}`
+    row.manifest = node.manifest
+  }
+  db.auditEvents.unshift({ id: `au-${crypto.randomUUID()}`, actorId: db.currentUser.id, actorName: db.currentUser.name, action: `resource.${action}`, target: `${target.kind}/${ref.namespace}/${ref.name}@${clusterId}`, result: 'succeeded', createdAt: new Date().toISOString() })
 }
 
 // ---------------- 资源写入（P1：Dry run / Apply / 操作结果） ----------------
@@ -869,6 +1405,8 @@ interface ParsedDoc {
   namespace: string
   group: string
   resource: string
+  version: string
+  validationError: string
 }
 
 const KIND_TO_RESOURCE: Record<string, { group: string; resource: string }> = {
@@ -881,18 +1419,20 @@ const KIND_TO_RESOURCE: Record<string, { group: string; resource: string }> = {
   Namespace: { group: '', resource: 'namespaces' },
 }
 
-/** 极简 YAML 扫描：只取 kind / metadata.name / metadata.namespace，够演示多文档 Dry run */
+/** 极简 YAML 扫描曾只取 kind / metadata.name / metadata.namespace；现按 YAML 文档解析，仍不做 Kubernetes schema 验证。 */
 function parseDocuments(manifest: string): Array<ParsedDoc & { body: string }> {
-  const chunks = manifest
-    .split(/^---\s*$/m)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  return chunks.map((body) => {
-    const kind = /^kind:\s*(\S+)/m.exec(body)?.[1] ?? ''
-    const name = /^\s{2}name:\s*(\S+)/m.exec(body)?.[1] ?? ''
-    const namespace = /^\s{2}namespace:\s*(\S+)/m.exec(body)?.[1] ?? 'default'
-    const mapping = KIND_TO_RESOURCE[kind] ?? { group: '', resource: kind.toLowerCase() }
-    return { kind, name, namespace, group: mapping.group, resource: mapping.resource, body }
+  const documents = resourceYamlDocuments(manifest)
+  return documents.map((document) => {
+    const body = documents.length === 1 ? manifest : document.toString()
+    let identity = { kind: '', name: '', apiVersion: 'v1', namespace: '' }
+    let validationError = ''
+    try { identity = resourceIdentity(document); if (identity.kind === 'Node') validationError = nodeManifestError(document.toJS({ maxAliasCount: 100 })) } catch (error) { validationError = error instanceof Error ? error.message : 'Manifest 无效' }
+    const { kind, name, apiVersion } = identity
+    const [group, version] = apiVersion.includes('/') ? apiVersion.split('/') : ['', apiVersion]
+    const type = db.resourceTypes.find((item) => item.kind === kind && item.group === group)
+    const namespace = type?.namespaced === false ? '_cluster' : identity.namespace || 'default'
+    const mapping = type ?? KIND_TO_RESOURCE[kind] ?? { group, resource: kind.toLowerCase() }
+    return { kind, name, namespace, group: mapping.group, resource: mapping.resource, version: version ?? 'v1', body, validationError }
   })
 }
 
@@ -904,18 +1444,19 @@ export async function dryRunResource(
   if (!db.clusterById(clusterId)) throw new MockError('not_found', '集群不存在', 404)
   if (!input.manifest.trim()) throw new MockError('validation_error', 'Manifest 不能为空', 422)
   const docs = parseDocuments(input.manifest)
+  if (!docs.length) throw new MockError('validation_error', 'Manifest 至少需要一个资源文档', 422)
   const documents: DryRunDocumentResult[] = docs.map((doc, index) => {
-    if (!doc.kind || !doc.name) {
-      return { index, ref: `${doc.kind || '?'}/${doc.name || '?'}`, status: 'invalid', message: '缺少 kind 或 metadata.name' }
+    if (doc.validationError) {
+      return { index, ref: `${doc.kind || '?'}/${doc.name || '?'}`, status: 'invalid', message: doc.validationError }
     }
     const exists = db.resources.some(
-      (item) => item.ref.resource === doc.resource && item.ref.name === doc.name && item.ref.namespace === doc.namespace,
+      (item) => belongsToCluster(item, clusterId) && item.ref.group === doc.group && item.ref.resource === doc.resource && item.ref.name === doc.name && item.ref.namespace === doc.namespace,
     )
     return {
       index,
       ref: `${doc.kind}/${doc.name}`,
       status: 'valid',
-      message: exists ? '将更新现有对象（server-side apply 预演通过）' : '将创建新对象',
+      message: exists ? '本地字段检查通过，将更新现有对象' : '将创建新对象',
     }
   })
   return { documents, valid: documents.every((item) => item.status === 'valid') }
@@ -923,7 +1464,7 @@ export async function dryRunResource(
 
 export async function applyResource(
   clusterId: string,
-  input: { manifest: string; expectedUid?: string },
+  input: { manifest: string; expectedUid?: string; expectedManifest?: string },
 ): Promise<ApplyResult> {
   await delay(360)
   if (!db.clusterById(clusterId)) throw new MockError('not_found', '集群不存在', 404)
@@ -931,29 +1472,43 @@ export async function applyResource(
   const items: ApplyItemResult[] = []
   for (const doc of docs) {
     const ref = `${doc.kind}/${doc.name}`
-    if (!doc.kind || !doc.name) {
-      items.push({ ref, result: 'failed', message: '缺少 kind 或 metadata.name' })
+    if (doc.validationError) {
+      items.push({ ref, result: 'failed', message: doc.validationError })
       continue
     }
-    const existing = db.resources.find(
-      (item) => item.ref.resource === doc.resource && item.ref.name === doc.name && item.ref.namespace === doc.namespace,
+    let existing = db.resources.find(
+      (item) => belongsToCluster(item, clusterId) && item.ref.group === doc.group && item.ref.resource === doc.resource && item.ref.name === doc.name && item.ref.namespace === doc.namespace,
     )
+    // Namespace 列表 fixture 与通用资源共用同一个 UID，首次编辑时接入通用资源存储。
+    if (!existing && doc.kind === 'Namespace' && (db.namespaces[clusterId] ?? []).some((item) => item.name === doc.name)) {
+      existing = await getResource(clusterId, doc.group, doc.resource, doc.namespace, doc.name)
+      resourceClusters.set(existing.ref.uid, clusterId)
+      db.resources.push(existing)
+    }
     if (existing) {
       if (input.expectedUid && existing.ref.uid !== input.expectedUid) {
         items.push({ ref, result: 'failed', message: '对象已被重建（UID 不一致），请重新读取后再提交' })
         continue
       }
-      existing.manifest = doc.body
+      if (input.expectedManifest !== undefined && input.expectedManifest !== existing.manifest) throw new MockError('revision_conflict', '资源已被更新，当前草稿已保留；请重新读取后再提交', 409)
+      existing.manifest = retainManagedFields(existing.manifest, doc.body)
+      if (existing.kind === 'Node' && db.nodeDetails[doc.name]) syncNodeDetailManifest(db.nodeDetails[doc.name]!, existing.manifest)
       items.push({ ref, result: 'succeeded', message: '已更新' })
     } else {
+      if (input.expectedUid) {
+        items.push({ ref, result: 'failed', message: '原对象已不存在，请重新读取后再提交' })
+        continue
+      }
+      const uid = `uid-${doc.resource}-${crypto.randomUUID()}`
+      resourceClusters.set(uid, clusterId)
       db.resources.push({
         ref: {
           group: doc.group,
-          version: 'v1',
+          version: doc.version,
           resource: doc.resource,
           namespace: doc.namespace,
           name: doc.name,
-          uid: `uid-${doc.resource}-${Date.now()}`,
+          uid,
         },
         kind: doc.kind,
         status: doc.kind === 'ConfigMap' ? 'Active' : 'Created',
@@ -962,6 +1517,10 @@ export async function applyResource(
         ownerRefs: [],
         appId: null,
       })
+      if (doc.kind === 'Namespace') {
+        const list = db.namespaces[clusterId] ?? (db.namespaces[clusterId] = [])
+        list.push({ name: doc.name, uid, phase: 'Active' })
+      }
       items.push({ ref, result: 'succeeded', message: '已创建' })
     }
   }
@@ -993,7 +1552,7 @@ export async function importArtifact(appId: string, input: { imageRef: string; d
   if (!/^sha256:[a-f0-9]{64}$/.test(input.digest)) {
     throw new MockError('validation_error', 'digest 必须是 sha256: 加 64 位小写十六进制', 422)
   }
-  const [repository] = input.imageRef.split(':')
+  const repository = artifactImageRepository(input.imageRef)
   const artifact: Artifact = {
     id: `ar-${Date.now()}`,
     appId,
@@ -1012,7 +1571,14 @@ export async function importArtifact(appId: string, input: { imageRef: string; d
 export async function updateAppBinding(
   appId: string,
   bindingId: string,
-  input: { expectedVersion: number; overrideValues: DeployValues; autoDeploy?: boolean },
+  input: {
+    expectedVersion: number
+    overrideValues: DeployValues
+    autoDeploy?: boolean
+    overrideEnabled?: boolean
+    overrideMergeStrategy?: 'patch' | 'replace'
+    overrideValuesYaml?: string
+  },
 ): Promise<Binding> {
   await delay(240)
   const binding = db.bindingById(bindingId)
@@ -1021,6 +1587,9 @@ export async function updateAppBinding(
     throw new MockError('revision_conflict', '环境绑定已被更新，请重新读取后再保存', 409)
   }
   binding.overrideValues = clone(input.overrideValues)
+  if (input.overrideEnabled !== undefined) binding.overrideEnabled = input.overrideEnabled
+  if (input.overrideMergeStrategy) binding.overrideMergeStrategy = input.overrideMergeStrategy
+  binding.overrideValuesYaml = input.overrideValuesYaml
   if (typeof input.autoDeploy === 'boolean') binding.autoDeploy = input.autoDeploy
   binding.version += 1
   return clone(binding)
@@ -1166,32 +1735,41 @@ export interface ExecSession {
   namespace: string
   pod: string | null
   container: string
+  shell: PodShell
   createdAt: string
   expiresAt: string
 }
 
 const execSessions = new Map<string, ExecSession>()
+let execSequence = 0
 
 /** 终端会话（P2 / EX-02）：一次 ticket 换一次会话，30 分钟过期 */
 export async function createExecSession(
   clusterId: string,
-  input: { namespace: string; pod?: string; container?: string },
+  input: { namespace: string; pod?: string; container?: string; shell?: PodShell; resourceUid?: string },
 ): Promise<ExecSession> {
   await delay(220)
   if (!db.clusterById(clusterId)) throw new MockError('not_found', '集群不存在', 404)
+  if (input.shell !== undefined && !isPodShell(input.shell)) throw new MockError('validation_error', '不支持的 Shell', 422)
+  let container = input.container
   if (input.pod) {
     const pod = db.resources.find(
-      (item) => item.ref.resource === 'pods' && item.ref.name === input.pod && item.ref.namespace === input.namespace,
+      (item) => item.ref.resource === 'pods' && item.ref.name === input.pod && item.ref.namespace === input.namespace && belongsToCluster(item, clusterId),
     )
     if (!pod) throw new MockError('not_found', 'Pod 不存在', 404)
+    if (input.resourceUid && input.resourceUid !== pod.ref.uid) throw new MockError('conflict', 'Pod 已重新创建，请刷新后重试', 409)
+    container = input.container ?? podContainers(pod.manifest)[0]?.name ?? ''
+    const reason = podTerminalError(pod, container)
+    if (reason) throw new MockError('exec_unavailable', reason, 409)
   }
   const now = Date.now()
   const session: ExecSession = {
-    sessionId: `sess-${now.toString(36)}`,
+    sessionId: `sess-${now.toString(36)}-${++execSequence}`,
     clusterId,
     namespace: input.namespace,
     pod: input.pod ?? null,
-    container: input.container ?? 'app',
+    container: container ?? 'app',
+    shell: input.shell ?? 'sh',
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 30 * 60 * 1000).toISOString(),
   }
@@ -1237,18 +1815,41 @@ export async function getDeploymentMetrics(deploymentId: string): Promise<Metric
 /** 应用元信息编辑：描述 / 所属项目 / 标签 / Readme */
 export async function updateApplication(
   appId: string,
-  patch: { description?: string; projectId?: string; tags?: string[]; readme?: string; archived?: boolean },
+  patch: { description?: string; projectId?: string; tags?: string[]; labels?: ApplicationLabel[]; legacyTags?: string[]; readme?: string; archived?: boolean },
 ): Promise<Application> {
   await delay(220)
   const app = db.appById(appId)
   if (!app) throw new MockError('not_found', '应用不存在', 404)
-  if (patch.projectId && !db.projects.some((item) => item.id === patch.projectId)) {
+  if (patch.projectId !== undefined && !db.projects.some((item) => item.id === patch.projectId)) {
     throw new MockError('not_found', '目标项目不存在', 404)
   }
-  if (typeof patch.description === 'string') app.description = patch.description
+  if (patch.projectId && db.applications.some(item => item.id !== app.id && !item.archivedAt && item.projectId === patch.projectId && item.name === app.name)) {
+    throw new MockError('conflict', '目标项目下已存在同名应用', 409)
+  }
+  const descriptionError = patch.description === undefined ? '' : applicationDescriptionError(patch.description)
+  if (descriptionError) throw new MockError('validation_error', descriptionError, 422)
+  if (patch.tags && (patch.labels !== undefined || patch.legacyTags !== undefined)) throw new MockError('validation_error', '不能同时使用旧版和结构化标签格式', 422)
+  const labels = patch.labels === undefined ? undefined : applicationLabels(patch.labels)
+  if (labels && applicationTagErrors(labels).some(error => error.key || error.value)) throw new MockError('validation_error', '标签缺失或格式无效', 422)
+  if (labels?.some(label => typeof label.propagate !== 'boolean')) throw new MockError('validation_error', '标签传播设置无效', 422)
+  const legacyTags = patch.legacyTags ?? legacyApplicationTags(app)
+  if (!Array.isArray(legacyTags) || legacyTags.some(tag => typeof tag !== 'string' || !tag.trim())) throw new MockError('validation_error', '旧版标签格式无效', 422)
+  // Finish validation before mutating any field: a failed project move must not
+  // accidentally save the description or clear labels.
+  if (typeof patch.description === 'string') app.description = patch.description.trim()
   if (patch.projectId) app.projectId = patch.projectId
-  if (Array.isArray(patch.tags)) app.tags = patch.tags
-  if (typeof patch.readme === 'string') app.readme = patch.readme
+  // Compatibility for older callers editing plain tags; the overview now uses
+  // structured labels and explicitly retains or removes legacy display tags.
+  if (Array.isArray(patch.tags)) { app.tags = [...patch.tags]; app.labels = undefined }
+  if (labels !== undefined || patch.legacyTags !== undefined) {
+    app.labels = clone(labels ?? app.labels ?? [])
+    app.tags = [...new Set([...legacyTags,...app.labels.map(label => `${label.key}:${label.value}`)])]
+  }
+  if (typeof patch.readme === 'string') {
+    app.readme = patch.readme
+    app.readmeUpdatedAt = new Date().toISOString()
+    app.readmeUpdatedBy = db.currentUser.name
+  }
   if (typeof patch.archived === 'boolean') {
     app.archivedAt = patch.archived ? new Date().toISOString() : null
   }

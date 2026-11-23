@@ -1,3 +1,7 @@
+import { parseDocument } from 'yaml'
+import { configDocument } from '@/utils/configDocument'
+import { captureConfigVariables } from '@/utils/configVariables'
+import { customResources, customResourceTypes, resourceShortNames } from './resourceDiscovery'
 import type {
   AppConfig,
   Application,
@@ -9,6 +13,7 @@ import type {
   Cluster,
   Credential,
   Deployment,
+  StageRun,
   Environment,
   GitBranch,
   GitCommit,
@@ -66,6 +71,7 @@ export const environments: Environment[] = [
 export const clusters: Cluster[] = [
   {
     id: 'c-prod',
+    cdWorkerEnabled: false,
     name: 'prod-k8s',
     apiServer: 'https://10.20.0.10:6443',
     connectionStatus: 'connected',
@@ -80,6 +86,7 @@ export const clusters: Cluster[] = [
   },
   {
     id: 'c-dev',
+    cdWorkerEnabled: true,
     name: 'dev-k3s',
     apiServer: 'https://10.20.0.21:6443',
     connectionStatus: 'connected',
@@ -107,6 +114,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(12),
     envCount: 3,
+    createdAt: '2026-10-12T01:20:00.000Z',
+    createdBy: 'admin',
     lastDeployedAt: ago(42),
   },
   {
@@ -119,6 +128,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(35),
     envCount: 2,
+    createdAt: '2026-10-18T03:05:00.000Z',
+    createdBy: 'admin',
     lastDeployedAt: ago(96),
   },
   {
@@ -131,6 +142,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(180),
     envCount: 1,
+    createdAt: '2026-10-21T07:40:00.000Z',
+    createdBy: '张运维',
     lastDeployedAt: ago(240),
   },
   {
@@ -143,6 +156,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(58),
     envCount: 1,
+    createdAt: '2026-11-02T09:15:00.000Z',
+    createdBy: '王发布',
     lastDeployedAt: null,
   },
   {
@@ -155,6 +170,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(300),
     envCount: 0,
+    createdAt: '2026-11-05T02:30:00.000Z',
+    createdBy: '张运维',
     lastDeployedAt: null,
   },
   {
@@ -167,6 +184,8 @@ export const applications: Application[] = [
     archivedAt: null,
     updatedAt: ago(720),
     envCount: 1,
+    createdAt: '2026-11-08T11:10:00.000Z',
+    createdBy: '王发布',
     lastDeployedAt: ago(900),
   },
 ]
@@ -295,7 +314,7 @@ export const appConfigs: Record<string, AppConfig> = {
       timeoutSeconds: 1800,
     },
     chartConfig: { workloadKind: 'Deployment', chartVersion: '1.4.0' },
-    deployValues: { replicaCount: 2, containerPort: 9090 },
+    deployValues: { replicaCount: 2, containerPort: 9090, env: { REGION: '@{{payment-region}}' } },
   },
   'a-storefront': {
     appId: 'a-storefront',
@@ -466,7 +485,12 @@ export const workflows: Record<string, Workflow> = {
         bindingId: 'b-checkout-staging',
         enabled: true,
         version: 1,
-        definition: { triggerMode: 'manual', upstreamPipelineId: 'pl-checkout-ci', deployTimeoutSeconds: 900 },
+        definition: {
+          triggerMode: 'manual', upstreamPipelineId: 'pl-checkout-ci', deployTimeoutSeconds: 900,
+          // 独立阶段的本地演示配置；这些脚本不会实际执行。
+          preTasks: [{ id: 'staging-pre-check', name: 'Check application environment', execution: 'shell', image: '', script: '#!/bin/sh\necho "pre-deployment checks"\n', workingDirectory: './', condition: 'success', variables: [], outputs: [], artifactPaths: '' }],
+          postTasks: [{ id: 'staging-post-check', name: 'Verify release', execution: 'shell', image: '', script: '#!/bin/sh\necho "post-deployment checks"\n', workingDirectory: './', condition: 'success', variables: [], outputs: [], artifactPaths: '' }],
+        },
       },
       {
         id: 'pl-checkout-cd-prod',
@@ -537,12 +561,12 @@ export const branches: GitBranch[] = [
 ]
 
 export const commits: GitCommit[] = [
-  { sha: 'f3c9a1b7d4e6c2a8f5b1d7e3c9a6b2d8f4e1c7a3', subject: 'fix: 结算金额四舍五入到分', authorName: '李开发', committedAt: ago(64) },
-  { sha: '9d2b5e8a1c4f7b3d6e9a2c5f8b1d4e7a3c6f9b2d', subject: 'feat: 支持优惠券叠加', authorName: '李开发', committedAt: ago(210) },
-  { sha: 'b71e4d9c2a5f8b3d6e9c1a4f7b2d5e8c3a6f9b1d', subject: 'chore: 升级基础镜像到 1.22', authorName: '王发布', committedAt: ago(420) },
-  { sha: 'a15c8e3b9d2f5a7c1e4b8d3f6a9c2e5b8d1f4a7c', subject: 'refactor: 拆分订单聚合', authorName: '李开发', committedAt: ago(900) },
-  { sha: '6c3f9a2d5b8e1c4f7a3d6b9e2c5f8a1d4b7e3c6f', subject: 'test: 补结算压测脚本', authorName: '赵观察', committedAt: ago(1320) },
-  { sha: 'e8b1d4c7a2f5b8e3c6a9d2f5b1e4c7a3d6f9b2e5', subject: 'docs: 更新发布说明', authorName: '张运维', committedAt: ago(1800) },
+  { sha: 'f3c9a1b7d4e6c2a8f5b1d7e3c9a6b2d8f4e1c7a3', subject: 'fix: 结算金额四舍五入到分', authorName: '李开发', committedAt: ago(64), changedPaths: ['src/checkout/amount.ts', 'tests/amount.test.ts'] },
+  { sha: '9d2b5e8a1c4f7b3d6e9a2c5f8b1d4e7a3c6f9b2d', subject: 'feat: 支持优惠券叠加', authorName: '李开发', committedAt: ago(210), changedPaths: ['src/coupon/stack.ts', 'docs/coupons.md'] },
+  { sha: 'b71e4d9c2a5f8b3d6e9c1a4f7b2d5e8c3a6f9b1d', subject: 'chore: 升级基础镜像到 1.22', authorName: '王发布', committedAt: ago(420), changedPaths: ['Dockerfile'] },
+  { sha: 'a15c8e3b9d2f5a7c1e4b8d3f6a9c2e5b8d1f4a7c', subject: 'refactor: 拆分订单聚合', authorName: '李开发', committedAt: ago(900), changedPaths: ['src/order/aggregate.ts'] },
+  { sha: '6c3f9a2d5b8e1c4f7a3d6b9e2c5f8a1d4b7e3c6f', subject: 'test: 补结算压测脚本', authorName: '赵观察', committedAt: ago(1320), changedPaths: ['tests/load/checkout.js'] },
+  { sha: 'e8b1d4c7a2f5b8e3c6a9d2f5b1e4c7a3d6f9b2e5', subject: 'docs: 更新发布说明', authorName: '张运维', committedAt: ago(1800), changedPaths: ['docs/releases/1.4.md', 'README.md'] },
 ]
 
 const logRuntime = 'runtime' as const
@@ -552,6 +576,7 @@ export const builds: Build[] = [
   {
     id: 'bd-1012',
     appId: 'a-checkout',
+    pipelineId: 'pl-checkout-ci',
     status: 'running',
     commitSha: 'f3c9a1b7d4e6c2a8f5b1d7e3c9a6b2d8f4e1c7a3',
     commitSubject: 'fix: 结算金额四舍五入到分',
@@ -567,6 +592,7 @@ export const builds: Build[] = [
   {
     id: 'bd-1011',
     appId: 'a-checkout',
+    pipelineId: 'pl-checkout-ci',
     status: 'succeeded',
     commitSha: '9d2b5e8a1c4f7b3d6e9a2c5f8b1d4e7a3c6f9b2d',
     commitSubject: 'feat: 支持优惠券叠加',
@@ -582,6 +608,7 @@ export const builds: Build[] = [
   {
     id: 'bd-1010',
     appId: 'a-checkout',
+    pipelineId: 'pl-checkout-ci',
     status: 'failed',
     commitSha: '6c3f9a2d5b8e1c4f7a3d6b9e2c5f8a1d4b7e3c6f',
     commitSubject: 'test: 补结算压测脚本',
@@ -597,6 +624,7 @@ export const builds: Build[] = [
   {
     id: 'bd-1009',
     appId: 'a-checkout',
+    pipelineId: 'pl-checkout-ci',
     status: 'canceled',
     commitSha: 'e8b1d4c7a2f5b8e3c6a9d2f5b1e4c7a3d6f9b2e5',
     commitSubject: 'docs: 更新发布说明',
@@ -612,6 +640,7 @@ export const builds: Build[] = [
   {
     id: 'bd-1008',
     appId: 'a-checkout',
+    pipelineId: 'pl-checkout-ci',
     status: 'succeeded',
     commitSha: 'b71e4d9c2a5f8b3d6e9c1a4f7b2d5e8c3a6f9b1d',
     commitSubject: 'chore: 升级基础镜像到 1.22',
@@ -627,6 +656,7 @@ export const builds: Build[] = [
   {
     id: 'bd-900',
     appId: 'a-payment',
+    pipelineId: 'pl-payment-ci',
     status: 'unknown',
     commitSha: 'a15c8e3b9d2f5a7c1e4b8d3f6a9c2e5b8d1f4a7c',
     commitSubject: 'refactor: 拆分订单聚合',
@@ -642,6 +672,7 @@ export const builds: Build[] = [
   {
     id: 'bd-899',
     appId: 'a-payment',
+    pipelineId: 'pl-payment-ci',
     status: 'succeeded',
     commitSha: 'b71e4d9c2a5f8b3d6e9c1a4f7b2d5e8c3a6f9b1d',
     commitSubject: 'chore: 升级基础镜像到 1.22',
@@ -833,6 +864,19 @@ export const deployments: Deployment[] = [
 ]
 
 export const resourceTypes: ResourceType[] = [
+  { group: '', version: 'v1', resource: 'events', kind: 'Event', namespaced: true, verbs: ['get', 'list'], category: 'Cluster' },
+  { group: '', version: 'v1', resource: 'serviceaccounts', kind: 'ServiceAccount', namespaced: true, verbs: ['get','list','patch','delete'], category: 'RBAC' },
+  { group: 'rbac.authorization.k8s.io', version: 'v1', resource: 'rolebindings', kind: 'RoleBinding', namespaced: true, verbs: ['get','list','patch','delete'], category: 'RBAC' },
+  { group: 'rbac.authorization.k8s.io', version: 'v1', resource: 'clusterroles', kind: 'ClusterRole', namespaced: false, verbs: ['get','list','patch','delete'], category: 'RBAC' },
+  { group: 'rbac.authorization.k8s.io', version: 'v1', resource: 'clusterrolebindings', kind: 'ClusterRoleBinding', namespaced: false, verbs: ['get','list','patch','delete'], category: 'RBAC' },
+  { group: '', version: 'v1', resource: 'persistentvolumes', kind: 'PersistentVolume', namespaced: false, verbs: ['get','list','patch','delete'], category: 'Config & Storage' },
+  { group: 'storage.k8s.io', version: 'v1', resource: 'storageclasses', kind: 'StorageClass', namespaced: false, verbs: ['get','list','patch','delete'], category: 'Config & Storage' },
+  { group: 'networking.k8s.io', version: 'v1', resource: 'networkpolicies', kind: 'NetworkPolicy', namespaced: true, verbs: ['get','list','patch','delete'], category: 'Networking' },
+  { group: 'autoscaling', version: 'v2', resource: 'horizontalpodautoscalers', kind: 'HorizontalPodAutoscaler', namespaced: true, verbs: ['get','list','patch','delete'], category: 'Administration' },
+  { group: '', version: 'v1', resource: 'resourcequotas', kind: 'ResourceQuota', namespaced: true, verbs: ['get','list','patch','delete'], category: 'Administration' },
+  { group: '', version: 'v1', resource: 'limitranges', kind: 'LimitRange', namespaced: true, verbs: ['get','list','patch','delete'], category: 'Administration' },
+  { group: 'policy', version: 'v1', resource: 'poddisruptionbudgets', kind: 'PodDisruptionBudget', namespaced: true, verbs: ['get','list','patch','delete'], category: 'Administration' },
+  { group: 'apiextensions.k8s.io', version: 'v1', resource: 'customresourcedefinitions', kind: 'CustomResourceDefinition', namespaced: false, verbs: ['get','list','patch','delete'], category: 'Administration' },
   { group: '', version: 'v1', resource: 'pods', kind: 'Pod', namespaced: true, verbs: ['get', 'list', 'watch', 'delete'], category: 'Workloads' },
   { group: 'apps', version: 'v1', resource: 'deployments', kind: 'Deployment', namespaced: true, verbs: ['get', 'list', 'watch', 'patch', 'delete'], category: 'Workloads' },
   { group: 'apps', version: 'v1', resource: 'statefulsets', kind: 'StatefulSet', namespaced: true, verbs: ['get', 'list'], category: 'Workloads' },
@@ -850,8 +894,9 @@ export const resourceTypes: ResourceType[] = [
   { group: '', version: 'v1', resource: 'namespaces', kind: 'Namespace', namespaced: false, verbs: ['get', 'list'], category: 'Cluster' },
   { group: '', version: 'v1', resource: 'nodes', kind: 'Node', namespaced: false, verbs: ['get', 'list'], category: 'Cluster' },
   { group: 'rbac.authorization.k8s.io', version: 'v1', resource: 'roles', kind: 'Role', namespaced: true, verbs: ['get', 'list'], category: 'RBAC' },
-  { group: 'argoproj.io', version: 'v1alpha1', resource: 'rollouts', kind: 'Rollout', namespaced: true, verbs: ['get', 'list'], category: 'Custom Resource' },
+  ...customResourceTypes,
 ]
+for (const type of resourceTypes) type.shortNames ??= resourceShortNames[type.resource]
 
 export const namespaces: Record<string, Namespace[]> = {
   'c-dev': [
@@ -868,11 +913,11 @@ export const namespaces: Record<string, Namespace[]> = {
   ],
 }
 
-const deploymentManifest = (name: string, image: string, replicas: number) => `apiVersion: apps/v1
+const deploymentManifest = (name: string, image: string, replicas: number, namespace = 'shop-prod') => `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ${name}
-  namespace: shop-prod
+  namespace: ${namespace}
   labels:
     app.kubernetes.io/name: ${name}
 spec:
@@ -937,7 +982,7 @@ export const resources: K8sResource[] = [
     kind: 'Deployment',
     status: 'Available',
     summary: '1/1 就绪',
-    manifest: deploymentManifest('checkout-api', 'harbor.acme.dev/acme/checkout-api:v1.42.0', 1),
+    manifest: deploymentManifest('checkout-api', 'harbor.acme.dev/acme/checkout-api:v1.42.0', 1, 'shop-dev'),
     ownerRefs: [],
     appId: 'a-checkout',
   },
@@ -946,7 +991,7 @@ export const resources: K8sResource[] = [
     kind: 'Deployment',
     status: 'Progressing',
     summary: '1/2 就绪',
-    manifest: deploymentManifest('payment-worker', 'harbor.acme.dev/acme/payment-worker:v0.9.7', 2),
+    manifest: deploymentManifest('payment-worker', 'harbor.acme.dev/acme/payment-worker:v0.9.7', 2, 'shop-dev'),
     ownerRefs: [],
     appId: 'a-payment',
   },
@@ -996,7 +1041,7 @@ spec:
     ref: { group: '', version: 'v1', resource: 'pods', namespace: 'shop-dev', name: 'checkout-api-5b8d7c9f4-t1n9p', uid: 'uid-pod-3' },
     kind: 'Pod',
     status: 'Running',
-    summary: 'Ready 1/1，重启 0 次',
+    summary: 'Ready 2/2，重启 0 次',
     manifest: `apiVersion: v1
 kind: Pod
 metadata:
@@ -1006,6 +1051,59 @@ spec:
   containers:
     - name: app
       image: harbor.acme.dev/acme/checkout-api:v1.42.0
+      env:
+        - name: LOG_LEVEL
+          value: info
+    - name: envoy
+      image: envoyproxy/envoy:v1.31.0
+  initContainers:
+    - name: migrate
+      image: harbor.acme.dev/acme/migrate:v1
+  ephemeralContainers:
+    - name: debugger
+      image: busybox:1.37
+status:
+  phase: Running
+  containerStatuses:
+    - name: app
+      state: {running: {startedAt: '2026-11-20T09:40:00Z'}}
+    - name: envoy
+      state: {running: {startedAt: '2026-11-20T09:40:00Z'}}
+  initContainerStatuses:
+    - name: migrate
+      state: {terminated: {exitCode: 0, reason: Completed}}
+  ephemeralContainerStatuses:
+    - name: debugger
+      state: {running: {startedAt: '2026-11-20T09:43:00Z'}}
+`,
+    ownerRefs: ['ReplicaSet/checkout-api-5b8d7c9f4'],
+    appId: 'a-checkout',
+  },
+  {
+    ref: { group: '', version: 'v1', resource: 'pods', namespace: 'shop-dev', name: 'checkout-api-5b8d7c9f4-v8m2q', uid: 'uid-pod-checkout-replica' },
+    kind: 'Pod',
+    status: 'Running',
+    summary: 'Ready 2/2，重启 1 次',
+    manifest: `apiVersion: v1
+kind: Pod
+metadata:
+  name: checkout-api-5b8d7c9f4-v8m2q
+  namespace: shop-dev
+spec:
+  containers:
+    - name: app
+      image: harbor.acme.dev/acme/checkout-api:v1.42.0
+    - name: envoy
+      image: envoyproxy/envoy:v1.31.0
+status:
+  phase: Running
+  containerStatuses:
+    - name: app
+      restartCount: 1
+      state: {running: {startedAt: '2026-11-20T09:41:00Z'}}
+    - name: envoy
+      restartCount: 0
+      state: {running: {startedAt: '2026-11-20T09:41:00Z'}}
 `,
     ownerRefs: ['ReplicaSet/checkout-api-5b8d7c9f4'],
     appId: 'a-checkout',
@@ -1355,6 +1453,8 @@ status:
   },
 ]
 
+resources.push(...customResources)
+
 const nodeManifest = (name: string, version: string, ip: string) => `apiVersion: v1
 kind: Node
 metadata:
@@ -1421,6 +1521,7 @@ export const nodeDetails: Record<string, NodeDetail> = {
     externalIp: '—',
     labels: [
       'kubernetes.io/hostname=prod-node-01',
+      'eks.amazonaws.com/nodegroup=mainnode',
       'node-role.kubernetes.io/worker=',
       'topology.kubernetes.io/zone=az-a',
       'topology.kubernetes.io/region=cn-east',
@@ -1434,8 +1535,8 @@ export const nodeDetails: Record<string, NodeDetail> = {
       { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status', haveIssue: false },
     ],
     resources: [
-      { name: 'cpu', requestPercentage: '35%', limitPercentage: '60%', usagePercentage: '22%', allocatable: '4', capacity: '4' },
-      { name: 'memory', requestPercentage: '40%', limitPercentage: '70%', usagePercentage: '55%', allocatable: '16Gi', capacity: '16Gi' },
+      { name: 'cpu', requestPercentage: '35%', limitPercentage: '60%', usagePercentage: '22%', usage: '880m', allocatable: '4', capacity: '4' },
+      { name: 'memory', requestPercentage: '40%', limitPercentage: '70%', usagePercentage: '55%', usage: '8.8Gi', allocatable: '16Gi', capacity: '16Gi' },
       { name: 'ephemeral-storage', requestPercentage: '12%', limitPercentage: '20%', usagePercentage: '18%', allocatable: '100Gi', capacity: '120Gi' },
     ],
     pods: [
@@ -1455,7 +1556,7 @@ export const nodeDetails: Record<string, NodeDetail> = {
     createdAt: ago(20 * 24 * 60),
     internalIp: '10.20.0.12',
     externalIp: '—',
-    labels: ['kubernetes.io/hostname=prod-node-02', 'node-role.kubernetes.io/worker=', 'topology.kubernetes.io/zone=az-b'],
+    labels: ['kubernetes.io/hostname=prod-node-02', 'eks.amazonaws.com/nodegroup=mainnode-2', 'node-role.kubernetes.io/worker=', 'topology.kubernetes.io/zone=az-b'],
     annotations: ['node.alpha.kubernetes.io/ttl=0'],
     taints: [{ key: 'node.kubernetes.io/unschedulable', value: '', effect: 'NoSchedule' }],
     conditions: [
@@ -1465,8 +1566,8 @@ export const nodeDetails: Record<string, NodeDetail> = {
       { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status', haveIssue: false },
     ],
     resources: [
-      { name: 'cpu', requestPercentage: '68%', limitPercentage: '110%', usagePercentage: '74%', allocatable: '8', capacity: '8' },
-      { name: 'memory', requestPercentage: '71%', limitPercentage: '92%', usagePercentage: '83%', allocatable: '32Gi', capacity: '32Gi' },
+      { name: 'cpu', requestPercentage: '68%', limitPercentage: '110%', usagePercentage: '74%', usage: '5920m', allocatable: '8', capacity: '8' },
+      { name: 'memory', requestPercentage: '71%', limitPercentage: '92%', usagePercentage: '83%', usage: '26.56Gi', allocatable: '32Gi', capacity: '32Gi' },
       { name: 'ephemeral-storage', requestPercentage: '64%', limitPercentage: '88%', usagePercentage: '92%', allocatable: '180Gi', capacity: '200Gi' },
     ],
     pods: [
@@ -1484,7 +1585,7 @@ export const nodeDetails: Record<string, NodeDetail> = {
     createdAt: ago(9 * 24 * 60),
     internalIp: '10.20.0.21',
     externalIp: '—',
-    labels: ['kubernetes.io/hostname=dev-node-01', 'node-role.kubernetes.io/control-plane='],
+    labels: ['kubernetes.io/hostname=dev-node-01', 'eks.amazonaws.com/nodegroup=devnode', 'node-role.kubernetes.io/control-plane='],
     annotations: ['node.alpha.kubernetes.io/ttl=0'],
     taints: [{ key: 'node-role.kubernetes.io/control-plane', value: '', effect: 'NoSchedule' }],
     conditions: [
@@ -1493,8 +1594,8 @@ export const nodeDetails: Record<string, NodeDetail> = {
       { type: 'Ready', status: 'True', reason: 'KubeletReady', message: 'kubelet is posting ready status', haveIssue: false },
     ],
     resources: [
-      { name: 'cpu', requestPercentage: '18%', limitPercentage: '30%', usagePercentage: '12%', allocatable: '3', capacity: '3' },
-      { name: 'memory', requestPercentage: '22%', limitPercentage: '40%', usagePercentage: '35%', allocatable: '12Gi', capacity: '12Gi' },
+      { name: 'cpu', requestPercentage: '18%', limitPercentage: '30%', usagePercentage: '12%', usage: '360m', allocatable: '3', capacity: '3' },
+      { name: 'memory', requestPercentage: '22%', limitPercentage: '40%', usagePercentage: '35%', usage: '4.2Gi', allocatable: '12Gi', capacity: '12Gi' },
     ],
     pods: [
       { namespace: 'shop-dev', name: 'checkout-api-5b8d7c9f4-t1n9p', cpuRequest: '3%', cpuLimit: '6%', memRequest: '4%', memLimit: '8%', age: '12m' },
@@ -1505,6 +1606,24 @@ export const nodeDetails: Record<string, NodeDetail> = {
   },
 }
 
+// 节点概要和通用资源浏览器使用同一份初始 Manifest，后续写入也由 Mock API 同步。
+for (const detail of Object.values(nodeDetails)) {
+  const document = parseDocument(detail.manifest)
+  const pairs = (values: string[]) => Object.fromEntries(values.map(value => { const equal = value.indexOf('='); return [equal === -1 ? value : value.slice(0, equal), equal === -1 ? '' : value.slice(equal + 1)] }))
+  document.setIn(['metadata', 'labels'], pairs(detail.labels))
+  document.setIn(['metadata', 'annotations'], pairs(detail.annotations))
+  document.setIn(['spec', 'unschedulable'], detail.unschedulable)
+  document.setIn(['spec', 'taints'], detail.taints)
+  for (const resource of detail.resources.filter(row => row.name === 'cpu' || row.name === 'memory')) {
+    document.setIn(['status', 'capacity', resource.name], resource.capacity)
+    document.setIn(['status', 'allocatable', resource.name], resource.allocatable)
+  }
+  document.setIn(['status', 'conditions'], detail.conditions.map(({ haveIssue: _issue, ...condition }) => condition))
+  detail.manifest = document.toString()
+  const resource = resources.find(row => row.kind === 'Node' && row.ref.name === detail.name)
+  if (resource) resource.manifest = detail.manifest
+}
+
 export const events: Record<string, ResourceEvent[]> = {
   'uid-pod-2': [
     {
@@ -1512,6 +1631,7 @@ export const events: Record<string, ResourceEvent[]> = {
       reason: 'BackOff',
       message: 'Back-off restarting failed container app in pod payment-worker-6b5c4d3e2-q8w7r',
       count: 14,
+      firstSeenAt: ago(96),
       lastSeenAt: ago(8),
     },
     {
@@ -1519,6 +1639,7 @@ export const events: Record<string, ResourceEvent[]> = {
       reason: 'Unhealthy',
       message: 'Readiness probe failed: dial tcp 10.42.3.17:9090: connect: connection refused',
       count: 9,
+      firstSeenAt: ago(92),
       lastSeenAt: ago(12),
     },
     {
@@ -1580,6 +1701,44 @@ export const podLogs: Record<string, string[]> = {
   ],
 }
 
+/** Independent container histories; no fallback to another container's log content. */
+export const containerPodLogs: Record<string, string[]> = {
+  'uid-pod-checkout-replica/app': [
+    '2026-11-20T09:41:03.000Z INFO  replica server starting checkout-api v1.42.0 (Mock)',
+    '2026-11-20T09:41:04.000Z INFO  replica listening on :8080',
+    '2026-11-20T09:41:45.000Z WARN  replica payment client slow',
+    '2026-11-20T09:42:01.000Z INFO  replica metrics flush ok',
+  ],
+  'uid-pod-checkout-replica/envoy': [
+    '2026-11-20T09:41:03.000Z INFO  replica envoy proxy ready',
+    '2026-11-20T09:41:46.000Z ERROR replica envoy upstream timeout status=503',
+    '2026-11-20T09:42:01.000Z INFO  replica envoy status=200 recovered',
+  ],
+  'uid-pod-3/envoy': Array.from({ length: 160 }, (_, index) => `${new Date(Date.UTC(2026, 10, 20, 9, 40, index)).toISOString()} INFO  envoy request=${index + 1} upstream=checkout-api:8080 status=${index % 11 === 0 ? '503' : '200'} duration=12ms path=/api/checkout/preview user-agent=Mozilla/5.0 forwarded-for=10.42.1.20 trace_id=mock-proxy-${index + 1}`),
+  'uid-pod-3/migrate': [
+    '2026-11-20T09:40:00.000Z INFO  migration starting',
+    '2026-11-20T09:40:01.000Z INFO  migration version=42 complete',
+  ],
+  'uid-pod-3/debugger': [
+    '2026-11-20T09:43:00.000Z INFO  debugger attached (Mock)',
+    '2026-11-20T09:43:01.000Z \x1b[32mSUCCESS\x1b[0m diagnostic complete (Mock)',
+    '2026-11-20T09:43:02.000Z \x1b[31mERROR\x1b[0m demonstration only (Mock)',
+    'progress 10%\r\x1b[2Kprogress 100% (Mock)',
+    '<script>window.logMarkupExecuted = true</script> (literal Mock log)',
+  ],
+}
+export const previousPodLogs: Record<string, string[]> = {
+  'uid-pod-checkout-replica/app': [
+    '2026-11-20T09:40:30.000Z INFO  replica previous instance started',
+    '2026-11-20T09:40:59.000Z ERROR replica previous instance exited code=1',
+  ],
+  'uid-pod-2/app': [
+    '2026-11-20T09:42:00.000Z INFO  worker previous instance started',
+    '2026-11-20T09:42:05.000Z ERROR kafka connection timed out',
+    '2026-11-20T09:42:05.010Z INFO  previous instance exited code=1',
+  ],
+}
+
 const auditTarget = (kind: string, name: string) => `${kind}/${name}`
 
 export const auditEvents: AuditEvent[] = [
@@ -1623,6 +1782,7 @@ export const configMaps: ConfigMapEntry[] = [
   },
   {
     id: 'cm-checkout-dev',
+    mergeStrategy: 'patch',
     appId: 'a-checkout',
     environmentId: 'e-dev',
     name: 'checkout-api-config',
@@ -1631,6 +1791,7 @@ export const configMaps: ConfigMapEntry[] = [
   },
   {
     id: 'cm-checkout-prod',
+    mergeStrategy: 'patch',
     appId: 'a-checkout',
     environmentId: 'e-prod',
     name: 'checkout-api-config',
@@ -1642,7 +1803,7 @@ export const configMaps: ConfigMapEntry[] = [
     appId: 'a-payment',
     environmentId: null,
     name: 'payment-worker-config',
-    data: { QUEUE_NAME: 'payments', RETRY_LIMIT: '3' },
+    data: { QUEUE_NAME: '@{{payment-queue}}', RETRY_LIMIT: '3' },
     updatedAt: ago(600),
   },
 ]
@@ -1682,8 +1843,42 @@ export const configSecrets: SecretEntry[] = [
   },
 ]
 
+// 固定的本地历史示例；不从当前配置反推过去发布时的配置。
+for (const id of ['d-checkout-dev-1', 'd-checkout-dev-2']) {
+  const deployment = deployments.find((item) => item.id === id)!
+  const previous = id === 'd-checkout-dev-1'
+  deployment.configSnapshot = {
+    source: 'fixture', capturedAt: deployment.createdAt,
+    baseValues: { replicaCount: previous ? 1 : 2, containerPort: 8080, host: 'checkout.acme.dev' },
+    values: { replicaCount: 1, containerPort: 8080, host: 'checkout.acme.dev' },
+    configMaps: [{ id: `snapshot-${id}-cm`, appId: 'a-checkout', environmentId: 'e-dev', name: 'checkout-api-config', data: { LOG_LEVEL: previous ? 'info' : 'debug', CURRENCY: 'CNY', CACHE_TTL_SECONDS: previous ? '30' : '60' }, mountAs: 'env', updatedAt: deployment.createdAt }],
+    secrets: [{ id: `snapshot-${id}-secret`, appId: 'a-checkout', environmentId: null, name: 'checkout-api-secret', keys: ['DB_PASSWORD', 'API_TOKEN'], updatedAt: deployment.createdAt }],
+    target: { clusterId: 'c-dev', namespace: 'shop-dev', releaseName: 'checkout-api-dev' },
+    chartConfig: { workloadKind: 'Deployment', chartVersion: '1.4.0' },
+  }
+}
+
+// 独立的历史变量示例；旧 payment 发布仍保留缺少快照的状态。
+const scopedPaymentDeployment: Deployment = {
+  id: 'd-payment-dev-scoped', requestId: 'req-payment-scoped', appId: 'a-payment', bindingId: 'b-payment-dev',
+  artifactId: 'ar-899', imageRef: 'harbor.acme.dev/acme/payment-worker:v0.9.7', configVersion: 3,
+  status: 'succeeded', kind: 'deploy', helmRevision: 7, createdAt: ago(160), operator: '张运维', reason: null,
+  configSnapshot: {
+    source: 'fixture', capturedAt: ago(160),
+    baseValues: { replicaCount: 2, containerPort: 9090, env: { REGION: '@{{payment-region}}' } },
+    values: { replicaCount: 2, containerPort: 9090, env: { REGION: '@{{payment-region}}' } },
+    configMaps: [{ id: 'snapshot-payment-scoped-cm', appId: 'a-payment', environmentId: null, name: 'payment-worker-config', data: { QUEUE_NAME: '@{{payment-queue}}', RETRY_LIMIT: '3' }, updatedAt: ago(160) }],
+    secrets: [{ id: 'snapshot-payment-scoped-secret', appId: 'a-payment', environmentId: null, name: 'payment-worker-secret', keys: ['DB_PASSWORD', 'GATEWAY_KEY'], updatedAt: ago(160) }],
+    target: { clusterId: 'c-dev', namespace: 'shop-dev', releaseName: 'payment-worker' }, chartConfig: { workloadKind: 'Deployment', chartVersion: '1.4.0' },
+  },
+}
+const scopedPaymentSnapshot = scopedPaymentDeployment.configSnapshot!
+scopedPaymentSnapshot.variableSnapshot = captureConfigVariables(configDocument(scopedPaymentSnapshot.values, scopedPaymentSnapshot.configMaps, scopedPaymentSnapshot.secrets), { 'payment-region': 'cn-beijing', 'payment-queue': 'payments-legacy' })
+deployments.push(scopedPaymentDeployment)
+
 // ---- 查询辅助（页面直接引用，避免重复过滤逻辑） ----
 export const appById = (id: string): Application | undefined => applications.find((a) => a.id === id)
+export const stageRuns: StageRun[] = []
 export const projectById = (id: string): Project | undefined => projects.find((p) => p.id === id)
 export const envById = (id: string): Environment | undefined => environments.find((e) => e.id === id)
 export const clusterById = (id: string): Cluster | undefined => clusters.find((c) => c.id === id)

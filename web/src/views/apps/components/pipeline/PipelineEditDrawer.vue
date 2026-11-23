@@ -1,10 +1,23 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { getConfig, saveWorkflow } from '@/api'
-import type { AppConfig, CDDefinition, CIDefinition, Pipeline, Workflow } from '@/types'
+import { getConfig, listRegistries, listStageResources, saveWorkflow } from '@/api'
+import type { AppConfig, BuildConfig, CDDefinition, CIDefinition, CISource, DeploymentStageSettings, Pipeline, PipelineTask, Registry, StageResourceReferences, Workflow } from '@/types'
+import PipelineSourceFields from '@/components/application/PipelineSourceFields.vue'
+import PipelineBuildOverride from '@/components/application/PipelineBuildOverride.vue'
+import BuildPlatformConfirmation from '@/components/application/BuildPlatformConfirmation.vue'
+import { customPlatformsOf, normalizeBuildConfig } from '@/utils/buildOptions'
+import { gitMaterialsOf } from '@/utils/gitMaterials'
+import { ciSourcesOf, sourceError, validateBuildConfig } from '@/utils/pipelineBuild'
+import { isWebhookSource, sourceContextError } from '@/utils/gitSources'
+import { copyTasks, validatePipelineTasks } from '@/utils/pipelineTasks'
+import { emptyStageResources, stageResourceErrors } from '@/utils/stageResources'
+import { deploymentStageErrors, deploymentStageOf } from '@/utils/deploymentStage'
+import type { StageResourceOption } from '@/utils/stageResources'
+import { usePipelineDraft } from '@/composables/usePipelineDraft'
+import PipelineStageEditor from './PipelineStageEditor.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -24,7 +37,17 @@ const appId = computed(() => String(route.params.appId ?? ''))
 type StageTab = 'pre' | 'main' | 'post'
 
 const stageTab = ref<StageTab>('main')
-const branch = ref('')
+const sources = ref<CISource[]>([])
+const registries = ref<Registry[]>([])
+const buildOverride = ref<BuildConfig | null>(null)
+const savedBuildOverride = computed(() => props.pipeline?.kind === 'ci' ? (props.pipeline.definition as CIDefinition).buildOverride : null)
+const buildBlocked = shallowRef(false)
+const buildErrors = ref<Record<string, string>>({})
+const platformConfirmation = shallowRef(false)
+const customPlatforms = computed(() => buildOverride.value ? customPlatformsOf(buildOverride.value) : [])
+const submitted = ref(false)
+const configLoading = ref(false)
+let generation = 0
 const manual = ref(true)
 const push = ref(false)
 const triggerMode = ref<'manual' | 'on_ci_success'>('manual')
@@ -33,14 +56,33 @@ const error = ref('')
 const saving = ref(false)
 const config = ref<AppConfig | null>(null)
 const confirmDelete = ref(false)
+const preTasks = ref<PipelineTask[]>([])
+const postTasks = ref<PipelineTask[]>([])
+const preResources = ref<StageResourceReferences>(emptyStageResources())
+const postResources = ref<StageResourceReferences>(emptyStageResources())
+const resourceOptions = ref<StageResourceOption[]>([])
+const resourceScope = shallowRef('')
+const workerEnabled = shallowRef(false)
+const preSettings = shallowRef<DeploymentStageSettings>({ trigger: 'auto', runInEnvironment: false })
+const postSettings = shallowRef<DeploymentStageSettings>({ trigger: 'auto', runInEnvironment: false })
+const taskErrors = computed(() => validatePipelineTasks(preTasks.value, postTasks.value))
+watch([sources,buildOverride,preTasks,postTasks,preResources,postResources,preSettings,postSettings,triggerMode], () => { error.value = '' })
+const { dirty, discardVisible, markClean, resolveDiscard, requestClose } = usePipelineDraft({
+  visible: () => props.visible, saving, close,
+  snapshot: () => JSON.stringify({sources:sources.value,buildOverride:buildOverride.value,manual:manual.value,push:push.value,triggerMode:triggerMode.value,deployTimeout:deployTimeout.value,preTasks:preTasks.value,postTasks:postTasks.value,preResources:preResources.value,postResources:postResources.value,preSettings:preSettings.value,postSettings:postSettings.value}),
+})
+function moveTask(id: string): void {
+  const source = stageTab.value === 'pre' ? preTasks : postTasks
+  const destination = stageTab.value === 'pre' ? postTasks : preTasks
+  const task = source.value.find((item) => item.id === id)
+  if (!task) return
+  source.value = source.value.filter((item) => item.id !== id)
+  destination.value = [...destination.value, task]
+}
 
 const isCi = computed(() => props.pipeline?.kind === 'ci')
+const autoTriggerLabel = computed(() => sources.value.some(isWebhookSource) ? '自动触发（Webhook）' : '自动触发（Push）')
 const title = computed(() => (isCi.value ? '编辑构建流水线' : '编辑部署流水线'))
-const repoName = computed(() => {
-  const url = config.value?.gitConfig?.repositoryUrl ?? ''
-  const cleaned = url.replace(/\.git$/, '').replace(/\/+$/, '')
-  return cleaned.split('/').filter(Boolean).pop() ?? '—'
-})
 const triggerChoice = computed<'auto' | 'manual'>({
   get: () => (manual.value ? 'manual' : 'auto'),
   set: (value) => {
@@ -50,24 +92,51 @@ const triggerChoice = computed<'auto' | 'manual'>({
 })
 
 async function loadConfig(): Promise<void> {
-  if (!appId.value) return
+  const current = ++generation
+  configLoading.value = true
+  config.value = null
   try {
-    config.value = await getConfig(appId.value)
-  } catch {
-    config.value = null
-  }
+    const pipeline = props.pipeline
+    const [cfg, registryList, stageResources] = await Promise.all([
+      getConfig(appId.value), listRegistries(),
+      pipeline?.kind === 'cd' ? listStageResources(appId.value, pipeline.bindingId ?? '') : Promise.resolve(null),
+    ])
+    if (current !== generation) return
+    config.value = cfg
+    registries.value = registryList
+    resourceOptions.value = stageResources?.options ?? []
+    resourceScope.value = stageResources?.scope ?? ''
+    workerEnabled.value = stageResources?.workerEnabled ?? false
+    sources.value = ciSourcesOf(cfg, props.pipeline?.definition as CIDefinition)
+  } catch (err) {
+    if (current === generation) error.value = err instanceof Error ? err.message : '配置加载失败'
+  } finally { if (current === generation) { configLoading.value = false; markClean() } }
 }
 
 watch(
   () => [props.visible, props.pipeline?.id] as const,
   ([visible]) => {
-    if (!visible || !props.pipeline) return
+    platformConfirmation.value = false
+    if (!visible || !props.pipeline) { generation++; return }
     stageTab.value = 'main'
     error.value = ''
+    submitted.value = false
+    buildErrors.value = {}
+    sources.value = []
+    resourceOptions.value = []
+    resourceScope.value = ''
+    workerEnabled.value = false
+    const definition = props.pipeline.definition as CDDefinition
+    preSettings.value = deploymentStageOf(definition, 'pre')
+    postSettings.value = deploymentStageOf(definition, 'post')
+    preResources.value = JSON.parse(JSON.stringify(definition.preStageResources ?? emptyStageResources()))
+    postResources.value = JSON.parse(JSON.stringify(definition.postStageResources ?? emptyStageResources()))
+    preTasks.value = copyTasks(props.pipeline.definition.preTasks ?? [])
+    postTasks.value = copyTasks(props.pipeline.definition.postTasks ?? [])
     void loadConfig()
     if (props.pipeline.kind === 'ci') {
       const definition = props.pipeline.definition as CIDefinition
-      branch.value = definition.branch
+      buildOverride.value = definition.buildOverride ? JSON.parse(JSON.stringify(definition.buildOverride)) : null
       manual.value = definition.manual
       push.value = definition.push
     } else {
@@ -75,12 +144,14 @@ watch(
       triggerMode.value = definition.triggerMode
       deployTimeout.value = definition.deployTimeoutSeconds
     }
+    markClean()
   },
   { immediate: true },
 )
 
 function close(): void {
   confirmDelete.value = false
+  platformConfirmation.value = false
   emit('update:visible', false)
 }
 
@@ -96,20 +167,43 @@ function confirmRemove(): void {
   close()
 }
 
-async function save(): Promise<void> {
+async function save(confirmed = false): Promise<void> {
   const pipeline = props.pipeline
-  if (!pipeline) return
+  if (!pipeline || saving.value || configLoading.value || buildBlocked.value || !config.value) return
   error.value = ''
+  submitted.value = true
+  const invalidTask = [...preTasks.value,...postTasks.value].find(task=>taskErrors.value[task.id]?.length)
+  if (invalidTask) {
+    error.value = `${invalidTask.name || '任务'}：${taskErrors.value[invalidTask.id]!.join('；')}`
+    stageTab.value = preTasks.value.includes(invalidTask) ? 'pre' : 'post'
+    return
+  }
+  if (pipeline.kind === 'cd') {
+    for (const [stage, settings] of [['pre',preSettings.value],['post',postSettings.value]] as const) {
+      const message = deploymentStageErrors(settings, workerEnabled.value)[0]
+      if (message) { error.value = `${stage === 'pre' ? '前置阶段' : '后置阶段'}：${message}`; stageTab.value = stage; return }
+    }
+    for (const [stage, refs] of [['pre',preResources.value],['post',postResources.value]] as const) {
+      const message = stageResourceErrors(refs,resourceOptions.value)[0]
+      if (message) { error.value = message; stageTab.value = stage; return }
+    }
+  }
   if (pipeline.kind === 'ci') {
-    if (!branch.value.trim()) {
-      error.value = 'CI 分支不能为空'
+    const contextError = sourceContextError(sources.value, gitMaterialsOf(config.value))
+    if (contextError) { error.value = contextError; stageTab.value = 'main'; return }
+    if (!sources.value.length || sources.value.some(source => sourceError(source))) {
+      error.value = sources.value.map(sourceError).find(Boolean) || '请先配置 Git 源'
       return
     }
+    buildErrors.value = buildOverride.value ? validateBuildConfig(buildOverride.value, gitMaterialsOf(config.value)) : {}
+    if (Object.keys(buildErrors.value).length) { error.value = Object.values(buildErrors.value)[0]!; return }
     if (!manual.value && !push.value) {
       error.value = 'CI 至少保留一种触发方式'
       return
     }
   }
+  if (pipeline.kind === 'ci' && customPlatforms.value.length && confirmed !== true) { platformConfirmation.value = true; return }
+  platformConfirmation.value = false
   saving.value = true
   try {
     const current = await loadItems()
@@ -118,9 +212,13 @@ async function save(): Promise<void> {
       if (row.kind === 'ci') {
         const definition: CIDefinition = {
           ...(row.definition as CIDefinition),
-          branch: branch.value.trim(),
+          branch: sources.value[0]?.type === 'branch' ? sources.value[0].value.trim() : (row.definition as CIDefinition).branch,
+          materials: sources.value.map(source => ({...source, value: source.value.trim()})),
+          buildOverride: buildOverride.value ? normalizeBuildConfig(buildOverride.value) : null,
           manual: manual.value,
           push: push.value,
+          preTasks: copyTasks(preTasks.value),
+          postTasks: copyTasks(postTasks.value),
         }
         return { ...row, definition }
       }
@@ -128,11 +226,20 @@ async function save(): Promise<void> {
         ...(row.definition as CDDefinition),
         triggerMode: triggerMode.value,
         deployTimeoutSeconds: Math.round(deployTimeout.value),
+        preStageTrigger: preSettings.value.trigger,
+        postStageTrigger: postSettings.value.trigger,
+        runPreStageInEnv: preSettings.value.runInEnvironment,
+        runPostStageInEnv: postSettings.value.runInEnvironment,
+        preStageResources: JSON.parse(JSON.stringify(preResources.value)),
+        postStageResources: JSON.parse(JSON.stringify(postResources.value)),
+        preTasks: copyTasks(preTasks.value),
+        postTasks: copyTasks(postTasks.value),
       }
       return { ...row, definition }
     })
-    const saved = await saveWorkflow(appId.value, { version: props.version, items })
+    const saved = await saveWorkflow(appId.value, { version: props.version, items }, config.value.version)
     MessagePlugin.success(`已更新流水线 ${pipeline.id}（配置版本 v${saved.version}）`)
+    markClean()
     emit('saved', saved)
     close()
   } catch (err) {
@@ -151,7 +258,7 @@ async function loadItems(): Promise<Pipeline[]> {
 </script>
 
 <template>
-  <t-drawer :visible="visible" size="1024px" placement="right" :footer="false" @close="close">
+  <t-drawer :visible="visible" size="1024px" placement="right" :footer="false" :close-on-esc-keydown="!discardVisible && !confirmDelete" drawer-class-name="pipeline-edit" @close="requestClose">
     <template #header>
       <span>{{ title }}</span>
     </template>
@@ -171,15 +278,15 @@ async function loadItems(): Promise<Pipeline[]> {
 
       <t-alert v-if="error" theme="error" :message="error" />
 
-      <div class="pe__body">
-        <aside class="pe__rail">
+      <div class="pe__body" :class="{ 'pe__body--stages': stageTab !== 'main' }">
+        <aside v-if="stageTab === 'main'" class="pe__rail">
           <p class="pe__rail-title">{{ isCi ? '触发构建流水线' : '触发部署流水线' }}</p>
           <t-radio-group v-if="isCi" v-model="triggerChoice" class="pe__radios">
-            <t-radio value="auto">自动触发（Push）</t-radio>
+            <t-radio value="auto">{{ autoTriggerLabel }}</t-radio>
             <t-radio value="manual">手动触发</t-radio>
           </t-radio-group>
           <t-radio-group v-else v-model="triggerMode" class="pe__radios">
-            <t-radio value="on_ci_success">CI 成功后自动</t-radio>
+            <t-radio value="on_ci_success">{{ preTasks.length ? '前置阶段成功后自动' : 'CI 成功后自动' }}</t-radio>
             <t-radio value="manual">手动触发</t-radio>
           </t-radio-group>
 
@@ -189,64 +296,20 @@ async function loadItems(): Promise<Pipeline[]> {
           </div>
         </aside>
 
-        <section class="pe__main">
-          <template v-if="stageTab === 'main'">
+        <section class="pe__main" :class="{'pe__main--stages':stageTab!=='main'}">
+          <t-loading v-if="configLoading" size="small" text="读取配置…" />
+          <template v-else-if="stageTab === 'main'">
             <template v-if="isCi">
               <div class="pe__field">
                 <label>流水线名称 <em>*</em></label>
                 <t-input :value="pipeline?.id" readonly />
               </div>
 
-              <div class="pe__field">
-                <label>选择代码源</label>
-                <div class="pe__source">
-                  <span class="pe__source-icon"><t-icon name="code" size="15px" /></span>
-                  <span>{{ repoName }}</span>
-                </div>
-              </div>
-
-              <div class="pe__grid">
-                <div class="pe__field">
-                  <label>源类型 <em>*</em></label>
-                  <t-select
-                    :value="'branch'"
-                    :options="[{ label: '分支固定', value: 'branch' }]"
-                    disabled
-                  />
-                </div>
-                <div class="pe__field">
-                  <label>分支名称 <em>*</em></label>
-                  <t-input v-model="branch" placeholder="main" />
-                </div>
-              </div>
-
-              <section class="pe__card">
-                <div class="pe__card-head">
-                  <div>
-                    <p class="pe__card-title">覆盖选项</p>
-                    <p class="pe__card-desc">镜像仓库与 Dockerfile 继承应用构建配置，本流水线不单独覆盖。</p>
-                  </div>
-                  <t-button size="small" variant="outline" disabled>允许覆盖</t-button>
-                </div>
-                <div class="pe__grid">
-                  <div class="pe__readonly">
-                    <span>镜像 Repository</span>
-                    <b>{{ config?.buildConfig?.imageRepository || '—' }}</b>
-                  </div>
-                  <div class="pe__readonly">
-                    <span>Dockerfile 路径</span>
-                    <b>{{ config?.buildConfig?.dockerfile || '—' }}</b>
-                  </div>
-                  <div class="pe__readonly">
-                    <span>Context 路径</span>
-                    <b>{{ config?.buildConfig?.context || '—' }}</b>
-                  </div>
-                  <div class="pe__readonly">
-                    <span>目标平台</span>
-                    <b>{{ config?.buildConfig?.platform || '未设置（使用构建配置）' }}</b>
-                  </div>
-                </div>
-              </section>
+              <t-loading v-if="configLoading" size="small" text="读取配置…" />
+              <template v-else-if="config">
+                <PipelineSourceFields v-model="sources" :materials="gitMaterialsOf(config)" :disabled="saving" :submitted="submitted" />
+                <PipelineBuildOverride v-model="buildOverride" :saved-config="savedBuildOverride" :config="config" :registries="registries" :errors="buildErrors" :disabled="saving" @blocked="buildBlocked = $event" />
+              </template>
             </template>
 
             <template v-else>
@@ -261,7 +324,7 @@ async function loadItems(): Promise<Pipeline[]> {
                 </div>
                 <div class="pe__field">
                   <label>目标环境</label>
-                  <t-input value="来自环境绑定（只读）" readonly />
+                  <t-input :value="resourceScope || '读取环境绑定…'" readonly />
                 </div>
               </div>
               <p class="pe__hint">镜像 digest 在发布确认时固定；目标 Namespace / Cluster 由环境绑定决定。</p>
@@ -269,23 +332,17 @@ async function loadItems(): Promise<Pipeline[]> {
           </template>
 
           <template v-else>
-            <section class="pe__card">
-              <p class="pe__card-title">{{ stageTab === 'pre' ? '前置阶段' : '后置阶段' }}</p>
-              <p class="pe__card-desc">
-                {{ stageTab === 'pre' ? '前置阶段（Pre-deployment）' : '后置阶段（Post-deployment）' }}
-                首版仅支持内置校验步骤，自定义脚本任务不在本期范围。
-              </p>
-              <p class="pe__card-desc">保存主阶段不会触发执行；发布仍由「构建发布」页发起。</p>
-            </section>
+            <PipelineStageEditor v-if="stageTab === 'pre'" v-model="preTasks" stage="pre" v-model:resources="preResources" v-model:settings="preSettings" :worker-enabled="workerEnabled" :resource-options="resourceOptions" :resource-scope="resourceScope" :is-ci="isCi" :preceding="[]" :errors="taskErrors" :submitted="submitted" @move="moveTask" />
+            <PipelineStageEditor v-else v-model="postTasks" stage="post" v-model:resources="postResources" v-model:settings="postSettings" :worker-enabled="workerEnabled" :resource-options="resourceOptions" :resource-scope="resourceScope" :is-ci="isCi" :preceding="preTasks" :errors="taskErrors" :submitted="submitted" @move="moveTask" />
           </template>
         </section>
       </div>
 
       <div class="pe__footer">
         <t-button variant="text" theme="danger" @click="requestDelete">删除流水线</t-button>
-        <span class="pe__footer-spacer" />
-        <t-button variant="outline" @click="close">取消</t-button>
-        <t-button theme="primary" :loading="saving" :disabled="stageTab !== 'main'" @click="save">
+        <span class="pe__footer-spacer" /><span v-if="dirty" class="pe__dirty">有未保存的修改</span>
+        <t-button variant="outline" :disabled="saving" @click="requestClose">取消</t-button>
+          <t-button theme="primary" :loading="saving" :disabled="configLoading || buildBlocked || !config" @click="save()">
           更新流水线
         </t-button>
       </div>
@@ -303,20 +360,28 @@ async function loadItems(): Promise<Pipeline[]> {
         </p>
         <p class="pe__delete-text">已产生的构建与发布历史不受影响。</p>
       </t-dialog>
+      <t-dialog :visible="discardVisible" header="放弃未保存的流水线修改？" confirm-btn="放弃修改" cancel-btn="继续编辑" :close-on-overlay-click="false" @confirm="resolveDiscard(true)" @close="resolveDiscard(false)">
+        <p>离开后，任务、变量和构建配置的草稿将被丢弃。</p>
+      </t-dialog>
+      <BuildPlatformConfirmation :visible="platformConfirmation" :platforms="customPlatforms" :loading="saving" @cancel="platformConfirmation = false" @confirm="save(true)" />
     </div>
   </t-drawer>
 </template>
 
 <style scoped>
+:global(.pipeline-edit .t-drawer__body){padding:0;overflow:hidden}
 .pe {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
 }
 .pe__tabs {
   display: flex;
   gap: 24px;
-  margin: -4px 0 16px;
+  flex: none;
+  margin: 0;
+  padding: 8px 20px 0;
   border-bottom: 1px solid #e6e9ef;
 }
 .pe__tab {
@@ -348,11 +413,18 @@ async function loadItems(): Promise<Pipeline[]> {
   grid-template-columns: 240px minmax(0, 1fr);
   gap: 24px;
   min-height: 0;
+  overflow: auto;
+  padding: 20px;
+  align-items: start;
 }
 .pe__rail {
   padding-right: 20px;
   border-right: 1px solid #e6e9ef;
 }
+.pe__body--stages { grid-template-columns: minmax(0, 1fr); padding: 0; overflow: hidden; align-items: stretch; }
+.pe__main.pe__main--stages { display:flex; min-height:0; padding-bottom:0; }
+.pe > .t-alert { flex: none; }
+.pe__dirty { font-size: 12px; color: #767d84; }
 .pe__rail-title {
   margin: 0 0 12px;
   color: #767d84;
@@ -363,7 +435,11 @@ async function loadItems(): Promise<Pipeline[]> {
 .pe__radios {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 12px;
+}
+.pe__radios :deep(.t-radio) {
+  margin: 0;
 }
 .pe__help {
   margin-top: 28px;
@@ -482,7 +558,7 @@ async function loadItems(): Promise<Pipeline[]> {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding-top: 16px;
+  padding: 12px 20px;
   border-top: 1px solid #e6e9ef;
 }
 .pe__footer-spacer {

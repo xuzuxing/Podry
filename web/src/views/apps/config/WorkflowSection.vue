@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { ciGraphSource } from '@/utils/pipelineBuild'
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { getApplication, getConfig, getWorkflow, listBindings, listEnvironments, saveWorkflow } from '@/api'
@@ -29,6 +30,7 @@ type TemplateKey = 'build_deploy' | 'build_only' | 'external_image'
 type TriggerMode = 'manual' | 'on_ci_success'
 
 const route = useRoute()
+const router = useRouter()
 const appId = computed(() => String(route.params.appId ?? ''))
 
 const workflow = ref<Workflow | null>(null)
@@ -58,14 +60,23 @@ function openEdit(item: Pipeline): void {
   editItem.value = item
   editVisible.value = true
 }
+watch([loading, () => route.query.pipeline], async ([busy, id]) => {
+  if (busy || !workflow.value || !id) return
+  const pipeline = workflow.value.items.find(item => item.id === id)
+  const owner = appId.value
+  // 先消化深链参数再打开，避免查询参数变化触发抽屉的路由关闭保护。
+  await router.replace({ query: { ...route.query, pipeline: undefined } })
+  if (owner !== appId.value || route.name !== 'config-workflow') return
+  if (pipeline) openEdit(pipeline)
+  else MessagePlugin.warning('该流水线已不存在，请在工作流中重新选择')
+})
 
-const ciManual = ref(true)
-const ciPush = ref(false)
+const ciTriggers = ref<Record<string, { manual: boolean; push: boolean }>>({})
 const cdTriggers = ref<Record<string, TriggerMode>>({})
 const triggerError = ref('')
 
 const hasWorkflow = computed(() => (workflow.value?.items.length ?? 0) > 0)
-const ciItem = computed<Pipeline | null>(() => workflow.value?.items.find((item) => item.kind === 'ci') ?? null)
+const ciItems = computed<Pipeline[]>(() => (workflow.value?.items ?? []).filter((item) => item.kind === 'ci'))
 const cdItems = computed<Pipeline[]>(() => (workflow.value?.items ?? []).filter((item) => item.kind === 'cd'))
 const templateNeedsBranch = computed(() => templateKey.value !== 'external_image')
 const templateNeedsEnv = computed(() => templateKey.value !== 'build_only')
@@ -77,7 +88,8 @@ const triggerDirty = computed(() => {
   return items.some((item) => {
     const definition = item.definition
     if (isCIDefinition(definition)) {
-      return definition.manual !== ciManual.value || definition.push !== ciPush.value
+      const trigger = ciTriggers.value[item.id]
+      return definition.manual !== trigger?.manual || definition.push !== trigger?.push
     }
     return definition.triggerMode !== (cdTriggers.value[item.id] ?? 'manual')
   })
@@ -96,10 +108,6 @@ function isCIDefinition(definition: CIDefinition | CDDefinition): definition is 
 }
 
 /** 仓库地址 → Devtron 的 `/repo` 形式 */
-function repoName(url: string): string {
-  const trimmed = url.replace(/\.git$/, '').replace(/[/:]+$/, '')
-  return trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
-}
 
 function triggerOf(item: Pipeline): 'MANUAL' | 'AUTO' {
   if (isCIDefinition(item.definition)) return item.definition.manual ? 'MANUAL' : 'AUTO'
@@ -107,39 +115,25 @@ function triggerOf(item: Pipeline): 'MANUAL' | 'AUTO' {
 }
 
 const graphRows = computed<TriggerRow[]>(() => {
-  const git = config.value?.gitConfig ?? null
-  const repo = repoName(git?.repositoryUrl ?? '')
   const items = workflow.value?.items ?? []
-  const source = git && repo
-    ? { kind: 'git' as const, repo, branch: git.branch }
-    : { kind: 'webhook' as const, repo: 'External source', branch: '' }
-  const ciItemRow = items.find((item) => item.kind === 'ci')
-  const ciNodeData = ciItemRow
-    ? {
-        id: ciItemRow.id,
-        name: ciDisplayName(appId.value, ciItemRow.id),
-        trigger: triggerOf(ciItemRow),
-      }
-    : null
-  const cdNodes = items
-    .filter((item) => item.kind === 'cd')
-    .map((cd) => ({
-      id: cd.id,
-      bindingId: cd.bindingId ?? '',
-      environment: envNameOfBinding(cd.bindingId),
-      strategy: 'rolling',
-      trigger: triggerOf(cd),
+  const cis = items.filter((item) => item.kind === 'ci')
+  const cds = items.filter((item) => item.kind === 'cd')
+  const cdNode = (cd: Pipeline) => ({
+    id: cd.id, bindingId: cd.bindingId ?? '', environment: envNameOfBinding(cd.bindingId),
+    strategy: 'rolling', trigger: triggerOf(cd),
+  })
+  const rows: TriggerRow[] = cis.map((ci) => ({
+    key: ci.id, name: workflowDisplayName(appId.value, ci.id),
+    source: ciGraphSource(config.value, ci.definition as CIDefinition),
+    ci: { id: ci.id, name: ciDisplayName(appId.value, ci.id), trigger: triggerOf(ci) },
+    cds: cds.filter((cd) => (cd.definition as CDDefinition).upstreamPipelineId === ci.id).map(cdNode),
+  }))
+  cds.filter((cd) => !cis.some((ci) => ci.id === (cd.definition as CDDefinition).upstreamPipelineId))
+    .forEach((cd) => rows.push({
+      key: cd.id, name: workflowDisplayName(appId.value, cd.id),
+      source: { kind: 'webhook', repo: 'External source', branch: '' }, ci: null, cds: [cdNode(cd)],
     }))
-  if (!ciNodeData && !cdNodes.length) return []
-  return [
-    {
-      key: 'main',
-      name: workflowDisplayName(appId.value, ciNodeData?.id ?? cdNodes[0].id),
-      source,
-      ci: ciNodeData,
-      cds: cdNodes,
-    },
-  ]
+  return rows
 })
 
 function onPipelineSaved(saved: Workflow): void {
@@ -181,7 +175,10 @@ async function onGraphRemove(id: string): Promise<void> {
   }
 }
 
-function onGraphAdd(): void {
+const addUpstreamId = ref<string | null>(null)
+
+function onGraphAdd(upstreamId: string): void {
+  addUpstreamId.value = workflow.value?.items.some((item) => item.id === upstreamId && item.kind === 'ci') ? upstreamId : null
   templateKey.value = 'external_image'
   createError.value = ''
   createVisible.value = true
@@ -219,6 +216,7 @@ async function load(): Promise<void> {
 }
 
 function openCreate(): void {
+  addUpstreamId.value = null
   templateKey.value = 'build_deploy'
   templateBranch.value = config.value?.gitConfig?.branch ?? 'main'
   templateEnvIds.value = environments.value
@@ -245,7 +243,7 @@ async function createWorkflow(): Promise<void> {
   saving.value = true
   try {
     const stamp = String(Date.now())
-    const items: Pipeline[] = []
+    const items: Pipeline[] = [...current.items]
     let ciId: string | null = null
     if (templateKey.value !== 'external_image') {
       ciId = `pl-ci-${stamp}`
@@ -265,7 +263,7 @@ async function createWorkflow(): Promise<void> {
         const binding = bindings.value.find((item) => item.environmentId === envId) ?? bindings.value[0]
         const definition: CDDefinition = {
           triggerMode: 'manual',
-          upstreamPipelineId: ciId,
+          upstreamPipelineId: ciId ?? addUpstreamId.value,
           deployTimeoutSeconds: 600,
         }
         items.push({
@@ -299,14 +297,12 @@ async function createWorkflow(): Promise<void> {
 
 function openTrigger(): void {
   const items = workflow.value?.items ?? []
-  ciManual.value = true
-  ciPush.value = false
+  ciTriggers.value = {}
   const next: Record<string, TriggerMode> = {}
   items.forEach((item) => {
     const definition = item.definition
     if (isCIDefinition(definition)) {
-      ciManual.value = definition.manual
-      ciPush.value = definition.push
+      ciTriggers.value[item.id] = { manual: definition.manual, push: definition.push }
     } else {
       next[item.id] = definition.triggerMode
     }
@@ -327,7 +323,7 @@ function closeTrigger(): void {
 async function saveTrigger(): Promise<void> {
   const current = workflow.value
   if (!current) return
-  if (ciItem.value && !ciManual.value && !ciPush.value) {
+  if (ciItems.value.some((item) => !ciTriggers.value[item.id]?.manual && !ciTriggers.value[item.id]?.push)) {
     triggerError.value = 'CI 至少保留一种触发方式'
     return
   }
@@ -337,7 +333,7 @@ async function saveTrigger(): Promise<void> {
     const items: Pipeline[] = current.items.map((item) => {
       const definition = item.definition
       if (isCIDefinition(definition)) {
-        const nextCI: CIDefinition = { ...definition, manual: ciManual.value, push: ciPush.value }
+        const nextCI: CIDefinition = { ...definition, ...ciTriggers.value[item.id] }
         return { ...item, definition: nextCI }
       }
       const nextCD: CDDefinition = { ...definition, triggerMode: cdTriggers.value[item.id] ?? 'manual' }
@@ -514,18 +510,19 @@ watch(appId, load, { immediate: true })
     <t-dialog v-model:visible="triggerVisible" header="更新触发方式" :footer="false" width="520px" @close="closeTrigger">
       <div class="dlg">
         <t-alert v-if="triggerError" theme="error" :message="triggerError" />
-        <section v-if="ciItem" class="dlg__group">
-          <p class="dlg__title">CI 触发</p>
+        <template v-if="triggerVisible"><section v-for="ci in ciItems" :key="ci.id" class="dlg__group">
+          <p class="dlg__title">{{ ciDisplayName(appId, ci.id) }} · CI 触发</p>
           <div class="dlg__row">
             <span>手动触发</span>
-            <t-switch v-model="ciManual" />
+            <t-switch v-model="ciTriggers[ci.id]!.manual" />
           </div>
           <div class="dlg__row">
             <span>Push 触发</span>
-            <t-switch v-model="ciPush" />
+            <t-switch v-model="ciTriggers[ci.id]!.push" />
           </div>
           <p class="u-dim">CI 至少保留一种触发方式；Push 触发需在仓库侧配置 Webhook 凭据。</p>
         </section>
+        </template>
         <section v-if="cdItems.length > 0" class="dlg__group">
           <p class="dlg__title">CD 触发</p>
           <div v-for="item in cdItems" :key="item.id" class="dlg__row">
@@ -560,10 +557,13 @@ watch(appId, load, { immediate: true })
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
+  padding: 24px;
 }
 /* ---- Devtron Workflow Editor 头部 ---- */
 .wfhead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -587,6 +587,7 @@ watch(appId, load, { immediate: true })
 }
 .wfhead__actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }

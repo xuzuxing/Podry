@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
 import { listClusters } from '@/api'
@@ -35,12 +35,17 @@ const connectionTones: Record<ConnectionStatus, ClusterRow['connectionTone']> = 
 }
 
 const router = useRouter()
+const route = useRoute()
 
 const clusters = ref<Cluster[]>([])
 const loading = ref(false)
 const error = ref('')
 const keyword = ref('')
 const statusFilter = ref('')
+// 概览中的不可达集群入口通过 URL 定位，并在前进/后退时恢复。
+watch(() => route.query.status, status => {
+  statusFilter.value = ['connected', 'unavailable', 'unknown', 'unreachable'].includes(String(status)) ? String(status) : ''
+}, { immediate: true })
 const refreshedAt = ref(Date.now())
 const now = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | undefined
@@ -50,6 +55,7 @@ const statusOptions = [
   { label: '健康', value: 'connected' },
   { label: '不可用', value: 'unavailable' },
   { label: '未检测', value: 'unknown' },
+  { label: '连接失败 / 未检测', value: 'unreachable' },
 ]
 
 const columns = [
@@ -68,7 +74,7 @@ const rows = computed<ClusterRow[]>(() =>
   clusters.value
     .filter((cluster) => {
       if (keyword.value && !cluster.name.toLowerCase().includes(keyword.value.trim().toLowerCase())) return false
-      if (statusFilter.value && cluster.connectionStatus !== statusFilter.value) return false
+      if (statusFilter.value === 'unreachable' ? cluster.connectionStatus === 'connected' : statusFilter.value && cluster.connectionStatus !== statusFilter.value) return false
       return true
     })
     .map((cluster) => ({

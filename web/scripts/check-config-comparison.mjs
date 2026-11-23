@@ -1,0 +1,67 @@
+// 对比目录、历史归属、缺失快照和有效配置；不验证真实 Helm 渲染或部署。
+import assert from 'node:assert/strict'
+import { createServer } from 'vite'
+const server = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+let count = 0
+function check(name, value) { assert.ok(value, name); count++; console.log('PASS ' + name) }
+try {
+  const api = await server.ssrLoadModule('/src/api/index.ts')
+  const db = await server.ssrLoadModule('/src/mock/data.ts')
+  const helper = await server.ssrLoadModule('/src/utils/configComparison.ts')
+  const { resolveComparisonSide: resolve, comparisonFiles: files, comparisonValue: value, comparisonVersionOptions: versions, comparableValue, configurationDiffRows: rows } = helper
+  const catalog = await api.getConfigComparisonCatalog('a-checkout')
+  const side = (environment, version = 'saved', source = catalog) => resolve(source, { environment, version })
+  check('对比目录按应用收敛', catalog.bindings.every(item => item.appId === 'a-checkout') && catalog.deployments.every(item => item.appId === 'a-checkout') && catalog.configMaps.every(item => item.appId === 'a-checkout') && catalog.secrets.every(item => item.appId === 'a-checkout'))
+  check('环境目录不带入未绑定环境', catalog.environments.every(item => catalog.bindings.some(binding => binding.environmentId === item.id)))
+  await assert.rejects(api.getConfigComparisonCatalog('missing'), /应用配置不存在/); count++; console.log('PASS 无效应用拒绝加载')
+  check('基础配置只提供当前已保存版本', versions(catalog, 'base').length === 1 && versions(catalog, 'base')[0].value === 'saved')
+  const options = versions(catalog, 'e-dev')
+  check('环境版本提供已保存及当前部署与历史', options.some(item => item.value === 'saved') && options.some(item => item.value === 'deployed') && options.some(item => item.value === 'history:d-checkout-dev-1'))
+  check('历史按创建时间降序', options.findIndex(item => item.value === 'history:d-checkout-dev-2') < options.findIndex(item => item.value === 'history:d-checkout-dev-1'))
+  check('无效环境不提供版本选项', versions(catalog, 'e-missing').length === 0)
+  const base = side('base'), saved = side('e-dev'), current = side('e-dev', 'deployed'), previous = side('e-dev', 'history:d-checkout-dev-1')
+  check('已保存配置合并部署覆盖', saved.document.values.replicaCount === 1 && base.document.values.replicaCount === 2)
+  check('ConfigMap 合并基础继承和环境覆盖', saved.document.configmaps['checkout-api-config'].data.LOG_LEVEL === 'debug' && saved.document.configmaps['checkout-api-config'].data.CURRENCY === 'CNY')
+  check('当前部署读取绑定记录快照', current.deploymentId === 'd-checkout-dev-2' && current.notice.includes('本地示例快照'))
+  check('历史读取独立快照', previous.document.configmaps['checkout-api-config'].data.LOG_LEVEL === 'info')
+  check('基础配置不能选择历史', side('base', 'history:d-checkout-dev-1').error.includes('没有部署历史'))
+  check('跨环境历史不能串用', side('e-prod', 'history:d-checkout-dev-1').error.includes('不属于'))
+  check('跨应用历史不能串用', side('e-dev', 'history:d-payment-dev-1').document === null)
+  check('缺失记录不回退最新版本', side('e-dev', 'history:missing').document === null)
+  check('缺失快照不回填当前数据', side('e-staging', 'deployed').error.includes('未保存配置快照') && side('e-staging', 'deployed').document === null)
+  check('无效版本有明确错误', side('e-dev', 'draft').error.includes('版本无效'))
+  check('无效环境有明确错误', side('missing').error.includes('尚未绑定'))
+  check('Secret 对比只含键和挂载方式', saved.document.secrets['checkout-api-secret'].data.DB_PASSWORD === '••••••' && !('keys' in saved.document.secrets['checkout-api-secret']))
+  const poisoned = structuredClone(catalog)
+  poisoned.deployments.find(item => item.id === 'd-checkout-dev-2').configSnapshot.secrets[0].data = { DB_PASSWORD: 'never-render-this' }
+  check('旧 Secret 快照额外明文不参与对比', !JSON.stringify(side('e-dev', 'deployed', poisoned)).includes('never-render-this'))
+  check('历史差异包含发生变化的配置文件', files(previous, current).some(item => item.type === 'configmaps' && item.changed))
+  check('快照无法解析时不生成假文件', files(side('e-staging', 'deployed'), saved).length === 0)
+  check('参数类型改变算差异', rows({ value: 1, flag: false, nil: null }, { value: '1', flag: 'false', nil: 'null' }).filter(item => item.changed).length === 3)
+  check('点号键和嵌套键不混用', rows({ 'a.b': 'flat' }, { a: { b: 'nested' } }).length === 2)
+  check('空对象与空数组算差异', rows({ value: {} }, { value: [] })[0].changed)
+  check('新增移除保留标记', rows({ old: 1 }, { added: 2 }).some(item => item.added) && rows({ old: 1 }, { added: 2 }).some(item => item.removed))
+  check('对象键顺序不制造差异', comparableValue({ a: 1, b: 2 }) === comparableValue({ b: 2, a: 1 }))
+  check('数组顺序变化算差异', comparableValue([1, 2]) !== comparableValue([2, 1]))
+  check('constructor 等键不与原型属性混用', rows({}, { constructor: 'added' })[0].added)
+  check('快照返回值可修改且不影响目录', (() => { current.document.values.replicaCount = 999; return side('e-dev', 'deployed').document.values.replicaCount === 1 })())
+  const mutable = await api.getConfigComparisonCatalog('a-checkout')
+  mutable.config.deployValues.replicaCount = 777; mutable.deployments[0].configSnapshot.values.replicaCount = 777
+  const fresh = await api.getConfigComparisonCatalog('a-checkout')
+  check('API 返回深副本隔离', fresh.config.deployValues.replicaCount === 2 && fresh.deployments[0].configSnapshot.values.replicaCount === 1)
+  const record = db.deployments.find(item => item.id === 'd-checkout-dev-1')
+  const more = Array.from({ length: 55 }, (_, index) => ({ ...structuredClone(record), id: `comparison-history-${index}`, createdAt: new Date(Date.now() + index * 1000).toISOString() }))
+  db.deployments.push(...more)
+  const full = await api.getConfigComparisonCatalog('a-checkout')
+  check('目录包含超过 50 条的全部历史', full.deployments.length > 50 && versions(full, 'e-dev').some(item => item.value === 'history:d-checkout-dev-1'))
+  check('分页之外的历史仍可选择', !!side('e-dev', 'history:d-checkout-dev-1', full).document)
+  check('选择不存在的条目返回空对象且不借用其他文件', Object.keys(value(previous, 'configmaps', 'missing')).length === 0)
+  const added = structuredClone(saved)
+  added.document.configmaps['environment-only'] = { name: 'environment-only', data: { KEY: 'value' } }
+  check('仅一侧存在的文件标记新增与移除', files(saved, added).find(item => item.name === 'environment-only').added && files(added, saved).find(item => item.name === 'environment-only').removed)
+  db.appConfigs['a-checkout'].deployValues.replicaCount = 8
+  check('后续配置更改不污染已加载历史', previous.document.values.replicaCount === 1)
+  check('旧目录读取保持同一份快照', side('base').document.values.replicaCount === 2)
+  check('刷新目录可以读取新配置', side('base', 'saved', await api.getConfigComparisonCatalog('a-checkout')).document.values.replicaCount === 8)
+  console.log(`Completed ${count} config comparison Mock checks`)
+} finally { await server.close() }

@@ -1,23 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import BuildSourceSnapshot from '@/components/application/BuildSourceSnapshot.vue'
+import ArtifactSummaryCard from '@/components/application/ArtifactSummaryCard.vue'
+import ArtifactDetailsDrawer from '@/components/application/ArtifactDetailsDrawer.vue'
+import { artifactImageLabel } from '@/utils/artifactDetails'
+import HistoryLogViewer from '@/components/application/history/HistoryLogViewer.vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   cancelBuild,
   getBuild,
   getBuildLogs,
-  getConfig,
   getWorkflow,
   listArtifacts,
   listBuilds,
-  listCommits,
   MockError,
   retryBuild,
 } from '@/api'
 import ErrorState from '@/components/ErrorState.vue'
+import ArtifactMetadataDialog from '@/components/application/ArtifactMetadataDialog.vue'
 import { useSessionStore } from '@/stores/session'
-import type { AppConfig, Artifact, Build, BuildStatus, GitCommit } from '@/types'
+import type { Artifact, Build, BuildStatus, Pipeline } from '@/types'
 import { fmtTime, logAvailabilityMap } from '@/utils/format'
 
 import BuildStatusIcon from './components/buildHistory/BuildStatusIcon.vue'
@@ -32,6 +36,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 ]
 
 const route = useRoute()
+const router = useRouter()
 const session = useSessionStore()
 const appId = computed(() => String(route.params.appId ?? ''))
 
@@ -50,15 +55,27 @@ const logsLoading = ref(false)
 const logsError = ref('')
 const logsUnavailable = ref(false)
 
-const activeTab = ref<TabKey>('logs')
+const activeTab = computed<TabKey>(() => {
+  const value = route.query.tab
+  return value === 'logs' || value === 'source' || value === 'artifacts' ? value : detail.value?.artifactId ? 'artifacts' : 'logs'
+})
+function selectTab(tab: TabKey): void { void router.replace({ query: { ...route.query, tab } }) }
 const acting = ref(false)
 
-const config = ref<AppConfig | null>(null)
-const commits = ref<GitCommit[]>([])
-const ciPipelineId = ref('')
+const ciPipelines = ref<Pipeline[]>([])
+const hasUnassigned = ref(false)
+const metaLoading = ref(true)
+const pipelineOptions = computed(() => [
+  ...ciPipelines.value.map((item) => ({ label: ciDisplayName(appId.value, item.id), value: item.id })),
+  ...(hasUnassigned.value || !ciPipelines.value.length ? [{ label: '未关联流水线的历史记录', value: '__unassigned__' }] : []),
+])
+const ciPipelineId = computed(() => pipelineOptions.value.some((item) => item.value === route.query.pipeline)
+  ? String(route.query.pipeline) : pipelineOptions.value[0]?.value ?? '')
 
 const operatorName = computed(() => session.user?.name || '张运维')
 const canCancel = computed(() => detail.value?.status === 'running' || detail.value?.status === 'queued')
+const canRetry = computed(() => Boolean(detail.value && !['running', 'queued', 'canceling'].includes(detail.value.status)
+  && ciPipelines.value.some((item) => item.id === detail.value?.pipelineId && item.enabled)))
 const logsText = computed(() => logs.value.join('\n'))
 const logNote = computed(() => {
   const current = detail.value
@@ -72,29 +89,10 @@ const artifact = computed<Artifact | null>(() => {
   return artifacts.value.find((item) => item.id === artifactId) ?? null
 })
 
-const pipelineName = computed(() => ciDisplayName(appId.value, ciPipelineId.value || appId.value))
-const pipelineOptions = computed(() => [{ label: pipelineName.value, value: pipelineName.value }])
-
-const commitInfo = computed<GitCommit | null>(() => {
-  const sha = detail.value?.commitSha
-  if (!sha) return null
-  return commits.value.find((item) => item.sha === sha) ?? null
-})
 const commitChip = computed(() => detail.value?.commitSha.slice(0, 7) ?? '')
-const commitAuthor = computed(() => commitInfo.value?.authorName ?? operatorName.value)
-const commitTime = computed(() => commitInfo.value?.committedAt ?? detail.value?.createdAt ?? '')
 
-const repoName = computed(() => {
-  const url = config.value?.gitConfig?.repositoryUrl ?? ''
-  return url.replace(/\.git$/, '').replace(/[/:]+$/, '').split(/[/:]/).filter(Boolean).pop() ?? '—'
-})
-const branchName = computed(() => config.value?.gitConfig?.branch ?? '—')
 
-const imageTag = computed(() => {
-  const imageRef = artifact.value?.imageRef ?? ''
-  const tagAt = imageRef.lastIndexOf(':')
-  return tagAt > imageRef.lastIndexOf('/') ? imageRef.slice(tagAt + 1) : ''
-})
+const imageTag = computed(() => artifactImageLabel(artifact.value?.imageRef ?? ''))
 
 const runTitle = computed(() => {
   switch (detail.value?.status) {
@@ -168,32 +166,40 @@ function errorTextOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback
 }
 
-async function loadList(): Promise<void> {
+let listToken = 0
+async function loadList(preferredId?: string): Promise<void> {
+  const token = ++listToken
   listLoading.value = true
   listError.value = ''
   try {
-    const result = await listBuilds(appId.value)
+    const result = await listBuilds(appId.value, ciPipelineId.value)
+    if (token !== listToken) return
     builds.value = result.items
     if (selectedId.value && !builds.value.some((item) => item.id === selectedId.value)) {
       selectedId.value = ''
       detail.value = null
     }
-    // 首次进入自动选中最新一条，避免右侧空白
-    if (!selectedId.value && builds.value.length) {
-      await selectBuild(builds.value[0].id)
+    // 首次进入自动选中最新一条，避免右侧空白；链接指定构建时优先恢复该记录。
+    const linked = builds.value.find((item) => item.id === (preferredId ?? route.query.build))
+    if (linked) await selectBuild(linked.id)
+    else if (!selectedId.value && builds.value.length) {
+      await selectBuild(builds.value[0]!.id)
     }
   } catch (err) {
-    listError.value = errorTextOf(err, '构建列表加载失败')
+    if (token === listToken) listError.value = errorTextOf(err, '构建列表加载失败')
   } finally {
-    listLoading.value = false
+    if (token === listToken) listLoading.value = false
   }
 }
 
+let artifactToken = 0
 async function loadArtifacts(): Promise<void> {
+  const token = ++artifactToken
   try {
-    artifacts.value = await listArtifacts(appId.value)
+    const result = await listArtifacts(appId.value)
+    if (token === artifactToken) artifacts.value = result
   } catch {
-    artifacts.value = []
+    if (token === artifactToken) artifacts.value = []
   }
 }
 
@@ -202,45 +208,34 @@ let metaToken = 0
 async function loadMeta(): Promise<void> {
   const token = ++metaToken
   try {
-    const [configItem, workflow] = await Promise.all([getConfig(appId.value), getWorkflow(appId.value)])
+    const [workflow, history] = await Promise.all([getWorkflow(appId.value), listBuilds(appId.value)])
     if (token !== metaToken) return
-    config.value = configItem
-    ciPipelineId.value = workflow.items.find((item) => item.kind === 'ci')?.id ?? ''
-    if (!configItem.gitConfig) {
-      commits.value = []
-      return
-    }
-    try {
-      const list = await listCommits(configItem.gitConfig.branch)
-      if (token === metaToken) commits.value = list
-    } catch {
-      if (token === metaToken) commits.value = []
-    }
+    ciPipelines.value = workflow.items.filter((item) => item.kind === 'ci')
+    hasUnassigned.value = history.items.some((item) => !item.pipelineId)
   } catch {
     if (token !== metaToken) return
-    config.value = null
-    commits.value = []
   }
 }
 
+let logToken = 0
 async function loadLogs(id: string): Promise<void> {
+  const token = ++logToken
   logsLoading.value = true
   logsError.value = ''
   logsUnavailable.value = false
-  logs.value = []
   try {
     const result = await getBuildLogs(id)
-    if (selectedId.value !== id) return
+    if (token !== logToken || selectedId.value !== id) return
     logs.value = result
   } catch (err) {
-    if (selectedId.value !== id) return
+    if (token !== logToken || selectedId.value !== id) return
     if (err instanceof MockError && err.code === 'log_unavailable') {
       logsUnavailable.value = true
     } else {
       logsError.value = errorTextOf(err, '日志加载失败')
     }
   } finally {
-    if (selectedId.value === id) logsLoading.value = false
+    if (token === logToken && selectedId.value === id) logsLoading.value = false
   }
 }
 
@@ -248,7 +243,9 @@ let detailToken = 0
 
 async function selectBuild(id: string): Promise<void> {
   const token = ++detailToken
+  ++logToken
   selectedId.value = id
+  if (route.query.build !== id) void router.replace({ query: { ...route.query, build: id } })
   detailLoading.value = true
   detailError.value = ''
   detail.value = null
@@ -259,8 +256,7 @@ async function selectBuild(id: string): Promise<void> {
     const build = await getBuild(id)
     if (token !== detailToken) return
     detail.value = build
-    // 成功的构建优先展示产物，进行中/失败构建优先展示日志
-    activeTab.value = build.artifactId ? 'artifacts' : 'logs'
+    // 没有显式页签时，成功构建优先展示产物；深链保留选择的页签。
     await loadLogs(id)
   } catch (err) {
     if (token !== detailToken) return
@@ -271,8 +267,7 @@ async function selectBuild(id: string): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
-  await loadList()
-  if (selectedId.value) await selectBuild(selectedId.value)
+  await loadList(selectedId.value || undefined)
 }
 
 function retryLogs(): void {
@@ -297,13 +292,13 @@ async function onCancel(): Promise<void> {
 
 async function onRetry(): Promise<void> {
   const current = detail.value
-  if (!current || acting.value) return
+  if (!current || !canRetry.value || acting.value) return
   acting.value = true
   try {
     const created = await retryBuild(current.id)
+    await router.replace({ query: { ...route.query, tab: 'logs' } })
     MessagePlugin.success(`已创建重试构建 #${created.id}`)
-    await loadList()
-    await selectBuild(created.id)
+    await loadList(created.id)
   } catch (err) {
     MessagePlugin.error(errorTextOf(err, '重试失败'))
   } finally {
@@ -312,30 +307,69 @@ async function onRetry(): Promise<void> {
 }
 
 function downloadLogs(): void {
-  MessagePlugin.info('静态演示：日志下载未接入对象存储')
+  const url = URL.createObjectURL(new Blob([logsText.value], { type: 'text/plain;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'build-' + (selectedId.value || 'logs') + '.log'
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function onAddLabel(): void {
-  MessagePlugin.info('静态演示：标签与备注尚未接入')
+const metadataVisible = ref(false)
+const imageDetailsVisible = ref(false)
+function onAddLabel(): void { metadataVisible.value = true }
+function onMetadataSaved(saved: Artifact): void {
+  artifacts.value = artifacts.value.map((item) => item.id === saved.id ? saved : item)
 }
 
+let allToken = 0
 async function loadAll(): Promise<void> {
-  await Promise.all([loadList(), loadArtifacts(), loadMeta()])
+  const token = ++allToken
+  const id = appId.value
+  metaLoading.value = true
+  await Promise.all([loadArtifacts(), loadMeta()])
+  if (token !== allToken || id !== appId.value) return
+  metaLoading.value = false
+  await loadList()
 }
+
+function selectPipeline(value: unknown): void {
+  if (typeof value !== 'string' || value === ciPipelineId.value) return
+  void router.push({ query: { ...route.query, pipeline: value, build: undefined, tab: undefined } })
+}
+
+watch(ciPipelineId, () => {
+  if (metaLoading.value) return
+  ++detailToken
+  ++logToken
+  selectedId.value = ''
+  detail.value = null
+  builds.value = []
+  logs.value = []
+  void loadList()
+})
+watch(() => route.query.build, (id) => {
+  if (typeof id === 'string' && id !== selectedId.value && builds.value.some((item) => item.id === id)) void selectBuild(id)
+})
 
 watch(
   appId,
   () => {
     selectedId.value = ''
     detail.value = null
-    activeTab.value = 'logs'
-    config.value = null
-    commits.value = []
-    ciPipelineId.value = ''
+    ++listToken
+    ++detailToken
+    ++logToken
+    metaLoading.value = true
+    ciPipelines.value = []
+    hasUnassigned.value = false
+    builds.value = []
+    artifacts.value = []
     void loadAll()
   },
   { immediate: true },
 )
+onBeforeUnmount(() => { ++listToken; ++detailToken; ++logToken; ++metaToken; ++artifactToken; ++allToken })
 </script>
 
 <template>
@@ -343,7 +377,7 @@ watch(
     <aside class="bh-side">
       <div class="bh-side__head">
         <p class="bh-side__label">选择流水线</p>
-        <t-select class="bh-pipeline" :model-value="pipelineName" :options="pipelineOptions" />
+        <t-select class="bh-pipeline" :model-value="ciPipelineId" :options="pipelineOptions" :loading="metaLoading" @change="selectPipeline" />
       </div>
 
       <div class="bh-side__list">
@@ -396,11 +430,11 @@ watch(
       <template v-else-if="detail">
         <div class="bh-timeline">
           <div class="bh-actions">
-            <t-button size="small" variant="outline" :disabled="!canCancel" :loading="acting" @click="onCancel">
+            <t-button size="small" variant="outline" :disabled="acting || !canCancel" :loading="acting" @click="onCancel">
               <template #icon><t-icon name="stop-circle" /></template>
               取消
             </t-button>
-            <t-button size="small" variant="outline" :loading="acting" @click="onRetry">
+            <t-button size="small" variant="outline" :loading="acting" :disabled="acting || !canRetry" @click="onRetry">
               <template #icon><t-icon name="rollback" /></template>
               重试
             </t-button>
@@ -429,7 +463,7 @@ watch(
                     v-if="activeTab !== 'source'"
                     type="button"
                     class="bh-link"
-                    @click="activeTab = 'source'"
+                    @click="selectTab('source')"
                   >
                     提交详情
                   </button>                </p>
@@ -508,7 +542,7 @@ watch(
             class="bh-tab"
             :class="{ 'bh-tab--active': activeTab === tab.key }"
             :aria-selected="activeTab === tab.key"
-            @click="activeTab = tab.key"
+            @click="selectTab(tab.key)"
           >
             {{ tab.label }}
           </button>
@@ -516,6 +550,7 @@ watch(
             v-if="activeTab === 'logs'"
             type="button"
             class="bh-tabs__download"
+            :disabled="logsLoading || Boolean(logsError) || logsUnavailable || !logs.length"
             title="下载日志"
             @click="downloadLogs"
           >
@@ -526,98 +561,15 @@ watch(
 
         <div class="bh-content" :class="{ 'bh-content--logs': activeTab === 'logs' }">
           <template v-if="activeTab === 'logs'">
-            <div v-if="logsLoading" class="bh-content__state">
-              <t-loading size="small" />
-              <span>读取日志…</span>
-            </div>
-            <div v-else-if="logsUnavailable" class="bh-unavailable">
-              <span class="bh-unavailable__info">i</span>
-              <p class="bh-unavailable__title">日志不可用</p>
-              <p class="bh-unavailable__note">{{ logNote }}</p>
-            </div>
-            <ErrorState v-else-if="logsError" :message="logsError" @retry="retryLogs" />
-            <div v-else-if="!logs.length" class="bh-content__state">暂无日志</div>
-            <pre v-else class="bh-log">{{ logsText }}</pre>
+            <HistoryLogViewer :text="logsText" :context-key="detail.id" title="构建执行" :status="workerLabel" :execution-status="detail.status" :loading="logsLoading" :error="logsError" :unavailable="logsUnavailable ? logNote : ''" :file-name="`build-${detail.id}.log`" log-class="bh-log" :show-download="false" @refresh="retryLogs" />
           </template>
 
           <template v-else-if="activeTab === 'source'">
-            <article class="bh-source">
-              <header class="bh-source__repo">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path
-                    d="M8 1.8v12.4M8 4.4 5.2 6.2M8 8.6l-2.8 1.7"
-                    stroke="#596168"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                  />
-                  <circle cx="8" cy="2.4" r="1.4" stroke="#596168" stroke-width="1.2" />
-                  <circle cx="5" cy="7" r="1.5" stroke="#596168" stroke-width="1.2" />
-                  <circle cx="5.2" cy="11" r="1.5" stroke="#596168" stroke-width="1.2" />
-                </svg>
-                <span class="bh-source__name" :title="config?.gitConfig?.repositoryUrl">{{ repoName }}</span>
-                <span class="bh-source__sep">/</span>
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path
-                    d="M4.25 9.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0v3.25m0-3.25h5.5a2 2 0 0 0 2-2V6.25m0 0a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z"
-                    stroke="#596168"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-                <span class="bh-source__branch">{{ branchName }}</span>
-              </header>
-              <div class="bh-source__commit">
-                <span v-if="commitChip" class="bh-chip bh-chip--commit">
-                  <svg class="bh-chip__icon" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <circle cx="8" cy="8" r="2.2" stroke="#0066cc" stroke-width="1.3" />
-                    <path d="M1.6 8h4.1m4.6 0h4.1" stroke="#0066cc" stroke-width="1.3" stroke-linecap="round" />
-                  </svg>
-                  {{ commitChip }}
-                </span>
-                <p class="bh-source__subject">{{ detail.commitSubject || '—' }}</p>
-                <p class="bh-source__meta">
-                  <t-icon name="user" size="13px" />
-                  {{ commitAuthor }}
-                </p>
-                <p class="bh-source__meta">
-                  <t-icon name="calendar" size="13px" />
-                  {{ fmtBuildTime(commitTime) }}
-                </p>
-                <p v-if="!config?.gitConfig" class="bh-source__missing">尚未配置 Git 源，无法展示仓库信息。</p>
-              </div>
-            </article>
+            <BuildSourceSnapshot :build="detail" />
           </template>
 
           <template v-else>
-            <article v-if="artifact" class="bh-artifact">
-              <div class="bh-artifact__main">
-                <span class="bh-artifact__icon">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path
-                      d="M12 2.8 20 7v10l-8 4.2L4 17V7l8-4.2Z"
-                      stroke="#0066cc"
-                      stroke-width="1.4"
-                      stroke-linejoin="round"
-                    />
-                    <path
-                      d="m4 7 8 4.2L20 7M12 11.2V21"
-                      stroke="#0066cc"
-                      stroke-width="1.4"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </span>
-                <div class="bh-artifact__text">
-                  <p class="bh-artifact__tag">{{ imageTag || artifact.id }}</p>
-                  <p class="bh-artifact__ref">{{ artifact.imageRef }}</p>
-                </div>
-              </div>
-              <button type="button" class="bh-artifact__label" @click="onAddLabel">
-                <span class="bh-artifact__plus">+</span>
-                添加标签/备注
-              </button>
-            </article>
+            <ArtifactSummaryCard v-if="artifact" class="bh-artifact" :artifact="artifact" show-details @edit="onAddLabel" @details="imageDetailsVisible = true" />
             <div v-else class="bh-content__empty">
               <p class="bh-empty__title">暂无产物</p>
               <p class="bh-empty__desc">{{ artifactEmptyNote }}</p>
@@ -647,15 +599,17 @@ watch(
       </template>
     </section>
   </div>
+  <ArtifactMetadataDialog v-model:visible="metadataVisible" :artifact="artifact" @saved="onMetadataSaved" />
+  <ArtifactDetailsDrawer v-model:visible="imageDetailsVisible" :app-id="appId" :artifact-id="artifact?.id || ''" @saved="onMetadataSaved" />
 </template>
 
 <style scoped>
 /* 整页白底、无外层卡片：抵消 AppWorkspace/AppShell 的内边距，铺满视口剩余高度 */
 .bh {
   display: flex;
-  height: calc(100vh - 130px);
+  height: calc(100dvh - 102px);
   min-height: 560px;
-  margin: -12px -16px -48px;
+  margin: -12px -16px -24px;
   color: #000a14;
   font-size: 13px;
   background: #fff;
@@ -666,7 +620,7 @@ watch(
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 296px;
+  width: 280px;
   min-height: 0;
   background: #fff;
   border-right: 1px solid #e6e9ef;
@@ -761,7 +715,7 @@ watch(
 .bh-build__time {
   color: #000a14;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 18px;
 }
 
@@ -820,7 +774,7 @@ watch(
 .bh-timeline {
   position: relative;
   flex: none;
-  padding: 16px 20px;
+  padding: 12px 16px;
 }
 
 .bh-actions {
@@ -840,9 +794,9 @@ watch(
 
 .bh-tl__row {
   display: flex;
-  gap: 10px;
+  gap: 20px;
   align-items: flex-start;
-  min-height: 40px;
+  min-height: 34px;
 }
 
 .bh-tl__gutter {
@@ -883,7 +837,7 @@ watch(
 .bh-tl__title {
   color: #000a14;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 20px;
 }
 
@@ -971,8 +925,8 @@ watch(
   display: flex;
   flex: none;
   align-items: stretch;
-  height: 48px;
-  padding: 0 16px;
+  height: 36px;
+  padding: 0 42px;
   background: #fff;
   border-bottom: 1px solid #d0d4d9;
 }
@@ -981,8 +935,8 @@ watch(
   position: relative;
   display: inline-flex;
   align-items: center;
-  height: 48px;
-  padding: 0 12px;
+  height: 36px;
+  padding: 0 8px;
   color: #596168;
   font: inherit;
   font-size: 13px;
@@ -1002,9 +956,9 @@ watch(
 
 .bh-tab--active::after {
   position: absolute;
-  right: 12px;
+  right: 8px;
   bottom: -1px;
-  left: 12px;
+  left: 8px;
   height: 2px;
   content: '';
   background: #0066cc;
@@ -1043,8 +997,11 @@ watch(
 
 .bh-content--logs {
   display: flex;
+  padding: 0;
+  background: #171a21;
   overflow: hidden;
 }
+.bh-content--logs .bh-content__state{color:#d0d4d9}
 
 .bh-content__state {
   display: flex;
@@ -1079,8 +1036,8 @@ watch(
   line-height: 18px;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #1e2430;
-  border-radius: 4px;
+  background: #171a21;
+  border-radius: 0;
 }
 
 .bh-unavailable {
@@ -1092,8 +1049,8 @@ watch(
   gap: 6px;
   padding: 24px;
   text-align: center;
-  background: #1e2430;
-  border-radius: 4px;
+  background: #171a21;
+  border-radius: 0;
 }
 
 .bh-unavailable__info {

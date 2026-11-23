@@ -1,208 +1,121 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, shallowRef, toRef, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
-import type { SelectValue } from 'tdesign-vue-next'
 import { useRouter } from 'vue-router'
-
-import { listBranches, listCommits, MockError, triggerBuild } from '@/api'
+import { MockError, triggerBuild } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
-import type { Build, GitBranch, GitCommit } from '@/types'
-import { fmtRelative, fmtTime, shortSha } from '@/utils/format'
+import BuildRepositoryList from '@/components/application/BuildRepositoryList.vue'
+import BuildBranchDialog from '@/components/application/BuildBranchDialog.vue'
+import BuildWebhookEvents from '@/components/application/BuildWebhookEvents.vue'
+import ReceivedWebhooks from '@/components/application/ReceivedWebhooks.vue'
+import BuildCommitCard from '@/components/application/BuildCommitCard.vue'
+import { useBuildMaterials } from '@/composables/useBuildMaterials'
+import type { GitCommit, Workflow } from '@/types'
+import { fmtTime } from '@/utils/format'
+import { isWebhookSource, webhookMatches } from '@/utils/gitSources'
 
 const props = defineProps<{
-  visible: boolean
-  appId: string
-  projectId: string
-  pipelineName: string
-  repositoryUrl: string
-  configVersion: number
+  visible: boolean; appId: string; projectId: string; pipelineName: string; pipelineId: string
   canBuild: boolean
 }>()
-
-const emit = defineEmits<{ 'update:visible': [value: boolean] }>()
-
-interface CommitGroup {
-  date: string
-  items: GitCommit[]
-}
-
+const emit = defineEmits<{ 'update:visible': [value: boolean]; workflowUpdated: [workflow: Workflow] }>()
 const router = useRouter()
-
-const branches = ref<GitBranch[]>([])
-const branchName = ref('')
-const branchesLoading = ref(false)
-const branchesError = ref('')
-const branchesErrorCode = ref('')
-
-const commits = ref<GitCommit[]>([])
-const commitsLoading = ref(false)
-const commitsError = ref('')
-const commitsErrorCode = ref('')
-
-const selectedSha = ref('')
-const search = ref('')
-const starting = ref(false)
-const startError = ref('')
-const startErrorCode = ref('')
-
-const gitNotConfigured = computed(() => branchesErrorCode.value === 'git_not_configured')
-const gitUnavailable = computed(
-  () => branchesErrorCode.value === 'git_unavailable' || commitsErrorCode.value === 'git_unavailable',
-)
-const branchOptions = computed(() => branches.value.map((item) => ({ label: item.name, value: item.name })))
-
-/** 仓库名，Devtron 左侧仓库卡展示 `/checkout-api` 形式 */
-const repoLabel = computed(() => {
-  const trimmed = props.repositoryUrl.replace(/\.git$/, '').replace(/[/:]+$/, '')
-  const name = trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
-  return name ? `/${name}` : '—'
-})
+const { states, activeId, active, config, workflow, definition, effectiveConfig, selectedCount, loading, error, errorCode, load, refresh, selectEvent, saveBranches, branchSaving, branchError } =
+  useBuildMaterials(toRef(props, 'visible'), toRef(props, 'appId'), toRef(props, 'pipelineId'))
+const starting = shallowRef(false)
+const startError = shallowRef('')
+const branchDialog = shallowRef(false)
+const received = shallowRef(false)
+const webhook = computed(() => Boolean(active.value && isWebhookSource(active.value.source)))
+const branchesLoading = loading
+const branchesError = error
+const branchesErrorCode = errorCode
+const branchName = computed(() => active.value?.branch ?? '')
+const commits = computed(() => active.value?.commits ?? [])
+const commitsLoading = computed(() => active.value?.loading ?? false)
+const commitsError = computed(() => active.value?.error ?? '')
+const commitsErrorCode = computed(() => active.value?.errorCode ?? '')
+const selectedSha = computed(() => active.value?.selectedSha ?? '')
+function selectCommit(sha: string) {
+  if (active.value && !starting.value && !branchSaving.value && !commitsLoading.value && active.value.commits.some(item => item.sha === sha && !item.excluded)) active.value.selectedSha = sha
+}
+const showExcluded = computed(() => active.value?.showExcluded ?? false)
+const excludedCount = computed(() => commits.value.filter(item => item.excluded).length)
+function toggleExcluded() { if (active.value) active.value.showExcluded = !active.value.showExcluded }
+const search = computed({get: () => active.value?.search ?? '', set: value => { if (active.value) active.value.search = value }})
+const gitNotConfigured = computed(() => errorCode.value === 'git_not_configured')
+const gitUnavailable = computed(() => errorCode.value === 'git_unavailable' || commitsErrorCode.value === 'git_unavailable')
 
 /** 提交分组标题：2026年11月21日 */
 function dateLabel(value: string): string {
   const parts = value.split('-')
-  if (parts.length !== 3) return value
-  return `${parts[0]}年${Number(parts[1])}月${Number(parts[2])}日`
+  return parts.length === 3 ? `${parts[0]}年${Number(parts[1])}月${Number(parts[2])}日` : value
 }
-
 const filteredCommits = computed(() => {
   const keyword = search.value.trim().toLowerCase()
-  if (!keyword) return commits.value
-  return commits.value.filter(
-    (item) => item.sha.toLowerCase().includes(keyword) || item.subject.toLowerCase().includes(keyword),
-  )
+  return commits.value.filter(item => keyword
+    ? item.sha.toLowerCase().includes(keyword) || item.subject.toLowerCase().includes(keyword)
+    : showExcluded.value || !item.excluded)
 })
-
-const commitGroups = computed<CommitGroup[]>(() => {
-  const result: CommitGroup[] = []
-  filteredCommits.value.forEach((commit) => {
+const commitGroups = computed(() => {
+  const groups: Array<{date: string; items: GitCommit[]}> = []
+  filteredCommits.value.forEach(commit => {
     // 按本地时区归组，避免与卡片上显示的时间错开一天
     const date = fmtTime(commit.committedAt).slice(0, 10)
-    const last = result[result.length - 1]
-    if (last && last.date === date) last.items.push(commit)
-    else result.push({ date, items: [commit] })
+    const last = groups[groups.length - 1]
+    if (last?.date === date) last.items.push(commit)
+    else groups.push({date, items: [commit]})
   })
-  return result
+  return groups
 })
-
-const latestCommitAt = computed(() => commits.value[0]?.committedAt ?? '')
-
 const disabledReason = computed(() => {
   if (!props.canBuild) return '配置未完成，暂时不能构建'
-  if (gitNotConfigured.value) return '尚未配置 Git 源，无法读取提交'
-  if (branchesLoading.value || commitsLoading.value) return '正在读取提交…'
-  if (gitUnavailable.value) return 'Git 服务暂不可达，请稍后重试'
-  if (branchesError.value) return branchesError.value
-  if (commitsError.value) return commitsError.value
-  if (!commits.value.length) return '该分支没有可构建的提交'
-  if (!selectedSha.value) return '请选择一个提交后再开始构建'
+  if (loading.value || states.value.some(item => item.loading)) return '正在读取提交…'
+  if (error.value) return error.value
+  if (branchSaving.value) return '正在设置分支…'
+  const failed = states.value.find(item => item.error || (isWebhookSource(item.source) ? !item.events.some(event => !event.commit.excluded && webhookMatches(item.source, event)) : !item.branch || !item.commits.some(commit => !commit.excluded)))
+  if (failed) return failed.error || (isWebhookSource(failed.source) ? failed.events.some(event => webhookMatches(failed.source, event)) ? '匹配的 Webhook 提交均已被路径规则排除' : '没有符合过滤条件的 Webhook 事件' : !failed.branch && failed.source.type === 'regex' ? '请先设置匹配正则的构建分支' : '仓库没有匹配分支或可构建提交')
+  if (!states.value.length) return '尚未配置 Git 源'
+  if (selectedCount.value !== states.value.length) return `已选择 ${selectedCount.value}/${states.value.length} 个仓库，请为每个仓库选择提交`
   return ''
 })
-
 const canStart = computed(() => !disabledReason.value && !starting.value)
-
-const footerText = computed(() => {
-  if (startError.value) return startError.value
-  if (disabledReason.value) return disabledReason.value
-  return `已选择 ${shortSha(selectedSha.value)} · 配置版本 v${props.configVersion}`
-})
-
-const footerError = computed(
-  () => Boolean(startError.value) || gitUnavailable.value || Boolean(branchesError.value || commitsError.value),
-)
-
-function errorCodeOf(err: unknown): string {
-  return err instanceof MockError ? err.code : ''
-}
-
-function errorTextOf(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback
-}
-
-async function loadCommits(): Promise<void> {
-  if (!branchName.value) return
-  commitsLoading.value = true
-  commitsError.value = ''
-  commitsErrorCode.value = ''
-  commits.value = []
-  selectedSha.value = ''
-  try {
-    commits.value = await listCommits(branchName.value)
-  } catch (err) {
-    commitsErrorCode.value = errorCodeOf(err)
-    commitsError.value = errorTextOf(err, '提交列表加载失败')
-  } finally {
-    commitsLoading.value = false
+const footerText = computed(() => startError.value || disabledReason.value || `已选择 ${selectedCount.value}/${states.value.length} 个仓库 · 配置版本 v${config.value?.version}`)
+const footerError = computed(() => Boolean(startError.value || error.value || states.value.some(item => item.error)))
+const overrideLabel = computed(() => definition.value?.buildOverride ? '流水线构建覆盖' : '应用构建配置')
+function loadBranches() { void load() }
+function loadCommits() { if (active.value) void refresh(active.value, false) }
+function close() { if (!starting.value && !branchSaving.value) emit('update:visible', false) }
+async function setBranches(branches: Array<{ gitMaterialId: string; branch: string }>) {
+  if (await saveBranches(branches)) {
+    branchDialog.value = false
+    if (workflow.value) emit('workflowUpdated', workflow.value)
   }
 }
-
-async function loadBranches(): Promise<void> {
-  branchesLoading.value = true
-  branchesError.value = ''
-  branchesErrorCode.value = ''
-  branches.value = []
-  branchName.value = ''
-  commits.value = []
-  selectedSha.value = ''
-  try {
-    const list = await listBranches(props.appId)
-    branches.value = list
-    const preferred = list.find((item) => item.isDefault) ?? list[0]
-    if (!preferred) return
-    branchName.value = preferred.name
-    await loadCommits()
-  } catch (err) {
-    branchesErrorCode.value = errorCodeOf(err)
-    branchesError.value = errorTextOf(err, '分支加载失败')
-  } finally {
-    branchesLoading.value = false
-  }
-}
-
-function onBranchChange(value: SelectValue): void {
-  const next = typeof value === 'string' ? value : ''
-  if (!next || next === branchName.value) return
-  branchName.value = next
-  search.value = ''
-  void loadCommits()
-}
-
-function close(): void {
+function editFilters() {
   emit('update:visible', false)
+  void router.push({ name: 'config-workflow', params: { projectId: props.projectId, appId: props.appId }, query: { pipeline: props.pipelineId } })
 }
-
-async function startBuild(): Promise<void> {
-  if (!canStart.value) return
+async function startBuild() {
+  if (!canStart.value || !config.value || !workflow.value) return
   starting.value = true
   startError.value = ''
-  startErrorCode.value = ''
   try {
-    const build: Build = await triggerBuild(props.appId, selectedSha.value, props.configVersion)
+    const primary = states.value.find(item => item.material.id === effectiveConfig.value?.gitMaterialId) ?? states.value[0]!
+    const build = await triggerBuild(props.appId, primary.selectedSha, config.value.version, props.pipelineId, primary.branch, {
+      workflowVersion: workflow.value.version,
+      materials: states.value.map(item => ({gitMaterialId: item.material.id, branch: item.branch, commitSha: item.selectedSha, ...(item.selectedEventId ? {webhookEventId: item.selectedEventId} : {})})),
+    })
     MessagePlugin.success(`已触发构建 ${build.id}，可在构建历史查看进度`)
-    close()
-    await router.push({ name: 'app-builds', params: { projectId: props.projectId, appId: props.appId } })
+    emit('update:visible', false)
+    await router.push({name:'app-builds',params:{projectId:props.projectId,appId:props.appId},query:{pipeline:props.pipelineId,build:build.id}})
   } catch (err) {
-    startErrorCode.value = errorCodeOf(err)
-    startError.value =
-      startErrorCode.value === 'build_active' ? '已有进行中的构建' : errorTextOf(err, '触发构建失败')
-  } finally {
-    starting.value = false
-  }
+    startError.value = err instanceof MockError && err.code === 'build_active' ? '已有进行中的构建' : err instanceof Error ? err.message : '触发构建失败'
+  } finally { starting.value = false }
 }
-
-watch(
-  () => props.visible,
-  (visible) => {
-    if (!visible) return
-    search.value = ''
-    starting.value = false
-    startError.value = ''
-    startErrorCode.value = ''
-    void loadBranches()
-  },
-  { immediate: true },
-)
+watch(() => props.visible, () => { startError.value = ''; branchDialog.value = false; received.value = false })
+watch(loading, busy => { if (!busy && props.visible && states.value.some(state => state.source.type === 'regex' && !state.branch)) branchDialog.value = true })
 </script>
 
 <template>
@@ -213,57 +126,15 @@ watch(
     :header="`构建流水线 '${pipelineName}'`"
     :close-btn="true"
     drawer-class-name="bd-material"
+    :footer="received ? false : undefined"
     @close="close"
   >
-    <div class="mt">
-      <aside class="mt__side">
-        <p class="mt__side-title">Git 仓库</p>
-        <div class="mt__repo">
-          <div class="mt__repo-head">
-            <svg class="mt__repo-icon" width="20" height="20" viewBox="0 0 48 48">
-              <path
-                fill="#F4511E"
-                d="M42.2,22.1L25.9,5.8C25.4,5.3,24.7,5,24,5c0,0,0,0,0,0c-0.7,0-1.4,0.3-1.9,0.8l-3.5,3.5l4.1,4.1c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3c0,0.5-0.1,0.9-0.3,1.3l4,4c0.4-0.2,0.8-0.3,1.3-0.3c1.7,0,3,1.3,3,3s-1.3,3-3,3c-1.7,0-3-1.3-3-3c0-0.5,0.1-0.9,0.3-1.3l-4-4c-0.1,0-0.2,0.1-0.3,0.1v10.4c1.2,0.4,2,1.5,2,2.8c0,1.7-1.3,3-3,3s-3-1.3-3-3c0-1.3,0.8-2.4,2-2.8V18.8c-1.2-0.4-2-1.5-2-2.8c0-0.5,0.1-0.9,0.3-1.3l-4.1-4.1L5.8,22.1C5.3,22.6,5,23.3,5,24c0,0.7,0.3,1.4,0.8,1.9l16.3,16.3c0,0,0,0,0,0c0.5,0.5,1.2,0.8,1.9,0.8s1.4-0.3,1.9-0.8l16.3-16.3c0.5-0.5,0.8-1.2,0.8-1.9C43,23.3,42.7,22.6,42.2,22.1z"
-              />
-            </svg>
-            <span class="mt__repo-name" :title="repositoryUrl">{{ repoLabel }}</span>
-          </div>
-          <div class="mt__repo-branch">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-              <path
-                d="M4.25 9.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm0 0v3.25m0-3.25h5.5a2 2 0 0 0 2-2V6.25m0 0a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z"
-                stroke="#596168"
-                stroke-width="1.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-            <t-select
-              class="mt__branch"
-              size="small"
-              variant="borderless"
-              :value="branchName"
-              :options="branchOptions"
-              :disabled="branchesLoading || gitNotConfigured"
-              placeholder="选择分支"
-              @change="onBranchChange"
-            />
-            <svg class="mt__info" width="12" height="12" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="5.6" stroke="#b1b7bc" stroke-width="1.2" />
-              <path d="M8 7.4v3.2M8 5.1v.9" stroke="#b1b7bc" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
-          </div>
-          <div v-if="latestCommitAt" class="mt__repo-updated">
-            <span>更新于 {{ fmtRelative(latestCommitAt) }}</span>
-            <button type="button" class="mt__refresh" title="刷新分支与提交" @click="loadBranches">
-              <t-icon name="refresh" size="14px" />
-            </button>
-          </div>
-        </div>
-      </aside>
+    <ReceivedWebhooks v-if="received && active" :source="active.source" :events="active.events" :repository-url="active.material.repositoryUrl" :loading="active.loading" :error="active.error" @back="received = false" @edit="editFilters" @refresh="loadCommits" />
+    <div v-else class="mt">
+      <BuildRepositoryList :states="states" :active-id="activeId" :disabled="starting || branchSaving" @select="activeId = $event" @refresh="refresh" />
 
       <section class="mt__main">
-        <div class="mt__head">
+        <div v-if="!webhook" class="mt__head">
           <span class="mt__branch-tag">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path
@@ -276,6 +147,7 @@ watch(
             </svg>
             {{ branchName || '分支' }}
           </span>
+          <t-button v-if="active?.source.type === 'regex'" variant="text" size="small" class="mt__set-branch" :disabled="starting || commitsLoading" aria-label="设置构建分支" @click="branchDialog = true"><t-icon name="edit" /></t-button>
           <t-input
             v-if="commits.length"
             v-model="search"
@@ -286,9 +158,12 @@ watch(
           >
             <template #prefix-icon><t-icon name="search" /></template>
           </t-input>
+          <t-dropdown v-if="commits.length" :options="[{ content: showExcluded ? '隐藏已排除提交' : '显示已排除提交', value: 'excluded' }]" trigger="click" @click="toggleExcluded"><t-button variant="text" size="small" :disabled="starting || branchSaving || commitsLoading" :aria-label="showExcluded ? '隐藏已排除提交' : '显示已排除提交'" :class="{ 'mt__filter--applied': !showExcluded }"><t-icon name="filter" size="16px" /></t-button></t-dropdown>
         </div>
 
-        <div class="mt__list">
+        <div v-if="effectiveConfig" class="mt__build-config"><span>{{ overrideLabel }}</span><strong>{{ effectiveConfig.imageRepository }}</strong><span>{{ effectiveConfig.buildMode === 'buildpack' ? 'Buildpacks' : effectiveConfig.platform || '跟随构建节点平台' }}</span><span v-if="effectiveConfig.buildMode !== 'buildpack' && (effectiveConfig.buildSecrets.length || effectiveConfig.buildSSH.length)">{{ effectiveConfig.buildSecrets.length }} 个 Secret · {{ effectiveConfig.buildSSH.length }} 个 SSH 引用</span></div>
+        <BuildWebhookEvents v-if="webhook && active && !loading && !active.loading && !active.error" :source="active.source" :events="active.events" :repository-url="active.material.repositoryUrl" :selected-id="active.selectedEventId" :disabled="starting || branchSaving" @select="selectEvent" @received="received = true" />
+        <div v-else class="mt__list">
           <div v-if="branchesLoading" class="mt__state">
             <t-loading size="small" />
             <span class="u-muted">读取分支…</span>
@@ -328,7 +203,7 @@ watch(
 
           <EmptyState
             v-else-if="!filteredCommits.length"
-            :title="commits.length ? '没有匹配的提交' : '该分支暂无提交'"
+            :title="!branchName ? '尚未设置分支，请输入匹配正则的分支名称' : search.trim() ? '没有匹配的提交' : excludedCount ? '提交均已被路径规则排除' : '该分支暂无提交'"
             compact
           />
 
@@ -337,28 +212,7 @@ watch(
               <p class="mt__date">{{ dateLabel(group.date) }}</p>
               <ul class="mt__commits">
                 <li v-for="commit in group.items" :key="commit.sha">
-                  <button
-                    type="button"
-                    class="cmt"
-                    :class="{ 'cmt--active': commit.sha === selectedSha }"
-                    @click="selectedSha = commit.sha"
-                  >
-                    <span class="cmt__body">
-                      <span class="cmt__sha">{{ shortSha(commit.sha) }}</span>
-                      <span class="cmt__subject">{{ commit.subject }}</span>
-                      <span class="cmt__meta">
-                        <t-icon name="user" size="12px" />
-                        {{ commit.authorName }}
-                      </span>
-                      <span class="cmt__meta">
-                        <t-icon name="calendar" size="12px" />
-                        {{ fmtTime(commit.committedAt) }}
-                      </span>
-                    </span>
-                    <span class="cmt__pick">
-                      <t-icon v-if="commit.sha === selectedSha" name="check" size="12px" />
-                    </span>
-                  </button>
+                  <BuildCommitCard :commit="commit" :repository-url="active?.material.repositoryUrl ?? ''" :selected="commit.sha === selectedSha" :disabled="starting || branchSaving || commitsLoading" @select="selectCommit" />
                 </li>
               </ul>
             </div>
@@ -367,12 +221,13 @@ watch(
       </section>
     </div>
 
-    <template #footer>
+    <BuildBranchDialog :visible="visible && branchDialog" :states="states" :pipeline-name="pipelineName" :saving="branchSaving" :error="branchError" @close="branchDialog = false" @submit="setBranches" />
+    <template v-if="!received" #footer>
       <div class="mt__foot">
         <div class="mt__foot-text">
           <span class="mt__cache">未配置对象存储，缓存不可用</span>
           <span class="mt__hint" :class="{ 'mt__hint--error': footerError }">
-            {{ footerError ? footerText : '想缩短构建时间？配置对象存储' }}
+            {{ footerText }}
           </span>
         </div>
         <t-button theme="primary" :disabled="!canStart" :loading="starting" @click="startBuild">
@@ -414,6 +269,7 @@ watch(
   min-height: 0;
 }
 
+ .mt__build-config{display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px;color:#596168;font-size:11px;border-bottom:1px solid #e6e9ef}.mt__build-config strong{font-weight:500;color:#3b444c;overflow-wrap:anywhere}
 /* ---- 左列：仓库 ---- */
 .mt__side {
   display: flex;
@@ -576,73 +432,7 @@ watch(
   flex-direction: column;
   gap: 8px;
 }
-.cmt {
-  display: flex;
-  gap: 12px;
-  width: 100%;
-  padding: 12px 16px;
-  font: inherit;
-  color: #000a14;
-  text-align: left;
-  background: #fff;
-  border: 1px solid #d0d4d9;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.cmt:hover {
-  border-color: #b1b7bc;
-}
-.cmt--active {
-  background: #f7fbff;
-  border-color: #0066cc;
-}
-.cmt__body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.cmt__sha {
-  align-self: flex-start;
-  padding: 0 6px;
-  color: #0066cc;
-  font-size: 11px;
-  line-height: 18px;
-  background: #e8f0fe;
-  border-radius: 2px;
-}
-.cmt__subject {
-  color: #000a14;
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 20px;
-  word-break: break-word;
-}
-.cmt__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #596168;
-  font-size: 12px;
-  line-height: 18px;
-}
-.cmt__pick {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  margin-top: 2px;
-  color: #fff;
-  border: 1px solid #b1b7bc;
-  border-radius: 50%;
-}
-.cmt--active .cmt__pick {
-  background: #0066cc;
-  border-color: #0066cc;
-}
+.mt__filter--applied{color:#0066cc}
 
 /* ---- 底部 ---- */
 .mt__foot {

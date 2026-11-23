@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { getApplication, getProject, listApplications } from '@/api'
 import StatusTag from '@/components/StatusTag.vue'
 import { appTabs } from '@/router/menu'
 import type { Application, Project } from '@/types'
+import { onApplicationChanged } from '@/utils/appEvents'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,19 +16,29 @@ const projectId = computed(() => String(route.params.projectId ?? ''))
 const app = ref<Application | null>(null)
 const project = ref<Project | null>(null)
 const projectApps = ref<Application[]>([])
+let loadRequest = 0
 
 async function load(): Promise<void> {
   if (!appId.value) return
+  const token = ++loadRequest
+  try {
   const [appItem, projectItem, appPage] = await Promise.all([
     getApplication(appId.value),
     getProject(projectId.value),
     listApplications({ projectId: projectId.value, pageSize: 100 }),
   ])
+  if (token !== loadRequest) return
   app.value = appItem
   project.value = projectItem
   projectApps.value = appPage.items
+  } catch {
+    // Route content owns the error/retry UI; never retain another app's header.
+    if (token === loadRequest) { app.value = null; project.value = null; projectApps.value = [] }
+  }
 }
-watch(appId, load, { immediate: true })
+watch([appId,projectId], load, { immediate: true })
+const unsubscribe = onApplicationChanged(id => { if (id === appId.value) void load() })
+onBeforeUnmount(() => { ++loadRequest; unsubscribe() })
 
 function switchTo(id: string): void {
   if (!id || id === appId.value) return
@@ -40,7 +51,7 @@ const activeTab = computed(() => {
   return appTabs.find((tab) => tab.name === name)?.title ?? '概览'
 })
 
-/** 构建发布 / 配置页在 Devtron 中是整页白底，不带外层内边距 */
+/** 构建发布 / 配置页在 Devtron 中是整页白底，不带外层内边距；配置表单自己设置灰色底板。 */
 const flush = computed(() => route.name === 'app-trigger' || String(route.name ?? '').startsWith('config'))
 /** 概览页使用 Devtron 的浅蓝渐变背景 */
 const tint = computed(() => route.name === 'app-overview')
@@ -50,11 +61,9 @@ const tint = computed(() => route.name === 'app-overview')
   <div class="app-workspace" :class="{ 'app-workspace--flush': flush, 'app-workspace--tint': tint }">
     <!-- 对齐 Devtron：面包屑 + 应用切换器 + 环境计数，页签紧贴其下 -->
     <div class="app-head">
-      <div class="app-head__row">
+      <Teleport to="#shell-breadcrumbs" defer><div class="app-head__row">
         <span class="app-head__mark"><t-icon name="app" size="14px" /></span>
         <router-link class="app-head__crumb" to="/apps">应用</router-link>
-        <span class="app-head__sep">/</span>
-        <router-link class="app-head__crumb" :to="`/projects/${projectId}`">{{ project?.name ?? '—' }}</router-link>
         <span class="app-head__sep">/</span>
         <t-dropdown
           trigger="click"
@@ -79,8 +88,7 @@ const tint = computed(() => route.name === 'app-overview')
           {{ app?.envCount ?? 0 }}/{{ app?.envCount ?? 0 }} 个环境
         </span>
         <StatusTag v-if="app" kind="health" :value="app.health" :dot="false" />
-        <span class="u-right u-dim">{{ app?.sourceMode === 'image' ? '已有镜像' : 'Git 源码' }}</span>
-      </div>
+      </div></Teleport>
 
       <nav class="app-head__tabs">
         <router-link
@@ -104,7 +112,7 @@ const tint = computed(() => route.name === 'app-overview')
 
 <style scoped>
 .app-workspace {
-  margin: -12px -16px 0;
+  margin: 0;
   background: var(--tk-bg);
 }
 .app-head {
@@ -116,7 +124,8 @@ const tint = computed(() => route.name === 'app-overview')
   align-items: center;
   gap: 6px;
   height: 44px;
-  padding: 0 16px;
+  padding: 0;
+  min-width: 0;
 }
 .app-head__mark {
   display: inline-flex;
@@ -216,8 +225,7 @@ const tint = computed(() => route.name === 'app-overview')
 .app-workspace--flush {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 48px);
-  margin-bottom: -24px;
+  min-height: calc(100dvh - 64px);
   background: #fff;
 }
 .app-workspace__body--flush {

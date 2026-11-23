@@ -1,3 +1,42 @@
+# Devtron Dashboard → Podry Web 布局与交互复刻方案
+
+版本：V3.0 / 日期：2026-11-22 / 状态：当前前端开发基线。
+
+## 当前决定
+
+以用户提供的 `D:/workspace/devtron-dashboard` 为布局、菜单层次和交互的准绳，使用 Vue 3 Composition API、TypeScript、TDesign 重写。Podry 现有页面与 Devtron 不一致时，先对齐 Devtron，后续产品调整另行决定。
+
+范围为 Application Management，以及 Infrastructure Management 下的 Kubernetes 资源管理。Chart Store、Security Center、成本平台、AI 等独立模块不因复刻导航而进入本次范围。应用内的配置、工作流、运行资源、构建与发布历史属于主路径；不能以旧版“轻量化”决定为由省略相应布局和操作。
+
+当前 `web/` 是已有 Vue 工程，继续补齐现有实现，不作为空工程处理。保留 Podry 品牌与现有业务标识，不移植 React 组件或 Devtron 后端协议。前端目前使用本地 Mock API；接口对接与真实集群执行必须单独验收，不能从可点击页面推断已接入。
+
+## 组件与数据流
+
+| 区域 | 责任与实现落点 |
+| --- | --- |
+| 导航壳 | `AppShell.vue` 负责外框、单一页头与插槽；`ManagerNavigation.vue` 管理两个 Manager 的悬停菜单；`GlobalSearch.vue` 管理键盘搜索 |
+| 应用列表 | `ApplicationList.vue` 组合筛选和表格；`useApplicationList.ts` 负责 URL、数据加载和 CSV；删除确认与克隆抽屉独立 |
+| 工作流 | `WorkflowSection.vue` 维护 CI/CD 关联；`TriggerGraph.vue` 共用编辑/执行画布；`PipelineStageEditor.vue` 通过 props/emits 编辑任务数组 |
+| 资源工作区 | 集群/应用维持各自上下文；`resourceTabs` 保存页签；列表、详情共用 `ResourceActionDialog.vue`；动作完成后刷新同一 Mock 数据源 |
+| 数据 | 页面 → `src/api/index.ts` → `src/mock/data.ts`；新增前端 Mock 方法不能直接视为已有 HTTP 合同 |
+
+## 验收顺序
+
+1. 对照本地 Devtron 源码和已有实例截图确认布局、入口、打开方式及关闭行为。
+2. 使用 TDesign 实现表格、筛选、选择、菜单、抽屉和确认，避免只弹“已提交”但数据不变。
+3. 验证 URL 恢复、跨上下文隔离、保存后读回、错误和重试路径。
+4. 运行类型检查、生产构建、页面巡检和关键交互脚本，留下截图与结果。
+5. 后端接入后重新验证权限、真实 Discovery、YAML 校验、日志流、exec 和资源变更。
+
+最新源代码对照、已补齐内容、验证记录和剩余差异统一见 [布局与交互对账](04-devtron-layout-interaction-parity.md)。[逐项清单](03-devtron-parity-checklist.md) 的“已有”只代表前端/Mock 实现存在，不代表完整 Devtron 等价或真实后端验收。
+
+## 历史方案
+
+下面保留 2026-11-20 的方案用于溯源。其“轻量化”、空工程假设、旧导航、Terminal/资源写入延期及其他前端交互简化决定已被 V3.0 基线覆盖，不再约束当前实现。业务合同和后端执行边界仍需按相应后端文档核验。
+
+<details>
+<summary>查看 V2.0 历史方案</summary>
+
 # Devtron Dashboard → Podry Web 轻量化迁移方案
 
 版本：V2.0 / 日期：2026-11-20\
@@ -374,3 +413,6 @@ vue + vue-router + pinia + axios + tdesign-vue-next + less
 - `docs/delivery/03-vue-validation.md` 的浏览器检查只证明本地 Mock 原型交互，不证明真实后端或集群能力。
 
 本文只规定前端迁移边界，不修改 Go 后端、数据库迁移或 API 合同。
+
+
+</details>

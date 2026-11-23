@@ -8,10 +8,9 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { listEnvironments, getApplication, getSetup, updateApplication } from '@/api'
-import type { Application, ApplicationSetup, Environment, SetupKey } from '@/types'
+import { listEnvironments, listBindings, getApplication, getSetup, updateApplication } from '@/api'
+import type { Application, ApplicationSetup, Binding, Environment, SetupKey } from '@/types'
 import { onSetupChanged } from '@/utils/appEvents'
-import ConfigCompareDialog from '@/views/apps/config/ConfigCompareDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,13 +19,14 @@ const projectId = computed(() => String(route.params.projectId ?? ''))
 const routeName = computed(() => String(route.name ?? ''))
 
 const environments = ref<Environment[]>([])
+const bindings = ref<Binding[]>([])
+const configuredEnvironments = computed(() => environments.value.filter((env) => bindings.value.some((binding) => binding.environmentId === env.id)))
 const app = ref<Application | null>(null)
 const loadingEnv = ref(false)
 const setup = ref<ApplicationSetup | null>(null)
 const deleteVisible = ref(false)
 const deleting = ref(false)
 const deleteConfirm = ref('')
-const compareVisible = ref(false)
 
 const canDelete = computed(() => Boolean(app.value?.name) && deleteConfirm.value.trim() === app.value?.name)
 
@@ -106,7 +106,11 @@ function createEntry(kind: 'deployment' | 'configmaps' | 'secrets'): void {
 }
 
 function compare(): void {
-  compareVisible.value = true
+  void router.push({
+    name: 'config-compare',
+    params: { projectId: projectId.value, appId: appId.value, resourceType: section.value, resourceName: section.value !== 'deployment' && typeof route.query.entry === 'string' ? route.query.entry : undefined },
+    query: { left: isOverride.value ? envId.value : 'base', leftVersion: 'saved', returnEnv: isOverride.value ? envId.value : 'base' },
+  })
 }
 
 function switchEnv(id: string): void {
@@ -120,7 +124,9 @@ function switchEnv(id: string): void {
 async function loadEnvironments(): Promise<void> {
   loadingEnv.value = true
   try {
-    environments.value = await listEnvironments()
+    const [envs, appBindings] = await Promise.all([listEnvironments(), listBindings(appId.value)])
+    environments.value = envs
+    bindings.value = appBindings
   } catch {
     environments.value = []
   } finally {
@@ -187,9 +193,10 @@ onUnmounted(
 
 <template>
   <div class="cfg">
-    <aside class="cfg__nav">
+    <aside class="cfg__nav" :class="{ 'cfg__nav--context': inContext }">
       <!-- Base / 环境覆盖：上下文面板 -->
       <template v-if="inContext">
+        <RouterLink v-if="isOverride" class="cfg__back" :to="{ name: 'config-workflow', params: { projectId, appId } }" aria-label="返回配置导航"><t-icon name="chevron-left" size="14px" /></RouterLink>
         <t-dropdown
           v-if="isOverride"
           trigger="click"
@@ -197,13 +204,12 @@ onUnmounted(
           :popup-props="{ overlayClassName: 'cfg-env-popup' }"
         >
           <button type="button" class="cfg__ctx cfg__ctx--switch">
-            <t-icon name="chevron-left" size="14px" />
             <span class="cfg__ctx-name">{{ envName || '环境' }}</span>
             <t-icon name="chevron-down" size="12px" />
           </button>
           <template #dropdown>
             <t-dropdown-menu>
-              <t-dropdown-item v-for="env in environments" :key="env.id" @click="switchEnv(env.id)">
+              <t-dropdown-item v-for="env in configuredEnvironments" :key="env.id" @click="switchEnv(env.id)">
                 {{ env.name }}
               </t-dropdown-item>
             </t-dropdown-menu>
@@ -218,9 +224,8 @@ onUnmounted(
           对比环境...
         </button>
         <nav class="cfg__sections">
+          <template v-for="item in sectionItems" :key="item.name">
           <RouterLink
-            v-for="item in sectionItems"
-            :key="item.name"
             class="cfg__section"
             :class="{ 'cfg__section--active': section === item.section }"
             :to="{ name: item.name, params: isOverride ? { projectId, appId, envId } : { projectId, appId } }"
@@ -237,12 +242,14 @@ onUnmounted(
               +
             </button>
           </RouterLink>
+          <div v-if="section === item.section && section !== 'deployment'" id="config-entry-navigation" />
+          </template>
         </nav>
       </template>
 
       <!-- 主视图 -->
       <template v-else>
-        <div v-if="setup" class="cfg__progress">
+        <div v-if="setup && setup.completed < setup.total" class="cfg__progress">
           <div class="cfg__progress-head">
             <span>已完成 {{ setup.completed }}/{{ setup.total }}</span>
             <span class="cfg__progress-help">需要帮助？</span>
@@ -268,7 +275,7 @@ onUnmounted(
         <p class="cfg__group">环境覆盖</p>
         <nav class="cfg__envs">
           <RouterLink
-            v-for="env in environments"
+            v-for="env in configuredEnvironments"
             :key="env.id"
             class="cfg__env"
             :to="{ name: 'config-override-deployment', params: { projectId, appId, envId: env.id } }"
@@ -276,10 +283,10 @@ onUnmounted(
             {{ env.name }}
           </RouterLink>
           <span v-if="loadingEnv" class="cfg__env cfg__env--muted">加载环境…</span>
-          <span v-else-if="!environments.length" class="cfg__env cfg__env--muted">暂无环境</span>
+          <span v-else-if="!configuredEnvironments.length" class="cfg__env cfg__env--muted">暂无环境</span>
         </nav>
 
-        <div class="cfg__env-note">
+        <div v-if="!configuredEnvironments.length && !loadingEnv" class="cfg__env-note">
           <t-icon name="help-circle" size="15px" />
           <p>
             环境覆盖允许在创建部署流水线后，为单个环境管理专属配置。
@@ -316,11 +323,6 @@ onUnmounted(
       <p class="u-dim cfg__delete-note">本操作为本地 mock，仅修改当前会话数据。</p>
     </t-dialog>
 
-    <ConfigCompareDialog
-      v-model:visible="compareVisible"
-      :app-id="appId"
-      :env-id="isOverride ? envId : ''"
-    />
   </div>
 </template>
 
@@ -328,15 +330,20 @@ onUnmounted(
 .cfg {
   display: flex;
   align-items: stretch;
-  min-height: calc(100vh - 130px);
+  height: calc(100dvh - 102px);
+  min-height: 0;
+  overflow: hidden;
   background: #fff;
 }
 .cfg__nav {
+  position: relative;
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 252px;
-  padding: 8px 0 12px;
+  width: 256px;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 0 12px;
   background: #fff;
   border-right: 1px solid #e6e9ef;
 }
@@ -386,8 +393,10 @@ onUnmounted(
 .cfg__item {
   display: flex;
   align-items: center;
-  height: 40px;
-  padding: 0 20px;
+  height: 32px;
+  margin: 0 12px;
+  padding: 0 8px;
+  border-radius: 4px;
   color: #3b444c;
   font-size: 13px;
 }
@@ -400,8 +409,9 @@ onUnmounted(
   background: #eaf2fd;
 }
 .cfg__group {
-  margin: 18px 0 6px;
-  padding: 0 20px;
+  margin: 16px 12px 8px;
+  padding: 16px 8px 0;
+  border-top: 1px solid #e6e9ef;
   color: #767d84;
   font-size: 11px;
   font-weight: 600;
@@ -414,8 +424,9 @@ onUnmounted(
 .cfg__env {
   display: flex;
   align-items: center;
-  height: 38px;
-  padding: 0 20px;
+  height: 32px;
+  margin: 0 12px;
+  padding: 0 8px;
   color: #3b444c;
   font-size: 13px;
 }
@@ -488,6 +499,12 @@ onUnmounted(
 .cfg__ctx--switch:hover {
   color: #0066cc;
 }
+.cfg__ctx--switch { padding-left: 36px; }
+.cfg__back { position: absolute; z-index: 1; top: 27px; left: 19px; display: grid; place-items: center; width: 20px; height: 20px; background: #fff; border: 1px solid #d0d4d9; border-radius: 4px; color: #596168; }
+.cfg__nav--context { padding-top: 0; }
+.cfg__nav--context .cfg__ctx { height: 36px; }
+.cfg__nav--context .cfg__back { top: 8px; }
+.cfg__nav--context .cfg__compare { height: 32px; margin: 0 12px 16px; color: #0066cc; }
 .cfg__ctx-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -519,8 +536,10 @@ onUnmounted(
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 40px;
-  padding: 0 16px;
+  height: 32px;
+  margin: 0 8px;
+  padding: 0 8px;
+  border-radius: 4px;
   color: #3b444c;
   font-size: 13px;
 }
@@ -571,6 +590,8 @@ onUnmounted(
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  padding: 12px;
-  background: #fff;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+  background: #f2f4f7;
 }</style>

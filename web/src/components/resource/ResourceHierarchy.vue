@@ -10,6 +10,7 @@ const props = defineProps<{
   resources: K8sResource[]
   /** 当前选中的资源类型，如 deployments / pods */
   kind: string
+  group?: string
 }>()
 
 const emit = defineEmits<{
@@ -41,8 +42,8 @@ function buildNode(resource: K8sResource, visited: Set<string>): TreeNode {
 
 const roots = computed<TreeNode[]>(() => {
   const visited = new Set<string>()
-  const ofKind = props.resources.filter((item) => item.ref.resource === props.kind)
-  const source = ofKind.length ? ofKind : props.resources.filter((item) => item.ownerRefs.length === 0)
+  const ofKind = props.resources.filter((item) => item.ref.resource === props.kind && (props.group === undefined || item.ref.group === props.group))
+  const source = props.kind ? ofKind : props.resources.filter((item) => item.ownerRefs.length === 0)
   return source.map((item) => {
     visited.add(item.ref.uid)
     return buildNode(item, visited)

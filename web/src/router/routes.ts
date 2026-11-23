@@ -15,6 +15,33 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: '',
+        redirect: '/apps',
+      },
+      {
+        path: 'apps/overview',
+        name: 'apps-overview',
+        component: () => import('@/views/overview/AppModuleOverviewView.vue'),
+        meta: { title: '应用概览', managementOverview: true },
+      },
+      {
+        path: 'clusters/overview',
+        name: 'clusters-overview',
+        component: () => import('@/views/overview/InfraModuleOverviewView.vue'),
+        meta: { title: '基础设施概览', managementOverview: true },
+      },
+      {
+        // 兼容旧概览书签与命名路由，保留查询参数和锚点。
+        path: 'application-management/overview',
+        name: 'application-management-overview',
+        redirect: { name: 'apps-overview' },
+      },
+      {
+        path: 'infrastructure-management/overview',
+        name: 'infrastructure-management-overview',
+        redirect: { name: 'clusters-overview' },
+      },
+      {
+        path: 'projects',
         name: 'projects',
         component: () => import('@/views/ProjectListView.vue'),
         meta: { title: '项目' },
@@ -57,7 +84,7 @@ const routes: RouteRecordRaw[] = [
           {
             path: 'deployments',
             name: 'app-deployments',
-            component: () => import('@/views/apps/DeploymentHistoryView.vue'),
+            component: () => import('@/views/apps/DeploymentActivityView.vue'),
             meta: { title: '发布历史' },
           },
           {
@@ -65,6 +92,12 @@ const routes: RouteRecordRaw[] = [
             name: 'app-metrics',
             component: () => import('@/views/apps/DeploymentMetricsView.vue'),
             meta: { title: '发布指标' },
+          },
+          {
+            path: 'config/compare/:resourceType?/:resourceName?',
+            name: 'config-compare',
+            component: () => import('@/views/apps/config/ConfigComparisonView.vue'),
+            meta: { title: '配置对比' },
           },
           {
             path: 'config',
@@ -183,6 +216,8 @@ const routes: RouteRecordRaw[] = [
             open: [to.params.group, to.params.resource, to.params.namespace, to.params.name]
               .map((part) => String(part ?? ''))
               .join(','),
+            openTab: ['manifest', 'events', 'logs', 'terminal'].includes(String(to.params.tab)) ? String(to.params.tab) : 'manifest',
+            ...(typeof to.query.container === 'string' ? { openContainer: to.query.container } : {}),
           },
         }),
         meta: { title: '资源详情', hidden: true, activeMenu: '/clusters' },

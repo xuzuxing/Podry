@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { useRouter } from 'vue-router'
 
 import { confirmDeployment, importArtifact, MockError, previewDeployment } from '@/api'
 import type { DeploymentPreview } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
+import ArtifactDetailsBody from '@/components/application/ArtifactDetailsBody.vue'
+import ArtifactMetadataDialog from '@/components/application/ArtifactMetadataDialog.vue'
+import { useArtifactDetails } from '@/composables/useArtifactDetails'
+import { artifactImageLabel } from '@/utils/artifactDetails'
 import type { Artifact, Binding, DeployStrategy, Deployment, Environment } from '@/types'
 import { fmtTime, shortDigest } from '@/utils/format'
 
@@ -29,6 +33,11 @@ const targetBindingId = ref('')
 const selectedArtifactId = ref('')
 const search = ref('')
 const expandedId = ref('')
+const metadataVisible = shallowRef(false), metadataId = shallowRef('')
+const metadataArtifact = computed(() => props.artifacts.find(item => item.id === metadataId.value) ?? null)
+const sourceDetails = useArtifactDetails({ active: () => props.visible && !!expandedId.value, appId: () => props.appId, artifactId: () => expandedId.value })
+function editMetadata(artifact: Artifact): void { metadataId.value = artifact.id; metadataVisible.value = true }
+function metadataSaved(artifact: Artifact): void { sourceDetails.acceptSaved(artifact); emit('refresh') }
 
 /* P2：发布策略 rolling / canary / bluegreen */
 const strategy = ref<DeployStrategy>('rolling')
@@ -94,7 +103,9 @@ const visibleArtifacts = computed(() => {
     (item) =>
       item.imageRef.toLowerCase().includes(keyword) ||
       item.imageRepository.toLowerCase().includes(keyword) ||
-      item.digest.toLowerCase().includes(keyword),
+      item.digest.toLowerCase().includes(keyword) ||
+      item.releaseTags?.some(tag => tag.toLowerCase().includes(keyword)) ||
+      item.notes?.toLowerCase().includes(keyword),
   )
 })
 
@@ -112,8 +123,7 @@ const reviewHint = computed(() => {
 
 /** 镜像 tag（Devtron 卡片只展示 tag，如 522bcd2f-4-6） */
 function tagOf(artifact: Artifact): string {
-  const parts = artifact.imageRef.split(':')
-  return parts.length > 1 ? parts[parts.length - 1] : artifact.imageRef
+  return artifactImageLabel(artifact.imageRef)
 }
 
 /** 该镜像在当前环境的部署时间；没有部署过返回空串 */
@@ -217,7 +227,7 @@ async function confirmDeploy(): Promise<void> {
   confirmError.value = ''
   confirmErrorCode.value = ''
   try {
-    await confirmDeployment({
+    const created = await confirmDeployment({
       previewId: current.previewId,
       bindingId: targetBindingId.value,
       artifactId: selectedArtifactId.value,
@@ -229,7 +239,7 @@ async function confirmDeploy(): Promise<void> {
     MessagePlugin.success('已提交发布，正在观察发布状态')
     reviewVisible.value = false
     close()
-    await router.push({ name: 'app-deployments', params: { projectId: props.projectId, appId: props.appId } })
+    await router.push({ name: 'app-deployments', params: { projectId: props.projectId, appId: props.appId }, query: { env: targetBinding.value?.environmentId, deployment: created.id, tab: 'source' } })
   } catch (err) {
     const code = errorCodeOf(err)
     if (code === 'preview_expired' || code === 'revision_conflict') {
@@ -266,6 +276,7 @@ watch(
   },
   { immediate: true },
 )
+watch(() => props.appId, () => { expandedId.value = ''; metadataVisible.value = false; metadataId.value = '' })
 </script>
 
 <template>
@@ -276,7 +287,9 @@ watch(
     :header="`部署到 ${targetEnvName}`"
     :close-btn="true"
     drawer-class-name="bd-image"
-    @close="close"
+    :close-on-esc-keydown="!metadataVisible"
+    :close-on-overlay-click="!metadataVisible"
+    @close="!metadataVisible && close()"
   >
     <div class="im">
       <div class="im__head">
@@ -287,7 +300,7 @@ watch(
         <span class="im__refresh" title="刷新镜像列表" @click="emit('refresh')">
           <t-icon name="refresh" size="16px" />
         </span>
-        <t-input v-model="search" class="im__search" size="small" clearable placeholder="按镜像 tag 搜索">
+        <t-input v-model="search" class="im__search" size="small" clearable placeholder="搜索镜像、标签或备注">
           <template #prefix-icon><t-icon name="search" /></template>
         </t-input>
       </div>
@@ -320,7 +333,10 @@ watch(
               role="button"
               tabindex="0"
               @click="selectedArtifactId = artifact.id"
-              @keydown.enter="selectedArtifactId = artifact.id"
+              :aria-label="`选择镜像 ${tagOf(artifact)}`"
+              :aria-pressed="artifact.id === selectedArtifactId"
+              @keydown.enter.self="selectedArtifactId = artifact.id"
+              @keydown.space.self.prevent="selectedArtifactId = artifact.id"
             >
               <div class="img-card__top">
                 <span class="img-card__chips">
@@ -353,27 +369,33 @@ watch(
                 </template>
               </div>
 
-              <div class="img-card__labels">+ 添加标签/备注</div>
+              <div v-if="artifact.releaseTags?.length" class="img-card__tags"><t-tag v-for="tag in artifact.releaseTags" :key="tag" size="small" variant="light">{{ tag }}</t-tag></div>
+              <p v-if="artifact.notes" class="img-card__notes">{{ artifact.notes }}</p>
+              <button type="button" class="img-card__labels" @click.stop="editMetadata(artifact)">{{ artifact.releaseTags?.length || artifact.notes ? '编辑标签/备注' : '+ 添加标签/备注' }}</button>
 
               <button
                 type="button"
                 class="img-card__more"
+                :aria-expanded="expandedId === artifact.id"
                 @click.stop="expandedId = expandedId === artifact.id ? '' : artifact.id"
               >
-                展开详情
+                {{ expandedId === artifact.id ? '收起详情' : '展开详情' }}
                 <t-icon :name="expandedId === artifact.id ? 'chevron-up' : 'chevron-down'" size="14px" />
               </button>
 
-              <dl v-if="expandedId === artifact.id" class="img-card__info">
+              <div v-if="expandedId === artifact.id" class="img-card__expanded" @click.stop>
+              <dl class="img-card__info">
                 <dt>镜像仓库</dt>
                 <dd class="u-mono">{{ artifact.imageRepository }}</dd>
                 <dt>摘要</dt>
-                <dd class="u-mono">{{ shortDigest(artifact.digest) }}</dd>
+                <dd class="u-mono">{{ artifact.digest }}</dd>
                 <dt>来源</dt>
                 <dd>{{ artifact.source === 'build' ? `构建产物 ${artifact.buildId ?? ''}` : '外部镜像' }}</dd>
                 <dt>创建时间</dt>
                 <dd>{{ fmtTime(artifact.createdAt) }}</dd>
               </dl>
+              <ArtifactDetailsBody :artifact="sourceDetails.artifact.value" :build="sourceDetails.build.value" :loading="sourceDetails.loading.value" :error="sourceDetails.error.value" :source-error="sourceDetails.sourceError.value" source-only @retry="sourceDetails.load" />
+              </div>
             </div>
           </li>
         </ul>
@@ -404,6 +426,7 @@ watch(
       </div>
     </template>
   </t-drawer>
+  <ArtifactMetadataDialog v-model:visible="metadataVisible" :artifact="metadataArtifact" @saved="metadataSaved" />
 
   <t-dialog
     v-model:visible="importVisible"
@@ -691,7 +714,10 @@ watch(
   line-height: 18px;
   border: 1px dashed #b1b7bc;
   border-radius: 4px;
+  background: white;
+  cursor: pointer;
 }
+.img-card__labels:hover{color:#0066cc;border-color:#0066cc}.img-card__tags{display:flex;flex-wrap:wrap;gap:6px}.img-card__notes{margin:0;color:#596168;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.img-card__expanded{min-width:0;padding-bottom:24px;cursor:default}
 .img-card__more {
   position: absolute;
   right: 16px;
@@ -721,10 +747,8 @@ watch(
 }
 .img-card__info dd {
   margin: 0;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   color: #3b444c;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ---- 底部 ---- */

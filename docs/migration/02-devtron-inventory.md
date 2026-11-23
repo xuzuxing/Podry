@@ -1,9 +1,9 @@
 # 参考项目清单与逐模块对照
 
-版本 V2.0 / 日期：2026-11-20 · 配套方案：[Devtron Dashboard → Podry Web 轻量化迁移方案](01-devtron-to-vue-plan.md)
+版本 V2.0 / 日期：2026-11-20 · 历史采集；当前方案：[Devtron Dashboard → Podry Web 复刻方案](01-devtron-to-vue-plan.md)
 对象：`D:\workspace\devtron-dashboard`（Devtron Dashboard 1.22.0）
 
-> 本文是**证据附录**：只记录可核对的事实（文件路径、行数、符号、端点、协议），供评审与执行时逐项核对。本文不代表 Podry 首版要完整实现 Devtron；业务取舍、菜单和 P0/P1/P2 边界见方案正文。
+> 本文是**证据附录**：只记录可核对的事实（文件路径、行数、符号、端点、协议），供评审与执行时逐项核对。本文不代表已实现。2026-11-22 起两个 Manager 的指定范围按 Devtron 布局与交互复刻；下文“不在范围”等旧标签为历史分期，当前以 V3.0 方案及布局与交互对账为准。
 
 ## 0. 采集方法与局限
 

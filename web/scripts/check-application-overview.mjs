@@ -1,0 +1,76 @@
+// Overview data joins, metadata updates, and compatibility. No real API calls.
+import assert from 'node:assert/strict'
+import { createServer } from 'vite'
+const server=await createServer({server:{middlewareMode:true,hmr:false},appType:'custom'})
+let count=0
+function check(name,value){assert.ok(value,name);count++;console.log('PASS '+name)}
+async function rejects(name,action,pattern){await assert.rejects(action,pattern);count++;console.log('PASS '+name)}
+try{
+  const utils=await server.ssrLoadModule('/src/utils/applicationOverview.ts')
+  const api=await server.ssrLoadModule('/src/api/index.ts')
+  const db=await server.ssrLoadModule('/src/mock/data.ts')
+  check('旧标签去重且不推断键值',JSON.stringify(utils.legacyApplicationTags({tags:['order','order','critical']}))===JSON.stringify(['order','critical']))
+  check('结构标签和旧标签正确分离',JSON.stringify(utils.legacyApplicationTags({tags:['team:one','legacy'],labels:[{key:'team',value:'one',propagate:true}]}))==='["legacy"]')
+  const labelApp={labels:[{key:'team',value:'one',propagate:true}]}
+  const labelCopy=utils.applicationLabelCopies(labelApp);labelCopy[0].value='mutated'
+  check('标签草稿不修改已保存应用',labelApp.labels[0].value==='one')
+  check('HTTPS 仓库链接删除凭据和 git 后缀',utils.repositoryWebUrl('https://user:pass@example.com/team/app.git')==='https://example.com/team/app')
+  check('SCP 仓库可打开网页',utils.repositoryWebUrl('git@example.com:team/app.git')==='https://example.com/team/app')
+  check('SSH 仓库可打开网页',utils.repositoryWebUrl('ssh://git@example.com/team/app.git')==='https://example.com/team/app')
+  check('拒绝脚本与文件仓库链接',!utils.repositoryWebUrl('javascript:alert(1)')&&!utils.repositoryWebUrl('file:///secret'))
+  check('无效仓库不伪造跳转',!utils.repositoryWebUrl('not a url'))
+  check('端口不混入镜像 tag',utils.overviewImageLabel('registry:5000/team/app')==='app')
+  check('镜像 tag 与 digest 正确展示',utils.overviewImageLabel('registry:5000/team/app:v1')==='v1'&&utils.overviewImageLabel('app@sha256:123')==='sha256:123')
+  const b=(id,environmentId,currentDeploymentId=null)=>({id,appId:'app',environmentId,currentDeploymentId})
+  const d=(id,bindingId,createdAt,artifactId='image')=>({id,appId:'app',bindingId,createdAt,artifactId})
+  const rows=utils.overviewEnvironments([b('one','dev','old'),b('two','prod'),b('three','other')],[{id:'dev',name:'A',production:false},{id:'prod',name:'B',production:true}],[d('old','one','2026-11-01'),d('new','one','2026-11-02'),d('two','two','2026-11-03'),{...d('foreign','three','2026-11-04'),appId:'other'}],[{id:'image',appId:'app',buildId:'build'}],[{id:'build',appId:'app',commitSha:'123'}])
+  check('优先绑定当前部署而非更新的未生效记录',rows[0].deployment.id==='old')
+  check('没有当前部署时读取环境最新记录',rows[1].deployment.id==='two')
+  check('拒绝跨应用部署并保留未部署环境',rows[2].deployment===null)
+  check('镜像与构建源码按真实关联连接',rows[0].build.commitSha==='123')
+  check('环境名称回退及生产标记',rows[2].name==='other'&&rows[1].production)
+  check('环境升降序不修改原数组',utils.sortOverviewEnvironments(rows,'environment','DESC')[0].id==='three'&&rows[0].id==='one')
+  check('时间升序空值排末尾',utils.sortOverviewEnvironments(rows,'deployedAt','ASC').map(row=>row.id).join(',')==='one,two,three')
+  check('时间降序空值仍排末尾',utils.sortOverviewEnvironments(rows,'deployedAt','DESC').map(row=>row.id).join(',')==='two,one,three')
+  const isolated=utils.overviewEnvironments([b('one','dev')],[],[d('latest','one','2026-11-03')],[{id:'image',appId:'other',buildId:'build'}],[{id:'build',appId:'other'}])
+  check('拒绝跨应用镜像与源码连接',isolated[0].artifact===null&&isolated[0].build===null)
+  const app=await api.createApplication({projectId:'p-shop',name:'overview-metadata',sourceMode:'git',labels:[{key:'team',value:'one',propagate:true}]})
+  check('新应用保存创建时间和创建人',!!app.createdAt&&app.createdBy===db.currentUser.name)
+  const originalCreatedAt=app.createdAt
+  await api.updateApplication(app.id,{description:'  updated  '})
+  const described=await api.getApplication(app.id)
+  check('描述编辑保留标签和创建事实',described.description==='updated'&&described.labels[0].propagate&&described.createdAt===originalCreatedAt)
+  const beforeInvalid=JSON.stringify(described)
+  await rejects('超长描述在写入边界拒绝',()=>api.updateApplication(app.id,{description:'x'.repeat(351),projectId:'p-data'}),/350/)
+  check('字段验证失败不部分更新项目',JSON.stringify(await api.getApplication(app.id))===beforeInvalid)
+  await rejects('空项目不可绕过校验',()=>api.updateApplication(app.id,{projectId:''}),/项目不存在/)
+  await rejects('未知项目拒绝',()=>api.updateApplication(app.id,{projectId:'unknown'}),/项目不存在/)
+  await api.createApplication({projectId:'p-data',name:'overview-metadata',sourceMode:'git'})
+  await rejects('移动项目检查同名应用',()=>api.updateApplication(app.id,{projectId:'p-data',description:'must not save'}),/同名/)
+  check('项目冲突不改写描述及标签',(await api.getApplication(app.id)).description==='updated'&&(await api.getApplication(app.id)).labels[0].propagate)
+  await api.updateApplication(app.id,{projectId:'p-core'})
+  check('项目移动保留环境和配置归属 ID',(await api.getApplication(app.id)).projectId==='p-core'&&(await api.getConfig(app.id)).appId===app.id)
+  const labels=[{key:'team',value:'two',propagate:false}]
+  const updated=await api.updateApplication(app.id,{labels});labels[0].value='external';updated.labels[0].value='response'
+  check('编辑标签输入和响应均为副本',(await api.getApplication(app.id)).labels[0].value==='two')
+  await rejects('重复键拒绝写入',()=>api.updateApplication(app.id,{labels:[{key:'a',value:'one',propagate:false},{key:'a',value:'two',propagate:false}]}),/标签/)
+  await rejects('非法键拒绝写入',()=>api.updateApplication(app.id,{labels:[{key:'bad key',value:'one',propagate:false}]}),/标签/)
+  await rejects('传播字段类型错误拒绝',()=>api.updateApplication(app.id,{labels:[{key:'a',value:'one',propagate:'yes'}]}),/传播/)
+  await rejects('不能混用旧版写入协议',()=>api.updateApplication(app.id,{tags:['old'],labels:[]}),/同时/)
+  const checkout=await api.getApplication('a-checkout')
+  await api.updateApplication('a-checkout',{labels:[{key:'owner',value:'platform',propagate:true}]})
+  const edited=await api.getApplication('a-checkout')
+  check('添加结构标签保留既有旧版标签',checkout.tags.every(tag=>edited.tags.includes(tag))&&edited.tags.includes('owner:platform'))
+  await api.updateApplication('a-checkout',{labels:[{key:'owner',value:'platform',propagate:true}],legacyTags:['critical']})
+  check('可以单独移除旧标签且保留结构标签',JSON.stringify((await api.getApplication('a-checkout')).tags)==='["critical","owner:platform"]')
+  await api.updateApplication('a-checkout',{labels:[],legacyTags:[]})
+  check('全部标签可明确清空',!(await api.getApplication('a-checkout')).tags.length&&!(await api.getApplication('a-checkout')).labels.length)
+  const markdown='# Heading\n\n**bold**\n\n```sh\necho hello\n```\n'
+  await api.updateApplication(app.id,{readme:markdown})
+  const readme=await api.getApplication(app.id)
+  check('说明原文及空行保留',readme.readme===markdown)
+  check('说明记录更新时间及用户',!!readme.readmeUpdatedAt&&readme.readmeUpdatedBy===db.currentUser.name)
+  await api.updateApplication(app.id,{description:''})
+  check('清空描述不修改说明元信息',(await api.getApplication(app.id)).readmeUpdatedAt===readme.readmeUpdatedAt)
+  console.log(`${count} application overview data checks passed`)
+}finally{await server.close()}

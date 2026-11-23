@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 
-import { getCluster, getNodeDetail } from '@/api'
-import EmptyState from '@/components/EmptyState.vue'
+import { getCluster, getNodeDetail, getResource } from '@/api'
+import ResourceManifestWorkspace from '@/components/resource/ResourceManifestWorkspace.vue'
+import NodeMetadataPanel from '@/components/resource/NodeMetadataPanel.vue'
+import NodePodsPanel from '@/components/resource/NodePodsPanel.vue'
+import ResourceActionDialog from '@/components/resource/ResourceActionDialog.vue'
+import type { ResourceAction } from '@/components/resource/listTypes'
+import type { K8sResource } from '@/types'
 import ErrorState from '@/components/ErrorState.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { Cluster, NodeDetail } from '@/types'
-import { fmtRelative, fmtTime } from '@/utils/format'
+import { fmtTime } from '@/utils/format'
 
 type NodeTab = 'summary' | 'yaml' | 'node-conditions'
 
@@ -25,7 +30,11 @@ const cluster = ref<Cluster | null>(null)
 const detail = ref<NodeDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
-const subTab = ref(0)
+const resource = ref<K8sResource | null>(null)
+const manifestEditor = useTemplateRef<InstanceType<typeof ResourceManifestWorkspace>>('manifestEditor')
+const actionVisible = ref(false)
+const actionType = ref<ResourceAction>('cordon')
+const actionTargets = ref<K8sResource[]>([])
 
 const clusterId = computed(() => String(route.params.clusterId ?? ''))
 const nodeName = computed(() => String(route.params.nodeName ?? ''))
@@ -45,8 +54,9 @@ const issues = computed(() => {
   if (!current) return [] as Array<{ title: string; description: string }>
   const list: Array<{ title: string; description: string }> = []
   const cpu = current.resources.find((item) => item.name === 'cpu')
-  const cpuLimit = Number((cpu?.limitPercentage ?? '').replace('%', ''))
-  if (cpuLimit > 100) {
+  // 与上游 NodeDetails 的触发条件保持一致；其提示文案仍说明 limits。
+  const cpuUsage = Number((cpu?.usagePercentage ?? '').replace('%', ''))
+  if (cpuUsage > 100) {
     list.push({ title: '资源超卖', description: 'CPU limits 已超过 100%，节点存在超卖风险' })
   }
   if (current.taints.length) {
@@ -62,21 +72,32 @@ const issues = computed(() => {
 })
 
 const errors = computed(() => Object.entries(detail.value?.errors ?? {}))
+const resourceRows = computed(() => [...(detail.value?.resources ?? [])].sort((a, b) => {
+  const order = (name: string) => name === 'cpu' ? 0 : name === 'memory' ? 1 : 2
+  return order(a.name) - order(b.name)
+}))
+let generation = 0
 
 async function load(): Promise<void> {
   if (!clusterId.value || !nodeName.value) return
+  const request = ++generation, id = clusterId.value, name = nodeName.value
   loading.value = true
   error.value = ''
+  cluster.value = null; detail.value = null; resource.value = null; actionVisible.value = false
   try {
-    ;[cluster.value, detail.value] = await Promise.all([
-      getCluster(clusterId.value),
-      getNodeDetail(clusterId.value, nodeName.value),
+    const [foundCluster, foundDetail, foundResource] = await Promise.all([
+      getCluster(id),
+      getNodeDetail(id, name),
+      getResource(id, '', 'nodes', '_cluster', name),
     ])
+    if (request !== generation) return
+    cluster.value = foundCluster; detail.value = foundDetail; resource.value = foundResource
   } catch (err) {
+    if (request !== generation) return
     detail.value = null
     error.value = err instanceof Error ? err.message : '节点详情加载失败'
   } finally {
-    loading.value = false
+    if (request === generation) loading.value = false
   }
 }
 
@@ -95,54 +116,43 @@ function openPod(namespace: string, name: string): void {
   })
 }
 
-function nodeAction(label: string, api: string): void {
-  MessagePlugin.info(`静态演示：${label} 将调用 ${api}（不会真正作用于节点）`)
+async function nodeAction(action: ResourceAction): Promise<void> {
+  const request = generation
+  if (await manifestEditor.value?.requestLeave() === false || request !== generation) return
+  try {
+    const found = await getResource(clusterId.value, '', 'nodes', '_cluster', nodeName.value)
+    if (request !== generation) return
+    actionTargets.value = [found]
+    actionType.value = action; actionVisible.value = true
+  } catch (err) { if (request === generation) void MessagePlugin.error(err instanceof Error ? err.message : '节点加载失败') }
+}
+function onNodeAction(deleted: string[]): void {
+  if (deleted.length) void router.push(backTo.value)
+  else void load()
 }
 
-async function copyYaml(): Promise<void> {
-  if (!detail.value) return
-  if (!navigator.clipboard) {
-    MessagePlugin.warning('当前环境不支持自动复制，请手动选择文本')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(detail.value.manifest)
-    MessagePlugin.success('YAML 已复制')
-  } catch {
-    MessagePlugin.error('复制失败，请手动选择文本')
-  }
+async function applied(updated: K8sResource) {
+  resource.value = updated
+  const request = generation, id = clusterId.value, name = nodeName.value
+  try { const found = await getNodeDetail(id, name); if (request === generation) detail.value = found }
+  catch (cause) { if (request === generation) void MessagePlugin.error(cause instanceof Error ? cause.message : '节点详情读回失败') }
 }
 
 watch([clusterId, nodeName], () => void load(), { immediate: true })
+onScopeDispose(() => { ++generation })
 </script>
 
 <template>
   <div class="node tk-panel">
-    <div class="node__crumb">
+    <Teleport to="#shell-breadcrumbs" defer><div class="node__crumb">
       <router-link class="node__crumb-link" :to="{ name: 'clusters' }">资源浏览器</router-link>
       <span class="node__crumb-sep">/</span>
       <router-link class="node__crumb-link" :to="backTo">{{ cluster?.name ?? clusterId }}</router-link>
       <span class="node__crumb-sep">/</span>
       <span class="node__crumb-current">{{ nodeName }}</span>
-      <span class="node__crumb-actions">
-        <t-button size="small" variant="text" @click="nodeAction('终端', 'GET /clusters/{id}/terminal')">
-          <template #icon><t-icon name="terminal" /></template>
-          调试
-        </t-button>
-        <t-button size="small" variant="text" @click="nodeAction('Cordon/Uncordon', 'PATCH node.spec.unschedulable')">
-          {{ detail?.unschedulable ? '恢复调度' : '禁止调度' }}
-        </t-button>
-        <t-button size="small" variant="text" @click="nodeAction('Drain', 'POST /clusters/{id}/node-actions')">
-          驱逐
-        </t-button>
-        <t-button size="small" variant="text" @click="nodeAction('Edit taints', 'PATCH node.spec.taints')">
-          Taints
-        </t-button>
-        <t-button size="small" variant="text" theme="danger" @click="nodeAction('删除节点', 'DELETE node')">
-          删除
-        </t-button>
-      </span>
-    </div>
+
+    </div></Teleport>
+    <ResourceActionDialog v-model:visible="actionVisible" :cluster-id="clusterId" :targets="actionTargets" :action="actionType" @completed="onNodeAction" />
 
     <div class="node__head">
       <div class="node__ident">
@@ -170,6 +180,24 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
       >
         {{ tab.label }}
       </button>
+      <span class="node__crumb-actions" :inert="!detail || loading">
+        <t-button size="small" variant="text" @click="router.push({ name: 'cluster-terminal', params: { clusterId }, query: { node: nodeName } })">
+          <template #icon><t-icon name="terminal" /></template>
+          调试
+        </t-button>
+        <t-button size="small" variant="text" @click="nodeAction(detail?.unschedulable ? 'uncordon' : 'cordon')">
+          {{ detail?.unschedulable ? '恢复调度' : '禁止调度' }}
+        </t-button>
+        <t-button size="small" variant="text" @click="nodeAction('drain')">
+          驱逐
+        </t-button>
+        <t-button size="small" variant="text" @click="nodeAction('taints')">
+          Taints
+        </t-button>
+        <t-button size="small" variant="text" theme="danger" @click="nodeAction('delete')">
+          删除
+        </t-button>
+      </span>
     </div>
 
     <ErrorState v-if="error" :message="error" @retry="load" />
@@ -237,7 +265,7 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
               <t-table
                 row-key="name"
                 size="small"
-                :data="detail.resources"
+                :data="resourceRows"
                 :columns="[
                   { colKey: 'name', title: '资源', width: 170 },
                   { colKey: 'requestPercentage', title: '请求', width: 90 },
@@ -247,7 +275,7 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
                   { colKey: 'capacity', title: '容量', width: 100 },
                 ]"
               >
-                <template #name="{ row }"><span class="u-mono">{{ row.name }}</span></template>
+                <template #name="{ row }"><span class="node__resource-name"><t-icon :name="row.name === 'cpu' ? 'cpu' : row.name === 'memory' ? 'server' : 'hard-drive'" size="18px" /><span class="u-mono">{{ row.name }}</span></span></template>
                 <template #usagePercentage="{ row }">
                   <span :class="{ 'node-warn': Number(String(row.usagePercentage).replace('%', '')) >= 80 }">
                     {{ row.usagePercentage }}
@@ -256,86 +284,13 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
               </t-table>
             </section>
 
-            <section class="node-card">
-              <div class="node-card__tabs">
-                <button
-                  v-for="(label, index) in [
-                    `标签 (${detail.labels.length})`,
-                    `注解 (${detail.annotations.length})`,
-                    `Taints (${detail.taints.length})`,
-                  ]"
-                  :key="label"
-                  type="button"
-                  class="node-card__tab"
-                  :class="{ 'node-card__tab--active': subTab === index }"
-                  @click="subTab = index"
-                >
-                  {{ label }}
-                </button>
-              </div>
-              <div class="node-card__body node-card__body--list">
-                <template v-if="subTab === 0">
-                  <p v-if="!detail.labels.length" class="u-dim">No labels</p>
-                  <p v-for="label in detail.labels" :key="label" class="node-line u-mono">{{ label }}</p>
-                </template>
-                <template v-else-if="subTab === 1">
-                  <p v-if="!detail.annotations.length" class="u-dim">No annotations</p>
-                  <p v-for="item in detail.annotations" :key="item" class="node-line u-mono">{{ item }}</p>
-                </template>
-                <template v-else>
-                  <p v-if="!detail.taints.length" class="u-dim">No taints</p>
-                  <p v-for="taint in detail.taints" :key="`${taint.key}-${taint.effect}`" class="node-line u-mono">
-                    {{ taint.key }}<template v-if="taint.value">={{ taint.value }}</template> : {{ taint.effect }}
-                  </p>
-                </template>
-              </div>
-            </section>
-
-            <section class="node-card">
-              <div class="node-card__head">Pod（本节点）</div>
-              <t-table
-                row-key="name"
-                size="small"
-                :data="detail.pods"
-                :columns="[
-                  { colKey: 'namespace', title: '命名空间', width: 120 },
-                  { colKey: 'name', title: 'Pod', width: 300 },
-                  { colKey: 'cpuRequest', title: 'CPU 请求', width: 118 },
-                  { colKey: 'cpuLimit', title: 'CPU 限制', width: 104 },
-                  { colKey: 'memRequest', title: '内存请求', width: 124 },
-                  { colKey: 'memLimit', title: '内存限制', width: 104 },
-                  { colKey: 'age', title: '存活时间', width: 70 },
-                ]"
-              >
-                <template #namespace="{ row }"><span class="u-mono">{{ row.namespace }}</span></template>
-                <template #name="{ row }">
-                  <button type="button" class="node-link" @click="openPod(row.namespace, row.name)">{{ row.name }}</button>
-                </template>
-                <template #empty>
-                  <EmptyState title="该节点没有运行中的 Pod" compact icon="app" />
-                </template>
-              </t-table>
-            </section>
+            <NodeMetadataPanel :key="detail.name" :detail="detail" @edit-taints="nodeAction('taints')" />
+            <NodePodsPanel :key="detail.name" :pods="detail.pods" @open="openPod" />
           </div>
         </div>
 
         <!-- YAML -->
-        <div v-else-if="activeTab === 'yaml'" class="node__yaml">
-          <div class="node__yaml-head">
-            <span class="u-muted u-mono">node.yaml</span>
-            <span class="u-flex u-gap-8">
-              <t-button size="small" variant="outline" @click="copyYaml">
-                <template #icon><t-icon name="copy" /></template>
-                复制
-              </t-button>
-              <t-button size="small" variant="outline" @click="nodeAction('编辑 YAML', 'PATCH node')">
-                <template #icon><t-icon name="edit" /></template>
-                编辑
-              </t-button>
-            </span>
-          </div>
-          <pre class="tk-code node__manifest">{{ detail.manifest }}</pre>
-        </div>
+        <ResourceManifestWorkspace v-else-if="activeTab === 'yaml' && resource" ref="manifestEditor" :resource="resource" :cluster-id="clusterId" @applied="applied" />
 
         <!-- Node Conditions -->
         <div v-else class="node__conditions">
@@ -358,7 +313,6 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
             </template>
             <template #message="{ row }"><span class="u-muted">{{ row.message }}</span></template>
           </t-table>
-          <p class="node__hint">最后更新：{{ fmtRelative(new Date().toISOString()) }}（静态 mock 数据）</p>
         </div>
       </div>
     </t-loading>
@@ -369,15 +323,16 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
 .node {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 88px);
+  min-height: calc(100dvh - 64px);
+  margin: -12px -16px -24px;
+  border: 0;
 }
 .node__crumb {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 36px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--tk-border);
+  height: 48px;
+  padding: 0;
 }
 .node__crumb-link {
   color: var(--tk-text-2);
@@ -436,7 +391,8 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
   display: flex;
   align-items: center;
   gap: 20px;
-  height: 38px;
+  min-height: 38px;
+  flex-wrap: wrap;
   padding: 0 12px;
   border-bottom: 1px solid var(--tk-border);
 }
@@ -472,32 +428,45 @@ watch([clusterId, nodeName], () => void load(), { immediate: true })
 }
 .node__summary {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 28%) minmax(0, 1fr);
   gap: 12px;
   padding: 12px;
   align-items: start;
+  height: calc(100dvh - 175px);
+  min-height: 400px;
+  box-sizing: border-box;
 }
 .node__col {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  max-height: 100%;
+  overflow: auto;
 }
+.node__col>section{flex-shrink:0}
+.node__col--right :deep(.t-table){font-size:12px}
+.node__col--right :deep(.t-table th),.node__col--right :deep(.t-table td){padding:8px 12px}
+.node-card__body--list{max-height:none}
+@media(max-width:1100px){.node__tabs{gap:12px}.node__crumb-actions{gap:0}.node__summary{grid-template-columns:260px minmax(0,1fr)}}
 .node-card {
   background: var(--tk-surface);
   border: 1px solid var(--tk-border);
   border-radius: var(--tk-radius);
   overflow: hidden;
 }
-.node-card--error .node-card__banner {
+.node-card__banner {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  color: #fff;
   font-weight: 600;
+}
+.node-card--error .node-card__banner {
+  color: #fff;
   background: var(--tk-danger);
 }
+.node__resource-name{display:inline-flex;align-items:center;gap:12px}
 .node-card__banner--warning {
   color: #1f2733;
   background: #ffe6c7;

@@ -1,0 +1,16 @@
+/* Match Devtron's legacy viewport background and xterm 6 scrollbar treatment. */
+.podry-xterm {
+  .xterm-viewport {
+    width: initial !important;
+    background-color: #181920 !important;
+    overscroll-behavior: contain;
+  }
+  .xterm-scrollable-element > .scrollbar.vertical {
+    width: 12px !important;
+    .slider {
+      border-radius: 10px !important;
+      background: rgba(255, 255, 255, 0.2) !important;
+      &:hover { background: rgba(255, 255, 255, 0.4) !important; }
+    }
+  }
+}

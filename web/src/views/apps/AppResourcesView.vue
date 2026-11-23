@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { LocationQuery, RouteLocationRaw } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
@@ -9,7 +9,6 @@ import {
   deleteRelease,
   getAppMonitoring,
   getApplication,
-  getPodLogs,
   listApplicationResources,
   listArtifacts,
   listBindings,
@@ -21,12 +20,19 @@ import {
   setWorkloadsHibernation,
 } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
+import ReleaseNotesDrawer from '@/components/application/ReleaseNotesDrawer.vue'
 import Sparkline from '@/components/Sparkline.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import K8sKindTree from '@/components/K8sKindTree.vue'
 import ResourceDetailPanel from '@/components/resource/ResourceDetailPanel.vue'
+import ResourceWorkspaceTabs from '@/components/resource/ResourceWorkspaceTabs.vue'
+import { useResourceTabRefresh } from '@/composables/useResourceTabRefresh'
+import { useResourceDetailLocation } from '@/composables/useResourceDetailLocation'
+import { resourceDetailQuery } from '@/utils/resourceDetailLocation'
+import ResourceActionDialog from '@/components/resource/ResourceActionDialog.vue'
 import ResourceHierarchy from '@/components/resource/ResourceHierarchy.vue'
+import LogAnalyzerWorkspace from '@/components/resource/LogAnalyzerWorkspace.vue'
 import type {
   Artifact,
   Binding,
@@ -40,6 +46,7 @@ import type {
 import { useResourceTabsStore } from '@/stores/resourceTabs'
 import type { ResourceTabKey } from '@/stores/resourceTabs'
 import { deployStatusMap, fmtRelative, healthMap } from '@/utils/format'
+import { resourceTypeKey } from '@/utils/resourceListing'
 
 /** resource-detail 路由的 :group 段不能为空，核心组（group 为空串）用 `core` 占位 */
 const CORE_GROUP = 'core'
@@ -84,9 +91,12 @@ const resources = ref<K8sResource[]>([])
 const resLoading = ref(false)
 const resError = ref('')
 const activeResource = ref('')
+const activeGroup = ref('')
 const podTab = ref<'new' | 'old'>('new')
 
 const tabsStore = useResourceTabsStore()
+const resourcePanel = useTemplateRef<InstanceType<typeof ResourceDetailPanel>>('resourcePanel')
+async function canLeavePanel(): Promise<boolean> { return await (resourcePanel.value?.requestLeave() ?? true) }
 
 const deleteVisible = ref(false)
 const deleteTarget = ref<K8sResource | null>(null)
@@ -96,21 +106,6 @@ const compareVisible = ref(false)
 const healthVisible = ref(false)
 
 type AppView = 'resources' | 'analyzer'
-const analyzerLoading = ref(false)
-const analyzerPod = ref('all')
-const analyzerContainer = ref('all')
-const analyzerSince = ref(0)
-const analyzerKeyword = ref('')
-const analyzerLive = ref(false)
-const analyzer = ref<{
-  total: number
-  info: number
-  warn: number
-  error: number
-  errors: string[]
-  lines: Array<{ pod: string; text: string; level: 'info' | 'warn' | 'error' }>
-} | null>(null)
-
 const compareRows = computed(() =>
   bindings.value.map((binding) => {
     const env = environments.value.find((item) => item.id === binding.environmentId)
@@ -217,6 +212,7 @@ async function copyPageLink(): Promise<void> {
 }
 
 async function refreshPage(): Promise<void> {
+  if (!(await canLeavePanel())) return
   await loadBindings()
   await loadResources()
   MessagePlugin.success('已刷新')
@@ -225,32 +221,11 @@ async function refreshPage(): Promise<void> {
 /** 视图：K8s 资源 / 日志分析（都作为页签，可深链 ?view=analyzer） */
 const appView = computed<AppView>(() => (String(route.query.view ?? '') === 'analyzer' ? 'analyzer' : 'resources'))
 
-const analyzerPodOptions = computed(() => [
-  { label: '全部 Pod', value: 'all' },
-  ...resources.value.filter((item) => item.kind === 'Pod').map((item) => ({ label: item.ref.name, value: item.ref.name })),
-])
-
-/** 容器选择：取当前 Pod（或全部 Pod）manifest 里的容器名 */
-const analyzerContainerOptions = computed(() => {
-  const pods = resources.value.filter(
-    (item) => item.kind === 'Pod' && (analyzerPod.value === 'all' || item.ref.name === analyzerPod.value),
-  )
-  const names = new Set<string>()
-  for (const pod of pods) {
-    for (const match of (pod.manifest ?? '').matchAll(/^\s*- name:\s*(\S+)/gm)) names.add(match[1])
-  }
-  return [{ label: '全部容器', value: 'all' }, ...[...names].map((name) => ({ label: name, value: name }))]
-})
-
-const analyzerSinceOptions = [
-  { label: '全部时间', value: 0 },
-  { label: '最近 5 分钟', value: 300 },
-  { label: '最近 15 分钟', value: 900 },
-  { label: '最近 1 小时', value: 3600 },
-]
+const analyzerAvailable = computed(() => resources.value.some(item => item.kind === 'Pod'))
+const analyzerRefreshKey = ref(0)
 
 function setAppView(view: AppView): void {
-  const query = { ...route.query }
+  const query = resourceDetailQuery(route.query)
   delete query.tab
   if (view === 'analyzer') query.view = 'analyzer'
   else delete query.view
@@ -258,87 +233,9 @@ function setAppView(view: AppView): void {
 }
 
 async function openAnalyzer(): Promise<void> {
+  if (!(await canLeavePanel())) return
   setAppView('analyzer')
-  await loadAnalyzer()
 }
-
-async function loadAnalyzer(): Promise<void> {
-  if (!activeBinding.value) return
-  analyzerLoading.value = true
-  try {
-    const all = await listApplicationResources(appId.value, activeBinding.value.id)
-    const pods = all.filter(
-      (item) => item.kind === 'Pod' && (analyzerPod.value === 'all' || item.ref.name === analyzerPod.value),
-    )
-    const result = {
-      total: 0,
-      info: 0,
-      warn: 0,
-      error: 0,
-      errors: [] as string[],
-      lines: [] as Array<{ pod: string; text: string; level: 'info' | 'warn' | 'error' }>,
-    }
-    for (const pod of pods) {
-      let lines: string[] = []
-      try {
-        lines = await getPodLogs(pod.ref.uid, {
-          sinceSeconds: analyzerSince.value || undefined,
-          container: analyzerContainer.value === 'all' ? undefined : analyzerContainer.value,
-        })
-      } catch {
-        continue
-      }
-      result.total += lines.length
-      for (const line of lines) {
-        if (line.includes('ERROR') || line.includes('FATAL')) {
-          result.error += 1
-          if (result.errors.length < 8) result.errors.push(`${pod.ref.name} · ${line}`)
-          result.lines.push({ pod: pod.ref.name, text: line, level: 'error' })
-        } else if (line.includes('WARN')) {
-          result.warn += 1
-          result.lines.push({ pod: pod.ref.name, text: line, level: 'warn' })
-        } else {
-          result.info += 1
-          result.lines.push({ pod: pod.ref.name, text: line, level: 'info' })
-        }
-      }
-    }
-    analyzer.value = result
-  } catch (err) {
-    MessagePlugin.error(err instanceof Error ? err.message : '日志分析失败')
-  } finally {
-    analyzerLoading.value = false
-  }
-}
-
-const analyzerLines = computed(() => {
-  const kw = analyzerKeyword.value.trim().toLowerCase()
-  const lines = analyzer.value?.lines ?? []
-  return kw ? lines.filter((line) => line.text.toLowerCase().includes(kw)) : lines
-})
-
-/** Live：开启后每 5 秒追加一条 mock 日志，便于演示流式效果 */
-let analyzerTimer: number | undefined
-
-function startAnalyzerLive(): void {
-  if (analyzerTimer) return
-  analyzerTimer = window.setInterval(() => {
-    if (!analyzerLive.value || !analyzer.value) return
-    const stamp = new Date().toISOString()
-    const podName = analyzerPod.value === 'all' ? 'checkout-api' : analyzerPod.value
-    analyzer.value.lines = [
-      ...analyzer.value.lines,
-      { pod: podName, text: `[${stamp}] INFO  http    GET /healthz 200 3ms`, level: 'info' as const },
-    ].slice(-2000)
-    analyzer.value.info += 1
-    analyzer.value.total += 1
-  }, 5000)
-}
-
-onMounted(startAnalyzerLive)
-onBeforeUnmount(() => {
-  if (analyzerTimer) window.clearInterval(analyzerTimer)
-})
 
 const activeBinding = computed(() => bindings.value.find((item) => item.id === activeBindingId.value) ?? null)
 const clusterId = computed(() => activeBinding.value?.target.clusterId ?? '')
@@ -366,6 +263,7 @@ const workloadModalVisible = computed({
 const selectedWorkloads = ref<string[]>([])
 const workloadSaving = ref(false)
 const hibernated = ref(false)
+const notesVisible = ref(false)
 const releaseDeleteVisible = ref(false)
 const releaseDeleteConfirm = ref('')
 const releaseDeleting = ref(false)
@@ -487,7 +385,7 @@ const deployState = computed(() => (latestDeployment.value ? deployStatusMap[lat
 const kindTypes = computed<ResourceType[]>(() => {
   const map = new Map<string, K8sResource>()
   for (const item of resources.value) {
-    if (!map.has(item.ref.resource)) map.set(item.ref.resource, item)
+    if (!map.has(resourceTypeKey(item.ref))) map.set(resourceTypeKey(item.ref), item)
   }
   const items = [...map.values()]
   const order = (resource: K8sResource) => {
@@ -509,19 +407,19 @@ const kindTypes = computed<ResourceType[]>(() => {
 
 const kindCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
-  for (const item of resources.value) counts[item.ref.resource] = (counts[item.ref.resource] ?? 0) + 1
+  for (const item of resources.value) { const key = resourceTypeKey(item.ref); counts[key] = (counts[key] ?? 0) + 1 }
   return counts
 })
 
 const activeKind = computed(
-  () => kindTypes.value.find((item) => item.resource === activeResource.value)?.kind ?? '资源',
+  () => kindTypes.value.find((item) => item.resource === activeResource.value && item.group === activeGroup.value)?.kind ?? '资源',
 )
 
 const isPodKind = computed(() => activeKind.value === 'Pod')
 
 /** 当前 Kind + Namespace 过滤后的行；Pod 的 New/Old 子页签在 rows 上再切一刀 */
 const scopedRows = computed(() =>
-  resources.value.filter((item) => item.ref.resource === activeResource.value),
+  resources.value.filter((item) => item.ref.resource === activeResource.value && item.ref.group === activeGroup.value),
 )
 
 const rows = computed(() => (isPodKind.value && podTab.value === 'old' ? [] : scopedRows.value))
@@ -548,6 +446,18 @@ const activeTabId = computed(() => {
   return id && resourceTabs.value.some((item) => item.id === id) ? id : ''
 })
 const activeAppTab = computed(() => resourceTabs.value.find((item) => item.id === activeTabId.value) ?? null)
+const detailLocation = useResourceDetailLocation({
+  scope: () => appTabScope.value,
+  clusterId: () => clusterId.value,
+  ready: () => !!clusterId.value && !bindLoading.value && !resLoading.value && !resError.value,
+  kind: address => resources.value.find(item => item.ref.group === address.group && item.ref.resource === address.resource && item.ref.namespace === address.namespace && item.ref.name === address.name)?.kind,
+})
+const { refreshing: resourceRefreshing, syncedAt: resourceSyncedAt, synced: onResourceSynced, refresh: refreshResourceTab } = useResourceTabRefresh(() => resourcePanel.value, () => activeTabId.value)
+watch([appTabScope, activeTabId], ([scope, id]) => { if (id || !route.query.tab) tabsStore.activate(scope, id) }, { immediate: true })
+
+watch([resLoading, analyzerAvailable], ([loading, available]) => {
+  if (!loading && !available && appView.value === 'analyzer') setAppView('resources')
+})
 
 const clusterLink = computed<RouteLocationRaw>(() => ({
   name: 'cluster-workspace',
@@ -560,19 +470,23 @@ const clusterLink = computed<RouteLocationRaw>(() => ({
           activeAppTab.value.namespace,
           activeAppTab.value.name,
         ].join(','),
+        openTab: activeAppTab.value.tab,
+        openContainer: activeAppTab.value.container,
       }
     : undefined,
 }))
 
-function setActiveTab(id: string): void {
-  const query: LocationQuery = { ...route.query }
+async function setActiveTab(id: string): Promise<void> {
+  if ((id === String(route.query.tab ?? '') && appView.value === 'resources') || !(await canLeavePanel())) return
+  const query = detailLocation.queryFor(id)
   delete query.view
   if (id) query.tab = id
   else delete query.tab
   void router.replace({ query })
 }
 
-function openAppTab(row: K8sResource, tab: ResourceTabKey = 'manifest'): void {
+async function openAppTab(row: K8sResource, tab: ResourceTabKey = 'manifest', container?: string): Promise<void> {
+  if (!(await canLeavePanel())) return
   const id = tabsStore.open({
     scope: appTabScope.value,
     clusterId: clusterId.value,
@@ -582,27 +496,37 @@ function openAppTab(row: K8sResource, tab: ResourceTabKey = 'manifest'): void {
     name: row.ref.name,
     kind: row.kind,
     tab,
+    container,
   })
   setActiveTab(id)
 }
 
-function closeAppTab(id: string, event?: Event): void {
+async function closeAppTab(id: string, event?: Event): Promise<void> {
   event?.stopPropagation()
   const wasActive = id === activeTabId.value
+  if (wasActive && !(await canLeavePanel())) return
+  const previous = wasActive ? tabsStore.previous(appTabScope.value, id) : ''
   tabsStore.close(appTabScope.value, id)
-  if (wasActive) {
-    const remaining = resourceTabs.value
-    setActiveTab(remaining.length ? remaining[remaining.length - 1].id : '')
+  if (wasActive) await setActiveTab(previous)
+}
+
+async function resourceTabMenu(action: string, id: string): Promise<void> {
+  if (action === 'refresh') { if (id === activeTabId.value) await refreshResourceTab(); else await setActiveTab(id); return }
+  if ((action === 'all' || (action === 'others' && id !== activeTabId.value)) && !(await canLeavePanel())) return
+  if (action === 'close') closeAppTab(id)
+  if (action === 'others') { tabsStore.closeOthers(appTabScope.value, id); setActiveTab(id) }
+  if (action === 'all') {
+    resourceTabs.value.forEach((tab) => tabsStore.close(appTabScope.value, tab.id))
+    setActiveTab('')
   }
 }
 
 function onContainerLogs(pod: K8sResource, container: string): void {
-  MessagePlugin.info('容器日志：' + pod.ref.name + ' / ' + container + '（在日志页签里切换容器查看）')
-  openAppTab(pod, 'logs')
+  openAppTab(pod, 'logs', container)
 }
 
 function onPanelTab(tab: ResourceTabKey): void {
-  if (activeAppTab.value) tabsStore.setTab(activeAppTab.value.id, tab)
+  detailLocation.select(tab)
 }
 
 function envNameOf(environmentId: string): string {
@@ -625,19 +549,14 @@ function openTerminal(): void {
   void router.push({ name: 'cluster-terminal', params: { clusterId: clusterId.value } })
 }
 
-function confirmDelete(): void {
-  const target = deleteTarget.value
-  deleteVisible.value = false
-  if (!target) return
-  MessagePlugin.info(
-    `静态演示：将调用 DELETE /clusters/${clusterId.value}/namespaces/${target.ref.namespace}/${target.ref.resource}/${target.ref.name}`,
-  )
+async function onDeleted(): Promise<void> {
   deleteTarget.value = null
+  await loadResources()
 }
 
 function syncActiveResource(): void {
-  const exists = kindTypes.value.some((item) => item.resource === activeResource.value)
-  if (!exists) activeResource.value = kindTypes.value[0]?.resource ?? ''
+  const exists = kindTypes.value.some((item) => item.resource === activeResource.value && item.group === activeGroup.value)
+  if (!exists) { activeResource.value = kindTypes.value[0]?.resource ?? ''; activeGroup.value = kindTypes.value[0]?.group ?? '' }
 }
 
 async function loadResources(): Promise<void> {
@@ -694,12 +613,15 @@ async function loadBindings(): Promise<void> {
   }
 }
 
-function selectBinding(id: string): void {
-  if (id === activeBindingId.value) return
+async function selectBinding(id: string): Promise<void> {
+  if (id === activeBindingId.value || !(await canLeavePanel())) return
   activeBindingId.value = id
   activeResource.value = ''
   podTab.value = 'new'
-  void router.replace({ query: { ...route.query, env: id } })
+  const query: LocationQuery = { ...resourceDetailQuery(route.query), env: id }
+  delete query.tab
+  delete query.view
+  void router.replace({ query })
   void loadMonitoring()
   void loadResources()
 }
@@ -708,8 +630,9 @@ function onBindingChange(value: SelectValue): void {
   selectBinding(String(value))
 }
 
-function selectKind(resource: string): void {
+function selectKind(resource: string, group: string): void {
   activeResource.value = resource
+  activeGroup.value = group
   podTab.value = 'new'
 }
 
@@ -767,6 +690,7 @@ watch(
               <t-icon name="swap" size="15px" />
             </button>
           </div>
+          <t-button size="small" variant="text" @click="notesVisible = true">Notes</t-button>
           <t-dropdown
             trigger="click"
             placement="bottom-right"
@@ -908,7 +832,8 @@ watch(
         <!-- K8s Resources 区域 -->
         <div class="res__panel">
           <div class="res__tabs">
-            <div class="res__tabs-left">
+            <ResourceWorkspaceTabs class="res__tabs-left" variant="application" :tabs="resourceTabs" :active="activeTabId" :refreshing="resourceRefreshing" :synced-at="resourceSyncedAt" @select="setActiveTab" @close="closeAppTab" @menu="resourceTabMenu" @refresh="refreshResourceTab">
+              <template #fixed>
               <button
                 type="button"
                 class="res__tab"
@@ -919,6 +844,7 @@ watch(
                 K8s 资源
               </button>
               <button
+                v-if="analyzerAvailable"
                 type="button"
                 class="res__tab"
                 :class="{ 'res__tab--active': !activeAppTab && appView === 'analyzer' }"
@@ -927,103 +853,33 @@ watch(
                 <t-icon name="chart-bar" size="14px" />
                 日志分析
               </button>
-              <button
-                v-for="tab in resourceTabs"
-                :key="tab.id"
-                type="button"
-                class="res__tab res__tab--resource"
-                :class="{ 'res__tab--active': activeAppTab?.id === tab.id }"
-                :title="`${tab.kind} / ${tab.name}`"
-                @click="setActiveTab(tab.id)"
-              >
-                <span class="res__tab-label">{{ tab.kind.toLowerCase() }}/{{ tab.name }}</span>
-                <span class="res__tab-close" role="button" @click="closeAppTab(tab.id, $event)">
-                  <t-icon name="close" size="12px" />
-                </span>
-              </button>
-            </div>
+              </template>
+            </ResourceWorkspaceTabs>
             <button
               v-if="!activeAppTab"
               type="button"
               class="res__icon-btn res__icon-btn--plain"
-              title="刷新资源"
-              @click="loadResources"
+              :title="appView === 'analyzer' ? '重新连接分析器' : '刷新资源'"
+              @click="appView === 'analyzer' ? analyzerRefreshKey++ : loadResources()"
             >
               <t-icon name="refresh" size="15px" />
             </button>
             <router-link v-else class="res__tabs-link" :to="clusterLink">在集群中查看</router-link>
           </div>
 
-          <div v-if="!activeAppTab && appView === 'analyzer'" class="res__analyzer-tab">
-            <div class="res__analyzer-bar">
-              <span class="res__analyzer-label">Pod</span>
-              <t-select
-                v-model="analyzerPod"
-                size="small"
-                class="res__analyzer-select"
-                :options="analyzerPodOptions"
-                @change="loadAnalyzer"
-              />
-              <span class="res__analyzer-label">容器</span>
-              <t-select
-                v-model="analyzerContainer"
-                size="small"
-                class="res__analyzer-select"
-                :options="analyzerContainerOptions"
-                @change="loadAnalyzer"
-              />
-              <t-select
-                v-model="analyzerSince"
-                size="small"
-                class="res__analyzer-select"
-                :options="analyzerSinceOptions"
-                @change="loadAnalyzer"
-              />
-              <t-input
-                v-model="analyzerKeyword"
-                size="small"
-                class="res__analyzer-search"
-                clearable
-                placeholder="过滤日志内容"
-              >
-                <template #prefix-icon><t-icon name="search" /></template>
-              </t-input>
-              <label class="res__analyzer-live">
-                <t-checkbox v-model="analyzerLive" />
-                Live
-              </label>
-              <t-button size="small" variant="text" :loading="analyzerLoading" @click="loadAnalyzer">
-                <template #icon><t-icon name="refresh" /></template>
-                刷新
-              </t-button>
-            </div>
-
-            <div class="res__analyzer">
-              <div class="res__analyzer-cell"><span>日志行数</span><strong>{{ analyzer?.total ?? 0 }}</strong></div>
-              <div class="res__analyzer-cell"><span>ERROR</span><strong class="res__analyzer-bad">{{ analyzer?.error ?? 0 }}</strong></div>
-              <div class="res__analyzer-cell"><span>WARN</span><strong class="res__analyzer-warn">{{ analyzer?.warn ?? 0 }}</strong></div>
-              <div class="res__analyzer-cell"><span>INFO</span><strong>{{ analyzer?.info ?? 0 }}</strong></div>
-            </div>
-
-            <t-loading :loading="analyzerLoading">
-              <div v-if="analyzerLines.length" class="tk-code res__analyzer-logs">
-                <p v-for="(line, index) in analyzerLines" :key="index" class="res__analyzer-log" :class="`res__analyzer-log--${line.level}`">
-                  <span class="res__analyzer-pod">{{ line.pod }}</span>
-                  {{ line.text }}
-                </p>
-              </div>
-              <EmptyState
-                v-else
-                title="没有日志"
-                description="调整 Pod、时间窗口或关键字后重试。"
-                icon="file"
-                compact
-              />
-            </t-loading>
-          </div>
+          <LogAnalyzerWorkspace
+            v-if="analyzerAvailable"
+            v-show="!activeAppTab && appView === 'analyzer'"
+            :key="appTabScope"
+            :resources="resources"
+            :active="!activeAppTab && appView === 'analyzer' && !resLoading"
+            :refresh-key="analyzerRefreshKey"
+          />
 
           <ResourceDetailPanel
-            v-else-if="activeAppTab"
+            ref="resourcePanel"
+            manager="application"
+            v-if="activeAppTab"
             :key="activeAppTab.id"
             :cluster-id="activeAppTab.clusterId"
             :group="activeAppTab.group"
@@ -1031,15 +887,22 @@ watch(
             :namespace="activeAppTab.namespace"
             :name="activeAppTab.name"
             :tab="activeAppTab.tab"
+            :initial-container="activeAppTab.container"
+            :terminal-context="{ 应用: appName, 环境: activeBinding ? envNameOf(activeBinding.environmentId) : '—' }"
             @update:tab="onPanelTab"
+            @update:container="detailLocation.container"
+            @deleted="activeAppTab && closeAppTab(activeAppTab.id); loadResources()"
+            @changed="loadResources()"
+            @synced="onResourceSynced"
           />
 
-          <div v-else class="res__main">
+          <div v-else-if="appView !== 'analyzer' || !analyzerAvailable" class="res__main">
             <K8sKindTree
               v-if="kindTypes.length"
               class="res__tree"
               :types="kindTypes"
               :active="activeResource"
+              :active-group="activeGroup"
               :counts="kindCounts"
               @select="selectKind"
             />
@@ -1088,6 +951,7 @@ watch(
                   v-else
                   :resources="resources"
                   :kind="activeResource"
+                  :group="activeGroup"
                   @open="(resource: K8sResource, tab: ResourceTabKey) => openAppTab(resource, tab)"
                   @container="onContainerLogs"
                   @menu="onNodeMenu"
@@ -1204,19 +1068,7 @@ watch(
       </div>
     </t-dialog>
 
-    <t-dialog
-      v-model:visible="deleteVisible"
-      header="删除资源"
-      theme="warning"
-      width="440px"
-      confirm-btn="确认删除"
-      @confirm="confirmDelete"
-    >
-      <p class="res__dialog-text">
-        确认删除 {{ deleteTarget?.kind }}
-        <span class="u-mono">{{ deleteTarget?.ref.name }}</span>，删除后由上层控制器决定是否重建。
-      </p>
-    </t-dialog>
+    <ResourceActionDialog v-model:visible="deleteVisible" :cluster-id="clusterId" :targets="deleteTarget ? [deleteTarget] : []" action="delete" @completed="onDeleted" />
 
     <t-dialog
       v-model:visible="compareVisible"
@@ -1436,6 +1288,7 @@ watch(
       </div>
     </t-drawer>
   </div>
+  <ReleaseNotesDrawer v-model:visible="notesVisible" :app-id="appId" :binding-id="activeBindingId" />
 </template>
 
 <style scoped>
@@ -1688,10 +1541,11 @@ watch(
 .res__tabs-left {
   display: flex;
   align-items: center;
-  gap: 24px;
+  flex: 1;
+  gap: 8px;
   height: 100%;
   min-width: 0;
-  overflow-x: auto;
+  overflow: hidden;
 }
 .res__tab--resource {
   max-width: 240px;
@@ -1715,6 +1569,8 @@ watch(
   background: #fdeceb;
 }
 .res__tabs-link {
+  flex: none;
+  padding-left: 12px;
   margin-left: auto;
   color: var(--tk-primary);
   font-size: 12px;
@@ -2224,79 +2080,5 @@ watch(
   margin: 12px 0 4px;
   color: var(--tk-text-2);
   font-weight: 600;
-}
-.res__analyzer {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-.res__analyzer-tab {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px 16px 16px;
-}
-.res__analyzer-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.res__analyzer-label {
-  color: var(--tk-text-2);
-  font-size: 12px;
-}
-.res__analyzer-select {
-  width: 180px;
-}
-.res__analyzer-search {
-  width: 220px;
-}
-.res__analyzer-logs {
-  max-height: 460px;
-  margin: 0;
-  overflow: auto;
-}
-.res__analyzer-log {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-.res__analyzer-pod {
-  display: inline-block;
-  margin-right: 8px;
-  color: #8fa3c0;
-}
-.res__analyzer-log--error {
-  color: #ff9d9d;
-}
-.res__analyzer-log--warn {
-  color: #ffd08a;
-}
-.res__analyzer-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  background: #f7f9fc;
-  border: 1px solid var(--tk-border);
-  border-radius: var(--tk-radius);
-}
-.res__analyzer-cell span {
-  color: var(--tk-text-2);
-  font-size: 11px;
-}
-.res__analyzer-cell strong {
-  font-size: 16px;
-}
-.res__analyzer-bad {
-  color: var(--tk-danger);
-}
-.res__analyzer-warn {
-  color: var(--tk-warning);
-}
-.res__analyzer-line {
-  margin: 0 0 4px;
-  word-break: break-all;
 }
 </style>

@@ -4,6 +4,8 @@
  * 画布固定 1280 宽，节点为 200x126（来源 200x64），触发方式竖排在节点左侧，连线上带实心箭头。
  */
 import { computed } from 'vue'
+import type { DeploymentStageType } from '@/types'
+import StageWorkflowNode from '@/components/application/StageWorkflowNode.vue'
 
 import PipelineBuildIcon from './icons/PipelineBuildIcon.vue'
 import PipelineCdIcon from './icons/PipelineCdIcon.vue'
@@ -37,6 +39,14 @@ export interface TriggerCdNode {
   strategy: string
   trigger: 'MANUAL' | 'AUTO'
   status?: TriggerStatus
+  preStage?: TriggerStageNode
+  postStage?: TriggerStageNode
+}
+
+export interface TriggerStageNode {
+  stage: DeploymentStageType
+  trigger: 'MANUAL' | 'AUTO'
+  status?: TriggerStatus
 }
 
 export interface TriggerRow {
@@ -57,6 +67,8 @@ const emit = defineEmits<{
   edit: [id: string]
   remove: [id: string]
   add: [upstreamId: string]
+  stageImage: [pipelineId: string, stage: DeploymentStageType]
+  stageDetails: [pipelineId: string, stage: DeploymentStageType]
 }>()
 
 const NODE_W = 200
@@ -90,6 +102,7 @@ interface RowLayout {
   source: NodeBox
   ci: (TriggerCiNode & NodeBox) | null
   cds: (TriggerCdNode & NodeBox)[]
+  stages: (TriggerStageNode & NodeBox & {pipelineId: string})[]
   edges: EdgePath[]
   row: TriggerRow
 }
@@ -112,7 +125,12 @@ function layoutOf(row: TriggerRow): RowLayout {
   const ci: (TriggerCiNode & NodeBox) | null = row.ci
     ? { ...row.ci, id: row.ci.id, x: X_CI, y: Y, w: NODE_W, h: NODE_H }
     : null
-  const cds = row.cds.map((cd, index) => ({ ...cd, x: cdX, y: cdYs[index], w: NODE_W, h: NODE_H }))
+  const cds = row.cds.map((cd, index) => ({ ...cd, x: cdX + (!props.editable && cd.preStage ? 260 : 0), y: cdYs[index], w: NODE_W, h: NODE_H }))
+  const stages: RowLayout['stages'] = []
+  if (!props.editable) cds.forEach(cd => {
+    if (cd.preStage) stages.push({...cd.preStage, pipelineId:cd.id, id:`${cd.id}-pre`,x:cdX,y:cd.y,w:NODE_W,h:NODE_H})
+    if (cd.postStage) stages.push({...cd.postStage, pipelineId:cd.id, id:`${cd.id}-post`,x:cd.x+260,y:cd.y,w:NODE_W,h:NODE_H})
+  })
 
   const edges: EdgePath[] = []
   const sourceMid = sourceY + SOURCE_H / 2
@@ -167,7 +185,12 @@ function layoutOf(row: TriggerRow): RowLayout {
     }
   }
 
-  return { key: row.key, name: row.name, height, source, ci, cds, edges, row }
+  // 主干连接到每条 CD 链的第一个节点，阶段连线只在运行画布展示。
+  if (!props.editable) cds.forEach(cd => {
+    if (cd.preStage) edges.push({key:`${cd.id}-pre-main`,line:`M${cdX+NODE_W} ${cd.y+NODE_H/2} H${cd.x}`,head:arrow(cd.x,cd.y+NODE_H/2)})
+    if (cd.postStage) edges.push({key:`${cd.id}-main-post`,line:`M${cd.x+NODE_W} ${cd.y+NODE_H/2} H${cd.x+260}`,head:arrow(cd.x+260,cd.y+NODE_H/2)})
+  })
+  return { key: row.key, name: row.name, height, source, ci, cds, stages, edges, row }
 }
 
 const layouts = computed<RowLayout[]>(() => props.rows.map(layoutOf))
@@ -333,6 +356,7 @@ function triggerHintOf(row: TriggerRow, trigger: 'MANUAL' | 'AUTO'): string {
           </div>
 
           <!-- CD 节点 -->
+          <StageWorkflowNode v-for="node in layout.stages" :key="node.id" :pipeline-id="node.pipelineId" :stage="node.stage" :trigger="node.trigger" :status="node.status" :x="node.x" :y="node.y" @image="(id,stage)=>emit('stageImage',id,stage)" @details="(id,stage)=>emit('stageDetails',id,stage)" />
           <div
             v-for="cd in layout.cds"
             :key="cd.id"

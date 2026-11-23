@@ -4,7 +4,7 @@
  * 页面由若干工作流块组成，每块是一条 workflow 名称 + 一块浅色画布；画布中从左到右依次为
  * 来源、CI、CD，CD 可一 CI 多环境纵向排列。没有额外的筛选栏或页面级元信息。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -16,6 +16,7 @@ import {
   listBuilds,
   listDeployments,
   listEnvironments,
+  listStageRuns,
   MockError,
 } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
@@ -27,6 +28,10 @@ import type {
   Binding,
   Build,
   BuildStatus,
+  CIDefinition,
+  CDDefinition,
+  DeploymentStageType,
+  StageRun,
   Deployment,
   DeployStatus,
   Environment,
@@ -36,7 +41,11 @@ import type {
 import { fmtRelative } from '@/utils/format'
 
 import SelectImageDrawer from './components/pipeline/SelectImageDrawer.vue'
+import StageImagePicker from '@/components/application/StageImagePicker.vue'
+import { deploymentStageOf } from '@/utils/deploymentStage'
+import { stageStatusLabel } from '@/utils/stageRuns'
 import SelectMaterialDrawer from './components/pipeline/SelectMaterialDrawer.vue'
+import { ciGraphSource } from '@/utils/pipelineBuild'
 import TriggerGraph from './components/pipeline/TriggerGraph.vue'
 import type { TriggerCdNode, TriggerCiNode, TriggerRow, TriggerStatus } from './components/pipeline/TriggerGraph.vue'
 import { ciDisplayName, workflowDisplayName } from './components/pipeline/naming'
@@ -58,15 +67,20 @@ const deployments = ref<Deployment[]>([])
 
 const loading = ref(true)
 const error = ref('')
+let loadGeneration=0
 
 const materialVisible = ref(false)
+const materialPipelineId = ref('')
 const materialPipeline = ref('')
 const imageVisible = ref(false)
 const imageBindingId = ref('')
+const stageRuns = ref<StageRun[]>([])
+const stageImageVisible = ref(false)
+const stagePipelineId = ref('')
+const selectedStage = ref<DeploymentStageType>('PRECD')
 
 const canBuild = computed(() => setup.value?.canBuild === true)
 const configVersion = computed(() => setup.value?.configVersion ?? 0)
-const repositoryUrl = computed(() => config.value?.gitConfig?.repositoryUrl ?? '')
 
 const buildsSorted = computed(() =>
   builds.value.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
@@ -104,16 +118,8 @@ function errorTextOf(err: unknown, fallback: string): string {
 }
 
 /** 仓库地址 → Devtron 的 `/repo` 形式；拿不到地址时返回空串 */
-function repoName(url: string): string {
-  const trimmed = url.replace(/\.git$/, '').replace(/[/:]+$/, '')
-  return trimmed.split(/[/:]/).filter(Boolean).pop() ?? ''
-}
 
 /** Devtron 风格显示名：wf-<appNumber>-<suffix> / ci-<appNumber>-<suffix> */
-const workflowName = computed(() => {
-  const seed = workflow.value?.items[0]?.id ?? appId.value
-  return workflowDisplayName(appId.value, seed)
-})
 
 function ciNameOf(pipeline: Pipeline): string {
   return ciDisplayName(appId.value, pipeline.id)
@@ -157,7 +163,7 @@ function cdTriggerOf(pipeline: Pipeline): 'MANUAL' | 'AUTO' {
 }
 
 function ciNodeFor(pipeline: Pipeline): TriggerCiNode {
-  const latest = buildsSorted.value.find((item) => item.appId === appId.value)
+  const latest = buildsSorted.value.find((item) => item.pipelineId === pipeline.id)
   return {
     id: pipeline.id,
     name: ciNameOf(pipeline),
@@ -170,6 +176,14 @@ function cdNodeFor(pipeline: Pipeline): TriggerCdNode {
   const binding = bindings.value.find((item) => item.id === pipeline.bindingId) ?? null
   const environment = binding ? environments.value.find((item) => item.id === binding.environmentId) : undefined
   const latest = binding ? deploymentsSorted.value.find((item) => item.bindingId === binding.id) : undefined
+  const definition = pipeline.definition as CDDefinition
+  function stageNode(stage: DeploymentStageType) {
+    const tasks = stage === 'PRECD' ? definition.preTasks : definition.postTasks
+    if (!tasks?.length) return undefined
+    const run = stageRuns.value.find(item=>item.pipelineId===pipeline.id && item.stage===stage)
+    const status: TriggerStatus = run ? {label:stageStatusLabel[run.status],tone:run.status==='succeeded'?'success':run.status==='failed'||run.status==='canceled'?'danger':'warning',details:true} : notTriggered
+    return {stage,trigger:deploymentStageOf(definition,stage==='PRECD'?'pre':'post').trigger==='auto'?'AUTO' as const:'MANUAL' as const,status}
+  }
   return {
     id: pipeline.id,
     bindingId: binding?.id ?? '',
@@ -177,17 +191,10 @@ function cdNodeFor(pipeline: Pipeline): TriggerCdNode {
     strategy: latest?.strategy ?? 'rolling',
     trigger: cdTriggerOf(pipeline),
     status: latest ? cdStatusMap[latest.status] : notDeployed,
+    preStage: stageNode('PRECD'),
+    postStage: stageNode('POSTCD'),
   }
 }
-
-const source = computed(() => {
-  const git = config.value?.gitConfig
-  const repo = repoName(git?.repositoryUrl ?? '')
-  if (!git?.repositoryUrl || !repo) {
-    return { kind: 'webhook' as const, repo: '外部来源', branch: '' }
-  }
-  return { kind: 'git' as const, repo, branch: git.branch }
-})
 
 const rows = computed<TriggerRow[]>(() => {
   const items = workflow.value?.items ?? []
@@ -199,8 +206,8 @@ const rows = computed<TriggerRow[]>(() => {
   cis.forEach((ci) => {
     result.push({
       key: ci.id,
-      name: workflowName.value,
-      source: source.value,
+      name: workflowDisplayName(appId.value, ci.id),
+      source: ciGraphSource(config.value, ci.definition as CIDefinition),
       ci: ciNodeFor(ci),
       cds: cds.filter((cd) => upstreamOf(cd) === ci.id).map(cdNodeFor),
     })
@@ -216,7 +223,7 @@ const rows = computed<TriggerRow[]>(() => {
       result.push({
         key: cd.id,
         name: workflowDisplayName(appId.value, cd.id),
-        source: source.value.kind === 'git' ? source.value : { kind: 'webhook', repo: '外部来源', branch: '' },
+        source: { kind: 'webhook', repo: '外部来源', branch: '' },
         ci: null,
         cds: [cdNodeFor(cd)],
       })
@@ -228,6 +235,7 @@ const rows = computed<TriggerRow[]>(() => {
 function onSelectMaterial(ciId: string): void {
   const ci = workflow.value?.items.find((item) => item.id === ciId)
   if (!ci) return
+  materialPipelineId.value = ci.id
   materialPipeline.value = ciNameOf(ci)
   materialVisible.value = true
 }
@@ -245,11 +253,21 @@ function onRollback(cdId: string): void {
   onSelectImage(cdId)
 }
 
+function onStageImage(pipelineId: string, stage: DeploymentStageType): void {
+  stagePipelineId.value=pipelineId; selectedStage.value=stage; stageImageVisible.value=true
+}
+function onStageDetails(pipelineId: string, stage: DeploymentStageType, runId?: string): void {
+  const pipeline=workflow.value?.items.find(item=>item.id===pipelineId)
+  const binding=bindings.value.find(item=>item.id===pipeline?.bindingId)
+  const run=stageRuns.value.find(item=>item.pipelineId===pipelineId && item.stage===stage)
+  void router.push({name:'app-deployments',params:baseParams.value,query:{type:stage,pipeline:pipelineId,env:binding?.environmentId,run:runId ?? run?.id}})
+}
+
 function onDetails(kind: 'ci' | 'cd', id: string): void {
-  void id
   void router.push({
     name: kind === 'ci' ? 'app-builds' : 'app-deployments',
     params: baseParams.value,
+    query: kind === 'ci' ? { pipeline: id } : {env:bindings.value.find(item=>item.id===workflow.value?.items.find(p=>p.id===id)?.bindingId)?.environmentId,type:'CD'},
   })
 }
 
@@ -265,10 +283,11 @@ async function loadSetup(): Promise<ApplicationSetup | null> {
 
 async function load(): Promise<void> {
   if (!appId.value) return
+  const current=++loadGeneration
   loading.value = true
   error.value = ''
   try {
-    const [setupData, configData, workflowData, bindingList, environmentList, artifactList, buildPage, deployPage] =
+    const [setupData, configData, workflowData, bindingList, environmentList, artifactList, buildPage, deployPage, stageList] =
       await Promise.all([
         loadSetup(),
         getConfig(appId.value),
@@ -278,7 +297,9 @@ async function load(): Promise<void> {
         listArtifacts(appId.value),
         listBuilds(appId.value),
         listDeployments(appId.value),
+        listStageRuns(appId.value),
       ])
+    if(current!==loadGeneration)return
     setup.value = setupData
     config.value = configData
     workflow.value = workflowData
@@ -287,10 +308,11 @@ async function load(): Promise<void> {
     artifacts.value = artifactList
     builds.value = buildPage.items
     deployments.value = deployPage.items
+    stageRuns.value = stageList
   } catch (err) {
-    error.value = errorTextOf(err, '构建发布数据加载失败')
+    if(current===loadGeneration)error.value = errorTextOf(err, '构建发布数据加载失败')
   } finally {
-    loading.value = false
+    if(current===loadGeneration)loading.value = false
   }
 }
 
@@ -299,10 +321,12 @@ watch(
   () => {
     materialVisible.value = false
     imageVisible.value = false
+    stageImageVisible.value = false
     void load()
   },
   { immediate: true },
 )
+onBeforeUnmount(()=>loadGeneration++)
 </script>
 
 <template>
@@ -358,6 +382,7 @@ watch(
             <span class="trigger-meta__label">配置版本</span>
             <span class="trigger-meta__value u-mono">v{{ configVersion }}</span>
           </div>
+          <t-button size="small" variant="text" aria-label="刷新运行状态" @click="load">刷新状态</t-button>
         </div>
 
         <TriggerGraph
@@ -366,20 +391,23 @@ watch(
           @image="onSelectImage"
           @rollback="onRollback"
           @details="onDetails"
+          @stage-image="onStageImage"
+          @stage-details="onStageDetails"
         />
       </div>
     </div>
 
     <SelectMaterialDrawer
+      @workflow-updated="workflow = $event"
       v-model:visible="materialVisible"
       :app-id="appId"
       :project-id="projectId"
       :pipeline-name="materialPipeline"
-      :repository-url="repositoryUrl"
-      :config-version="configVersion"
+      :pipeline-id="materialPipelineId"
       :can-build="canBuild"
     />
 
+    <StageImagePicker v-model:visible="stageImageVisible" :app-id="appId" :pipeline-id="stagePipelineId" :stage="selectedStage" @triggered="run=>onStageDetails(run.pipelineId,run.stage,run.id)" />
     <SelectImageDrawer
       v-model:visible="imageVisible"
       :app-id="appId"

@@ -1,16 +1,16 @@
 # Podry 产品与实现基线
 
-版本：V1.3 / Vue 工程原型 V3 · 日期：2026-11-20 · 状态：规划文档与历史原型证据并存；当前迁移按 `web/` 为 Vite + Vue 3 空工程处理。
+版本：V1.4 · 日期：2026-11-22 · 状态：在现有 `web/` 工程继续复刻 Devtron；Vue 3 + TDesign，当前前端使用本地 Mock。
 
-本文档同时收录产品合同、后端计划、Devtron 参考事实，以及此前 Vue 原型的实现和验证记录。原型与验证记录用于交互溯源，不代表当前迁移已经实现；当前 Devtron → Vue 首版规划唯一以 [轻量化迁移方案](migration/01-devtron-to-vue-plan.md) 为准。
+本文档同时收录产品合同、后端计划、Devtron 参考事实，以及此前 Vue 原型的实现和验证记录。历史原型用于溯源；当前前端布局与交互以本地 Devtron 为准，范围为 Application Management + Infrastructure Management 的 K8s 资源管理。当前基线见 [复刻方案](migration/01-devtron-to-vue-plan.md)，实施和验证边界见 [布局与交互对账](migration/04-devtron-layout-interaction-parity.md)。
 
 Podry 面向个人开发者和中小团队，提供两个核心工作区：应用 CI/CD、Kubernetes 资源查看与管理。功能与信息架构参考 Devtron Application Management 和 Resource Browser，采用 Podry 自身技术栈实现。
 
 当前后端实施入口为 [后端开发计划](backend/01-development-plan.md)、[开发任务清单](backend/02-task-breakdown.md)、[HTTP 接口分期矩阵](backend/03-api-delivery-matrix.md) 和 [Devtron 后端源码映射与取舍](backend/04-devtron-source-mapping.md)。后端参考来自用户提供的 `D:/workspace/devtron`，固定提交并追踪关键调用。按 B0–B6 分期开发；身份、团队/项目、加密凭据、Registry、集群授权、应用配置、工作流、Git、Kubernetes 资源/日志、持久构建、发布预览/确认与历史、应用资源和实时 Diff、环境绑定/覆盖、晋级与回滚、构建取消/重试、已有镜像导入及资源变更预览/提交/操作查询以及删除/Deployment 重启/扩缩容及应用漂移及 GitHub Webhook 及发布/资源人工核对、Secret 明文和 Pod 终端共 79 个 HTTP 操作已实现。正式迁移版本 17；健康支持资源查询时观察与默认关闭的持久后台巡检，缓存仍为 60 秒，持久构建/发布/资源写入默认关闭，真实 CI/CD 执行按用户要求暂缓。当前增量见 [Secret 与终端](backend/28-sensitive-resource-access.md)、[发布人工核对](backend/26-release-reconciliation.md)、[后台健康巡检](backend/25-background-health.md) 与 [自动部署](backend/24-ci-auto-deploy.md)，前批见 [资源动作](backend/21-resource-actions.md)，前批见 [资源写入](backend/20-resource-writes.md)，前批见 [已有镜像导入](backend/18-image-artifacts.md)，前批见 [构建取消与重试](backend/17-build-actions.md)，前批见 [晋级与回滚](backend/16-release-actions.md)，前批见 [多环境绑定与覆盖](backend/15-environment-bindings.md)、 [应用资源与健康观察](backend/13-application-observation.md)、[发布执行与恢复](backend/12-release-execution.md)、[发布规划](backend/11-release-planning.md)、[Kubernetes 读取](backend/08-kubernetes-resources.md) 和 [构建执行](backend/09-build-execution.md)，B1 历史见 [后端实施记录](backend/05-implementation.md)。
 
-已记录的交互证据来自用户测试实例的 **71 张实际截图**：前轮 27 张只读页面，新应用目录共 44 张（首次 26 张，2026-11-20 补拍 18 张构建、镜像、发布及资源页面）。此前的 [Vue 工程原型说明](prototype/02-vue-engineering.md)、[V2.1 离线原型](prototype/index.html)、[新应用实测及缺口](references/devtron-onboarding/README.md) 和 [完整流水线截图](references/devtron-onboarding/gallery.html) 保留作历史对照，不构成当前空工程的目录或实现前提。主流程证据明确使用 **Build & Deploy from Source Code**，同时包含 CI 和 Deploy。V1 已保存在 [历史目录](prototype/archive-v1/README.md)。
+已记录的交互证据来自用户测试实例的 **71 张实际截图**：前轮 27 张只读页面，新应用目录共 44 张（首次 26 张，2026-11-20 补拍 18 张构建、镜像、发布及资源页面）。此前的 [Vue 工程原型说明](prototype/02-vue-engineering.md)、[V2.1 离线原型](prototype/index.html)、[新应用实测及缺口](references/devtron-onboarding/README.md) 和 [完整流水线截图](references/devtron-onboarding/gallery.html) 保留作历史对照，不构成当前实现验收证据。主流程证据明确使用 **Build & Deploy from Source Code**，同时包含 CI 和 Deploy。V1 已保存在 [历史目录](prototype/archive-v1/README.md)。
 
-历史 Vue 原型曾根据最新反馈本土化为中文研发交付台：桌面使用 152px 带文字导航，常驻项目/状态筛选；日常“构建发布”采用代码构建与环境发布列表，关系图保留在流水线配置页。新建应用使用居中弹窗，简单流水线编辑使用较窄抽屉。完整 Git → Build → Deploy、发布确认、资源 Review/Apply 均保留。这些内容只作为交互参考；Devtron 提供业务参考，CloudBase 仅保留配色参考，当前迁移边界以 [轻量化迁移方案](migration/01-devtron-to-vue-plan.md) 为准。
+历史 Vue 原型曾根据最新反馈本土化为中文研发交付台：桌面使用 152px 带文字导航，常驻项目/状态筛选；日常“构建发布”采用代码构建与环境发布列表，关系图保留在流水线配置页。新建应用使用居中弹窗，简单流水线编辑使用较窄抽屉。完整 Git → Build → Deploy、发布确认、资源 Review/Apply 均保留。上述中文简化方案为历史决定，已被 2026-11-22 的 Devtron 布局与交互优先原则覆盖；当前范围以 [复刻方案](migration/01-devtron-to-vue-plan.md) 为准。
 
 进程启停与备份恢复基线见 [进程启停与备份恢复](backend/14-runtime-recovery.md)：统一停机 deadline、停止领取与在途步骤收尾、隔离 PostgreSQL 恢复演练。它补充 T24 的离线部分，真实 CI/CD、生产恢复和外部清理仍待验收。
 

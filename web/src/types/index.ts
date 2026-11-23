@@ -45,6 +45,7 @@ export interface Member {
   email: string
 }
 
+export interface ApplicationLabel { key: string; value: string; propagate: boolean }
 export interface Application {
   id: string
   projectId: string
@@ -58,8 +59,14 @@ export interface Application {
   lastDeployedAt: string | null
   /** 应用标签（可编辑） */
   tags?: string[]
+  /** 创建与概览共用的结构化标签；propagate 仅记录意向，Mock 不写集群资源。 */
+  labels?: ApplicationLabel[]
   /** 应用 Readme（Markdown 文本，可编辑） */
   readme?: string
+  createdAt?: string
+  createdBy?: string
+  readmeUpdatedAt?: string
+  readmeUpdatedBy?: string
 }
 
 export interface GitConfig {
@@ -69,13 +76,46 @@ export interface GitConfig {
   accountMode: 'public' | 'credential'
 }
 
+/** 多 Git 源的前端 Mock 配置；gitConfig 保留首个仓库以兼容已有页面。 */
+export interface GitMaterial extends GitConfig {
+  id: string
+  checkoutPath: string
+  fetchSubmodules: boolean
+  filterPatterns: string[]
+}
+
+/** 构建凭据引用；仅记录来源与键，不保存凭据明文。 */
+export interface BuildSecretReference {
+  type: 'BUILD_INFRA' | 'SOURCE_CODE'
+  id: string
+  secretName: string
+  key: string
+}
+
 export interface BuildConfig {
   dockerfile: string
   context: string
   registryId: string
   imageRepository: string
-  platform: 'linux/amd64' | 'linux/arm64'
+  /** 逗号分隔的目标平台；空串表示跟随构建节点。 */
+  platform: string
   timeoutSeconds: number
+  /** 以下为配置页的 Mock 扩展，尚未映射为后端构建协议。 */
+  buildMode?: 'dockerfile' | 'managed' | 'buildpack'
+  gitMaterialId?: string
+  contextGitMaterialId?: string
+  useRootContext?: boolean
+  dockerfileContent?: string
+  dockerfileLanguage?: string
+  dockerfileFramework?: string
+  builderImage?: string
+  projectPath?: string
+  buildArguments?: Array<{ key: string; value: string }>
+  buildpackArguments?: Array<{ key: string; value: string }>
+  buildpackLanguage?: string
+  buildpackVersion?: string
+  buildSecrets?: BuildSecretReference[]
+  buildSSH?: BuildSecretReference[]
 }
 
 export interface ChartConfig {
@@ -89,6 +129,7 @@ export interface JobValues {
 }
 
 export interface DeployValues {
+  [key: string]: unknown
   replicaCount?: number
   containerPort?: number
   host?: string
@@ -100,25 +141,38 @@ export interface AppConfig {
   appId: string
   version: number
   gitConfig: GitConfig | null
+  gitMaterials?: GitMaterial[]
   buildConfig: BuildConfig | null
   chartConfig: ChartConfig | null
   deployValues: DeployValues
+  /** 前端 Mock 保留编辑器原文，避免保存后丢失 YAML 注释。 */
+  deployValuesYaml?: string
 }
 
 /**
  * ConfigMap / Secret 配置条目（mock 扩展，对齐 Devtron Base Configurations）。
  * environmentId 为 null 表示 Base，非空表示该环境的覆盖；Secret 只保存 key，不保存明文值。
  */
-export interface ConfigMapEntry {
+export interface ConfigEntryOptions {
+  source?: 'create' | 'external'
+  mountAs?: 'env' | 'volume'
+  mountPath?: string
+  subPath?: boolean
+  fileMode?: string
+  mergeStrategy?: 'patch' | 'replace'
+}
+
+export interface ConfigMapEntry extends ConfigEntryOptions {
   id: string
   appId: string
   environmentId: string | null
   name: string
   data: Record<string, string>
+  dataYaml?: string
   updatedAt: string
 }
 
-export interface SecretEntry {
+export interface SecretEntry extends ConfigEntryOptions {
   id: string
   appId: string
   environmentId: string | null
@@ -164,6 +218,10 @@ export interface Binding {
   environmentId: string
   target: Target
   overrideValues: DeployValues
+  /** 页面复刻阶段的本地覆盖元数据，不代表后端协议。 */
+  overrideEnabled?: boolean
+  overrideMergeStrategy?: 'patch' | 'replace'
+  overrideValuesYaml?: string
   version: number
   autoDeploy: boolean
   currentDeploymentId: string | null
@@ -174,12 +232,154 @@ export interface CIDefinition {
   push: boolean
   branch: string
   webhookCredentialId: string | null
+  /** 页面复刻的本地配置；每个仓库独立指定固定分支或正则。Webhook 事件仅供单仓库使用。 */
+  materials?: CISource[]
+  buildOverride?: BuildConfig | null
+  preTasks?: PipelineTask[]
+  postTasks?: PipelineTask[]
+}
+
+export interface CISource {
+  gitMaterialId: string
+  type: 'branch' | 'regex' | 'tag' | 'pull_request'
+  value: string
+  filters?: GitSourceFilter[]
+  /** 分支正则约束与当前检出分支分别保存。 */
+  selectedBranch?: string
+}
+
+export type GitSourceFilterKey = 'tag' | 'sourceBranch' | 'targetBranch' | 'action' | 'author'
+export interface GitSourceFilter { key: GitSourceFilterKey; value: string }
+export interface GitWebhookEvent {
+  id: string
+  type: 'tag' | 'pull_request'
+  ref: string
+  title: string
+  receivedAt: string
+  commit: GitCommit
+  values: Partial<Record<GitSourceFilterKey, string>>
+  payload: Record<string, unknown>
+  pullRequest?: { number: number; url?: string }
+}
+
+export interface BuildMaterialSnapshot extends GitCommit {
+  gitMaterialId: string
+  repositoryUrl: string
+  checkoutPath: string
+  branch: string
+  sourceType?: CISource['type']
+  sourceValue?: string
+  webhookEvent?: GitWebhookEvent
+}
+
+export interface BuildSelection {
+  workflowVersion: number
+  materials: Array<{ gitMaterialId: string; branch: string; commitSha: string; webhookEventId?: string }>
 }
 
 export interface CDDefinition {
   triggerMode: 'manual' | 'on_ci_success'
   upstreamPipelineId: string | null
   deployTimeoutSeconds: number
+  preTasks?: PipelineTask[]
+  postTasks?: PipelineTask[]
+  preStageResources?: StageResourceReferences
+  postStageResources?: StageResourceReferences
+  preStageTrigger?: 'auto' | 'manual'
+  postStageTrigger?: 'auto' | 'manual'
+  runPreStageInEnv?: boolean
+  runPostStageInEnv?: boolean
+}
+
+export interface DeploymentStageSettings {
+  trigger: 'auto' | 'manual'
+  runInEnvironment: boolean
+}
+
+export type DeploymentStageType = 'PRECD' | 'POSTCD'
+export type StageRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+export interface StageRunSnapshot {
+  tasks: PipelineTask[]
+  settings: DeploymentStageSettings
+  resources: StageResourceReferences
+  target: Binding['target']
+  configMaps: ConfigMapEntry[]
+  secrets: SecretEntry[]
+  artifact: Artifact
+  build: Build | null
+}
+/** 独立的阶段运行记录，不创建 Deployment 或变更 Helm release。 */
+export interface StageRun {
+  id: string
+  appId: string
+  pipelineId: string
+  bindingId: string
+  environmentId: string
+  stage: DeploymentStageType
+  status: StageRunStatus
+  configVersion: number
+  workflowVersion: number
+  snapshot: StageRunSnapshot
+  createdAt: string
+  finishedAt: string | null
+  operator: string
+  attemptNo: number
+  retryOf: string | null
+}
+
+/** 部署阶段按类型和逻辑名称引用目标环境的有效配置，不保存 Secret 内容。 */
+export interface StageResourceReferences {
+  configMaps: string[]
+  secrets: string[]
+}
+export interface TaskContainerConfig {
+  command: string
+  args: string[]
+  mountCustomScript: boolean
+  scriptMountPath: string
+  ports: Array<{ hostPort: string; containerPort: string }>
+  mountSource: boolean
+  sourceMountPath: string
+  mountHost: boolean
+  hostPaths: Array<{ hostPath: string; containerPath: string }>
+}
+
+/** 前后置任务的前端 Mock 配置；脚本执行由后续后端接入实现。 */
+export interface PipelineTask {
+  id: string
+  name: string
+  execution: 'shell' | 'container'
+  script: string
+  image: string
+  workingDirectory: string
+  condition: 'always' | 'success' | 'failure'
+  variables: TaskInputVariable[]
+  artifactPaths: string
+  outputDirectoryPaths?: string[]
+  container?: TaskContainerConfig
+  description?: string
+  outputs?: TaskOutputVariable[]
+  triggerRule?: TaskConditionGroup
+  resultRule?: TaskConditionGroup
+  triggerIfParentStageFail?: boolean
+  plugin?: { id: string; version: string }
+}
+
+export type TaskVariableFormat = 'string' | 'number' | 'boolean' | 'date'
+export interface TaskOutputVariable {
+  key: string
+  format?: TaskVariableFormat
+  description?: string
+}
+export interface TaskInputVariable extends TaskOutputVariable {
+  value: string
+  source?: 'literal' | 'global' | 'task'
+  refTaskId?: string
+  refVariable?: string
+}
+export interface TaskConditionGroup {
+  mode: 'trigger' | 'skip' | 'pass' | 'fail'
+  conditions: Array<{ id: string; variable: string; operator: '==' | '!=' | '<' | '>' | '<=' | '>='; value: string }>
 }
 
 export interface Pipeline {
@@ -208,11 +408,21 @@ export interface GitCommit {
   subject: string
   authorName: string
   committedAt: string
+  /** Explicit Mock Git metadata; absent paths must not be inferred from a subject. */
+  changedPaths?: string[]
+  excluded?: boolean
 }
 
 export interface Build {
   id: string
   appId: string
+  /** 前端历史页按 CI 筛选使用；旧记录可没有流水线归属。 */
+  pipelineId?: string | null
+  sourceBranch?: string
+  repositoryUrl?: string
+  materials?: BuildMaterialSnapshot[]
+  buildConfigSnapshot?: BuildConfig
+  workflowVersion?: number
   status: BuildStatus
   commitSha: string
   commitSubject: string
@@ -227,6 +437,8 @@ export interface Build {
 }
 
 export interface Artifact {
+  releaseTags?: string[]
+  notes?: string
   id: string
   appId: string
   buildId: string | null
@@ -237,6 +449,18 @@ export interface Artifact {
   createdAt: string
 }
 
+export interface DeploymentConfigSnapshot {
+  source: 'fixture' | 'trigger'
+  capturedAt: string
+  baseValues: DeployValues
+  values: DeployValues
+  configMaps: ConfigMapEntry[]
+  secrets: SecretEntry[]
+  target: Binding['target']
+  chartConfig: ChartConfig | null
+  variableSnapshot?: import('./configVariables').ConfigVariableSnapshot
+}
+
 export interface Deployment {
   id: string
   requestId: string
@@ -245,6 +469,7 @@ export interface Deployment {
   artifactId: string
   imageRef: string
   configVersion: number
+  configSnapshot?: DeploymentConfigSnapshot
   status: DeployStatus
   kind: 'deploy' | 'promote' | 'rollback'
   helmRevision: number | null
@@ -268,6 +493,8 @@ export interface Cluster {
   environmentNames: string[]
   /** 是否生产集群（Devtron Resource Browser 的 Type 分组） */
   production?: boolean
+  /** 本地演示的部署 worker 能力，与连接状态和生产标记独立。 */
+  cdWorkerEnabled?: boolean
   /** 节点错误数 */
   nodeErrors?: number
   /** 可分配 CPU 容量 */
@@ -284,6 +511,9 @@ export interface ResourceType {
   namespaced: boolean
   verbs: string[]
   category: string
+  shortNames?: string[]
+  /** Mock Discovery 的附加表格字段，对应资源表响应中的动态 headers。 */
+  printerColumns?: Array<{ name: string; type: string; jsonPath: string }>
 }
 
 export interface Namespace {
@@ -316,6 +546,7 @@ export interface ResourceEvent {
   reason: string
   message: string
   count: number
+  firstSeenAt?: string
   lastSeenAt: string
 }
 
@@ -391,6 +622,8 @@ export interface NodeResourceRow {
   requestPercentage: string
   limitPercentage: string
   usagePercentage: string
+  /** Metrics 返回的实际用量；缺失时列表显示 NA，不用百分比伪造。 */
+  usage?: string
   allocatable: string
   capacity: string
 }

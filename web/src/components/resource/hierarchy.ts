@@ -1,4 +1,5 @@
 import type { K8sResource } from '@/types'
+import { podContainers } from '@/utils/podLogs'
 
 export interface TreeNode {
   key: string
@@ -37,5 +38,5 @@ export function serviceUrl(resource: K8sResource): string | undefined {
 }
 
 export function parseContainers(resource: K8sResource): string[] {
-  return [...(resource.manifest ?? '').matchAll(/^\s*- name:\s*(\S+)/gm)].map((match) => match[1])
+  return podContainers(resource.manifest).map(item => item.name)
 }

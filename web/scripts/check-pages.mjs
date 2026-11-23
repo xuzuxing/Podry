@@ -1,33 +1,41 @@
-// 页面巡检：用本机 Chrome（CDP）逐路由截图 + 收集运行时错误。
-// 用法：node scripts/check-pages.mjs [baseURL]
-// 需要先启动静态服务（npm run preview 或 npm run dev）。
-import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
-
-const BASE = process.argv[2] || 'http://127.0.0.1:4173'
-const CHROME =
-  process.env.PODRY_CHROME ||
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-const OUT = resolve(import.meta.dirname, '../screenshots')
-const PORT = 9333
-
+// 页面巡检：独立 Chrome profile；保存本轮截图，不删除已有截图目录。
+// node scripts/check-pages.mjs [baseURL] [outputDirectory]
+import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
+import { writeFileSync } from 'node:fs'
+import { launchBrowser, delay } from './lib/browser.mjs'
+const baseURL = process.argv[2] || 'http://127.0.0.1:4173'
+const output = resolve(process.argv[3] || resolve(import.meta.dirname, '../screenshots-pages-parity'))
 const routes = [
-  ['01-projects', '/'],
+  ['00-default-apps', '/'],
+  ['01-projects', '/projects'],
   ['02-project-detail', '/projects/p-shop'],
   ['03-apps', '/apps'],
   ['04-app-overview', '/projects/p-shop/apps/a-checkout/overview'],
   ['05-build-deploy', '/projects/p-shop/apps/a-checkout/trigger'],
   ['06-build-history', '/projects/p-shop/apps/a-checkout/builds'],
+  ['06a-build-log-tools', '/projects/p-shop/apps/a-checkout/builds?pipeline=pl-checkout-ci&build=bd-1011&tab=logs'],
+  ['06b-build-source-link', '/projects/p-shop/apps/a-checkout/builds?pipeline=pl-checkout-ci&build=bd-1011&tab=source'],
+  ['06c-build-log-expired', '/projects/p-shop/apps/a-checkout/builds?pipeline=pl-checkout-ci&build=bd-1008&tab=logs'],
   ['07-deployment-history', '/projects/p-shop/apps/a-checkout/deployments'],
   ['08-config-git', '/projects/p-shop/apps/a-checkout/config/git'],
   ['09-config-build', '/projects/p-shop/apps/a-checkout/config/build'],
   ['10-config-base', '/projects/p-shop/apps/a-checkout/config/base'],
+  ['10a-base-configmaps', '/projects/p-shop/apps/a-checkout/config/base/configmaps'],
+  ['10b-base-secrets', '/projects/p-shop/apps/a-checkout/config/base/secrets'],
+  ['10c-environment-configmaps', '/projects/p-shop/apps/a-checkout/config/overrides/e-dev/configmaps'],
+  ['10d-environment-secrets', '/projects/p-shop/apps/a-checkout/config/overrides/e-prod/secrets'],
+  ['10e-inherited-configmaps', '/projects/p-shop/apps/a-checkout/config/overrides/e-staging/configmaps'],
+  ['10f-empty-secrets', '/projects/p-shop/apps/a-storefront/config/base/secrets'],
+  ['10g-config-comparison', '/projects/p-shop/apps/a-checkout/config/compare/deployment?left=base&leftVersion=saved&right=e-dev&rightVersion=saved'],
+  ['10h-historical-comparison', '/projects/p-shop/apps/a-checkout/config/compare/configmaps/checkout-api-config?left=e-dev&leftVersion=history:d-checkout-dev-1&right=e-dev&rightVersion=history:d-checkout-dev-2'],
+  ['10i-missing-comparison-snapshot', '/projects/p-shop/apps/a-checkout/config/compare/deployment?left=e-staging&leftVersion=deployed&right=base&rightVersion=saved'],
   ['11-config-workflow', '/projects/p-shop/apps/a-checkout/config/workflow'],
   ['12-config-overrides', '/projects/p-shop/apps/a-checkout/config/overrides'],
   ['13-app-resources', '/projects/p-shop/apps/a-checkout/resources'],
   ['13b-app-resources-prod', '/projects/p-shop/apps/a-checkout/resources?env=b-checkout-prod'],
+  ['13c-app-log-analyzer', '/projects/p-shop/apps/a-checkout/resources?env=b-checkout-dev&view=analyzer'],
+  ['13d-app-log-analyzer-no-pods', '/projects/p-shop/apps/a-checkout/resources?env=b-checkout-staging&view=analyzer'],
   ['14-clusters', '/clusters'],
   ['15a-cluster-overview', '/clusters/c-prod'],
   ['15-cluster-workspace', '/clusters/c-prod?resource=deployments'],
@@ -49,121 +57,28 @@ const routes = [
   ['23-login', '/login'],
 ]
 
-const profile = join(tmpdir(), `podry-chrome-${Date.now()}`)
-mkdirSync(profile, { recursive: true })
-rmSync(OUT, { recursive: true, force: true })
-mkdirSync(OUT, { recursive: true })
-
-const chrome = spawn(
-  CHROME,
-  [
-    '--headless=new',
-    '--disable-gpu',
-    '--hide-scrollbars',
-    '--no-first-run',
-    '--no-default-browser-check',
-    `--remote-debugging-port=${PORT}`,
-    `--user-data-dir=${profile}`,
-    'about:blank',
-  ],
-  { stdio: 'ignore' },
-)
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-async function wsUrl() {
-  for (let i = 0; i < 100; i += 1) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/json/version`)
-      const body = await res.json()
-      if (body.webSocketDebuggerUrl) return body.webSocketDebuggerUrl
-    } catch {
-      /* 等待启动 */
-    }
-    await sleep(120)
-  }
-  throw new Error('Chrome 调试端口未就绪')
-}
-
-const socket = new WebSocket(await wsUrl())
-await new Promise((res, rej) => {
-  socket.addEventListener('open', res, { once: true })
-  socket.addEventListener('error', rej, { once: true })
-})
-
-let seq = 0
-const pending = new Map()
-const problems = []
-
-socket.addEventListener('message', (event) => {
-  const msg = JSON.parse(event.data)
-  if (msg.id && pending.has(msg.id)) {
-    const { resolve: done, reject } = pending.get(msg.id)
-    pending.delete(msg.id)
-    if (msg.error) reject(new Error(msg.error.message))
-    else done(msg.result)
-    return
-  }
-  if (msg.method === 'Runtime.exceptionThrown') {
-    problems.push(`exception: ${msg.params.exceptionDetails.text} ${msg.params.exceptionDetails.exception?.description ?? ''}`)
-  }
-  if (msg.method === 'Runtime.consoleAPICalled' && msg.params.type === 'error') {
-    problems.push(`console.error: ${msg.params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`)
-  }
-})
-
-function send(method, params = {}, sessionId) {
-  seq += 1
-  const id = seq
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject })
-    socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
-  })
-}
-
-const { targetId } = await send('Target.createTarget', { url: 'about:blank' })
-const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true })
-const call = (method, params = {}) => send(method, params, sessionId)
-
-await call('Page.enable')
-await call('Runtime.enable')
-await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
-await call('Page.addScriptToEvaluateOnNewDocument', {
-  source: `try {
-    localStorage.setItem('podry:session', JSON.stringify({
-      token: 'mock-demo-token',
-      user: { id: 'u-1', email: 'admin@acme.dev', name: '张运维', isSuperAdmin: true }
-    }))
-  } catch (e) {}`,
-})
-
-for (const [name, path] of routes) {
-  const url = `${BASE}${path}`
-  await call('Page.navigate', { url })
-  await sleep(name === '23-login' ? 900 : 1300)
-  const shot = await call('Page.captureScreenshot', { format: 'png' })
-  writeFileSync(join(OUT, `${name}.png`), Buffer.from(shot.data, 'base64'))
-  const title = await call('Runtime.evaluate', { expression: 'document.title', returnByValue: true })
-  const body = await call('Runtime.evaluate', {
-    expression: 'document.querySelector("#app")?.innerText?.slice(0,80) ?? ""',
-    returnByValue: true,
-  })
-  console.log(`${name.padEnd(24)} ${String(title.result.value).padEnd(28)} ${String(body.result.value).replace(/\s+/g, ' ').slice(0, 60)}`)
-}
-
-if (problems.length) {
-  console.log('\n运行时问题:')
-  for (const line of problems.slice(0, 40)) console.log(' -', line)
-} else {
-  console.log('\n无运行时错误')
-}
-
-socket.close()
-chrome.kill()
-await sleep(300)
+const browser = await launchBrowser(baseURL, output)
+const results = []
 try {
-  rmSync(profile, { recursive: true, force: true })
-} catch {
-  /* 忽略清理失败 */
+  for (const [name, path] of routes) {
+    if (path === '/login') {
+      await browser.evaluate("localStorage.removeItem('podry:session')")
+      await browser.call('Page.navigate', {url:baseURL + path})
+      await browser.until('document.querySelector("#app")?.innerText.length > 20')
+    } else await browser.navigate(path)
+    await delay(500)
+    const text = await browser.evaluate('document.querySelector("#app")?.innerText || ""')
+    assert.ok(text.length > 20, '页面为空: ' + path)
+    if (path === '/') assert.equal(await browser.evaluate('location.pathname'), '/apps')
+    if (path === '/projects') assert.ok(text.includes('项目'))
+    await browser.screenshot(name)
+    results.push({name,path})
+    console.log('PASS ' + name + ' ' + path)
+  }
+  assert.equal(browser.errors.length, 0, browser.errors.join('\n'))
+  assert.equal(browser.warnings.length, 0, browser.warnings.join('\n'))
+} finally {
+  writeFileSync(resolve(output,'results.json'),JSON.stringify({pages:results,errors:browser.errors,warnings:browser.warnings},null,2))
+  await browser.close()
 }
-process.exit(problems.length ? 1 : 0)
+console.log('Completed ' + results.length + ' route/state checks; zero runtime errors/warnings')
